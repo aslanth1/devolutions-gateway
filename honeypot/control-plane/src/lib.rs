@@ -1,3 +1,4 @@
+mod auth;
 pub mod config;
 pub mod health;
 mod lease;
@@ -10,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use axum::extract::{Path as AxumPath, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{
     Json, Router,
@@ -25,6 +26,7 @@ use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use serde::Deserialize;
 use tokio::net::TcpListener;
 
+use self::auth::{AuthError, ControlPlaneAuth};
 use self::config::ControlPlaneConfig;
 use self::health::ServiceState;
 use self::lease::{LeaseError, LeaseRegistry};
@@ -32,15 +34,18 @@ use self::lease::{LeaseError, LeaseRegistry};
 #[derive(Debug)]
 pub struct ControlPlaneRuntime {
     config: ControlPlaneConfig,
+    auth: ControlPlaneAuth,
     leases: Mutex<LeaseRegistry>,
 }
 
 impl ControlPlaneRuntime {
     pub fn new(config: ControlPlaneConfig) -> anyhow::Result<Self> {
         validate_startup_contract(&config).context("validate control-plane startup contract")?;
+        let auth = ControlPlaneAuth::from_config(&config.auth).context("build control-plane auth gate")?;
         let leases = LeaseRegistry::load(&config.paths).context("load control-plane lease registry")?;
         Ok(Self {
             config,
+            auth,
             leases: Mutex::new(leases),
         })
     }
@@ -73,6 +78,10 @@ impl ControlPlaneRuntime {
 
     pub fn bind_addr(&self) -> std::net::SocketAddr {
         self.config.http.bind_addr
+    }
+
+    fn authorize_request(&self, headers: &HeaderMap) -> Result<(), ControlPlaneApiError> {
+        self.auth.authorize(headers).map_err(ControlPlaneApiError::from)
     }
 }
 
@@ -117,8 +126,11 @@ struct HealthQuery {
 
 async fn health_handler(
     State(runtime): State<Arc<ControlPlaneRuntime>>,
+    headers: HeaderMap,
     Query(query): Query<HealthQuery>,
 ) -> Result<Json<HealthResponse>, ControlPlaneApiError> {
+    runtime.authorize_request(&headers)?;
+
     if let Some(schema_version) = query.schema_version {
         let request = honeypot_contracts::control_plane::HealthRequest {
             schema_version,
@@ -134,8 +146,11 @@ async fn health_handler(
 
 async fn acquire_vm_handler(
     State(runtime): State<Arc<ControlPlaneRuntime>>,
+    headers: HeaderMap,
     Json(request): Json<AcquireVmRequest>,
 ) -> Result<Json<AcquireVmResponse>, ControlPlaneApiError> {
+    runtime.authorize_request(&headers)?;
+
     let mut leases = runtime.lock_leases()?;
     let response = leases
         .acquire(&runtime.config.paths, &request)
@@ -145,9 +160,12 @@ async fn acquire_vm_handler(
 
 async fn release_vm_handler(
     State(runtime): State<Arc<ControlPlaneRuntime>>,
+    headers: HeaderMap,
     AxumPath(vm_lease_id): AxumPath<String>,
     Json(request): Json<ReleaseVmRequest>,
 ) -> Result<Json<ReleaseVmResponse>, ControlPlaneApiError> {
+    runtime.authorize_request(&headers)?;
+
     let mut leases = runtime.lock_leases()?;
     let response = leases
         .release(&runtime.config.paths, &vm_lease_id, &request)
@@ -157,9 +175,12 @@ async fn release_vm_handler(
 
 async fn reset_vm_handler(
     State(runtime): State<Arc<ControlPlaneRuntime>>,
+    headers: HeaderMap,
     AxumPath(vm_lease_id): AxumPath<String>,
     Json(request): Json<ResetVmRequest>,
 ) -> Result<Json<ResetVmResponse>, ControlPlaneApiError> {
+    runtime.authorize_request(&headers)?;
+
     let mut leases = runtime.lock_leases()?;
     let response = leases
         .reset(&runtime.config.paths, &vm_lease_id, &request)
@@ -169,9 +190,12 @@ async fn reset_vm_handler(
 
 async fn recycle_vm_handler(
     State(runtime): State<Arc<ControlPlaneRuntime>>,
+    headers: HeaderMap,
     AxumPath(vm_lease_id): AxumPath<String>,
     Json(request): Json<RecycleVmRequest>,
 ) -> Result<Json<RecycleVmResponse>, ControlPlaneApiError> {
+    runtime.authorize_request(&headers)?;
+
     let mut leases = runtime.lock_leases()?;
     let response = leases
         .recycle(&runtime.config.paths, &vm_lease_id, &request)
@@ -181,9 +205,12 @@ async fn recycle_vm_handler(
 
 async fn stream_endpoint_handler(
     State(runtime): State<Arc<ControlPlaneRuntime>>,
+    headers: HeaderMap,
     AxumPath(vm_lease_id): AxumPath<String>,
     Query(request): Query<StreamEndpointRequest>,
 ) -> Result<Json<StreamEndpointResponse>, ControlPlaneApiError> {
+    runtime.authorize_request(&headers)?;
+
     let leases = runtime.lock_leases()?;
     let response = leases
         .stream_endpoint(&vm_lease_id, &request)
@@ -347,6 +374,19 @@ impl From<LeaseError> for ControlPlaneApiError {
         };
 
         Self::new(status, error.code, error.message, error.retryable)
+    }
+}
+
+impl From<AuthError> for ControlPlaneApiError {
+    fn from(error: AuthError) -> Self {
+        let message = error.message();
+
+        match error {
+            AuthError::MissingToken | AuthError::InvalidToken(_) => {
+                Self::new(StatusCode::UNAUTHORIZED, ErrorCode::Unauthorized, message, false)
+            }
+            AuthError::Forbidden { .. } => Self::new(StatusCode::FORBIDDEN, ErrorCode::Forbidden, message, false),
+        }
     }
 }
 

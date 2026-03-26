@@ -54,6 +54,9 @@ pub struct HoneypotConfig {
     /// Optional control-plane connect timeout in seconds.
     #[builder(default, setter(strip_option))]
     pub control_plane_connect_timeout_secs: Option<u64>,
+    /// Optional proxy-to-control-plane bearer token.
+    #[builder(default, setter(into))]
+    pub control_plane_service_bearer_token: Option<String>,
     /// Optional stream source kind.
     #[builder(default, setter(into))]
     pub stream_source_kind: Option<String>,
@@ -256,6 +259,9 @@ fn build_honeypot_config_json(honeypot_config: HoneypotConfig) -> Value {
     }
     if let Some(connect_timeout_secs) = honeypot_config.control_plane_connect_timeout_secs {
         control_plane.insert("ConnectTimeoutSecs".to_owned(), json!(connect_timeout_secs));
+    }
+    if let Some(service_bearer_token) = honeypot_config.control_plane_service_bearer_token {
+        control_plane.insert("ServiceBearerToken".to_owned(), json!(service_bearer_token));
     }
     if !control_plane.is_empty() {
         honeypot.insert("ControlPlane".to_owned(), Value::Object(control_plane));

@@ -257,6 +257,7 @@ pub struct HoneypotControlPlaneConf {
     pub endpoint: Option<Url>,
     pub request_timeout: std::time::Duration,
     pub connect_timeout: std::time::Duration,
+    pub service_bearer_token: Option<String>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
@@ -491,6 +492,7 @@ impl HoneypotControlPlaneConf {
                     .connect_timeout_secs
                     .unwrap_or(HONEYPOT_CONTROL_PLANE_CONNECT_TIMEOUT_SECS),
             ),
+            service_bearer_token: value.service_bearer_token.clone(),
         }
     }
 }
@@ -501,6 +503,7 @@ impl Default for HoneypotControlPlaneConf {
             endpoint: None,
             request_timeout: std::time::Duration::from_secs(HONEYPOT_CONTROL_PLANE_REQUEST_TIMEOUT_SECS),
             connect_timeout: std::time::Duration::from_secs(HONEYPOT_CONTROL_PLANE_CONNECT_TIMEOUT_SECS),
+            service_bearer_token: None,
         }
     }
 }
@@ -2577,6 +2580,9 @@ pub mod dto {
         /// Connect timeout in seconds.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub connect_timeout_secs: Option<u64>,
+        /// Bearer token that authenticates proxy-to-control-plane requests.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub service_bearer_token: Option<String>,
     }
 
     #[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -2771,6 +2777,7 @@ mod tests {
 
         assert!(!conf.honeypot.enabled);
         assert!(conf.honeypot.control_plane.endpoint.is_none());
+        assert!(conf.honeypot.control_plane.service_bearer_token.is_none());
         assert_eq!(
             conf.honeypot.stream.source_kind,
             HoneypotStreamSourceKind::GatewayRecording
@@ -2804,7 +2811,8 @@ mod tests {
                 "ControlPlane": {
                     "Endpoint": "https://control-plane.internal:8443",
                     "RequestTimeoutSecs": 45,
-                    "ConnectTimeoutSecs": 7
+                    "ConnectTimeoutSecs": 7,
+                    "ServiceBearerToken": "proxy-to-control-plane"
                 },
                 "Stream": {
                     "SourceKind": "GatewayRecording",
@@ -2843,6 +2851,10 @@ mod tests {
         assert_eq!(
             conf.honeypot.control_plane.connect_timeout,
             std::time::Duration::from_secs(7)
+        );
+        assert_eq!(
+            conf.honeypot.control_plane.service_bearer_token.as_deref(),
+            Some("proxy-to-control-plane")
         );
         assert_eq!(
             conf.honeypot.stream.source_kind,

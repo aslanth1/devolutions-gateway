@@ -11,6 +11,7 @@ pub const DEFAULT_CONTROL_PLANE_CONFIG_PATH: &str = "/etc/honeypot/control-plane
 #[serde(default)]
 pub struct ControlPlaneConfig {
     pub http: HttpConfig,
+    pub auth: AuthConfig,
     pub runtime: RuntimeConfig,
     pub paths: PathConfig,
 }
@@ -43,6 +44,13 @@ impl Default for HttpConfig {
             bind_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct AuthConfig {
+    pub service_token_validation_disabled: bool,
+    pub proxy_verifier_public_key_pem: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -2604,8 +2604,10 @@ version = "2026.1.0"
 dependencies = [
  "anyhow",
  "axum 0.8.8",
+ "devolutions-gateway",
  "honeypot-contracts",
  "humantime",
+ "picky",
  "serde",
  "serde_json",
  "tokio 1.49.0",

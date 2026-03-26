@@ -8,12 +8,37 @@ use honeypot_contracts::control_plane::{
 use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_control_plane::{
-    HoneypotControlPlaneTestConfig, find_unused_port, get_json_response, honeypot_control_plane_assert_cmd,
-    honeypot_control_plane_tokio_cmd, post_json_response, read_health_response, send_http_request,
-    write_honeypot_control_plane_config,
+    HoneypotControlPlaneTestConfig, find_unused_port, get_json_response_with_bearer_token,
+    honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd, post_json_response_with_bearer_token,
+    read_health_response_with_bearer_token, send_http_request, write_honeypot_control_plane_config,
 };
 
 const CONTROL_PLANE_CONFIG_ENV: &str = "HONEYPOT_CONTROL_PLANE_CONFIG";
+const CONTROL_PLANE_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAxMDEiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3QuY29udHJvbC1wbGFuZSJ9.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
+const HONEYPOT_WATCH_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDMiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Qud2F0Y2gifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
+
+async fn read_authed_health_response(port: u16) -> anyhow::Result<honeypot_contracts::control_plane::HealthResponse> {
+    read_health_response_with_bearer_token(port, Some(CONTROL_PLANE_SCOPE_TOKEN)).await
+}
+
+async fn get_authed_json_response<Response>(port: u16, path: &str) -> anyhow::Result<(String, Response)>
+where
+    Response: serde::de::DeserializeOwned,
+{
+    get_json_response_with_bearer_token(port, path, Some(CONTROL_PLANE_SCOPE_TOKEN)).await
+}
+
+async fn post_authed_json_response<Request, Response>(
+    port: u16,
+    path: &str,
+    request: &Request,
+) -> anyhow::Result<(String, Response)>
+where
+    Request: serde::Serialize,
+    Response: serde::de::DeserializeOwned,
+{
+    post_json_response_with_bearer_token(port, path, Some(CONTROL_PLANE_SCOPE_TOKEN), request).await
+}
 
 #[test]
 fn control_plane_fails_closed_when_required_paths_are_missing() {
@@ -77,7 +102,7 @@ async fn control_plane_reports_ready_when_contract_is_satisfied() {
     let mut child = child.spawn().expect("spawn control-plane");
 
     wait_for_tcp_port(port).await.expect("wait for health port");
-    let health = read_health_response(port).await.expect("read health response");
+    let health = read_authed_health_response(port).await.expect("read health response");
 
     assert_eq!(health.service_state, ServiceState::Ready);
     assert!(health.kvm_available);
@@ -115,7 +140,7 @@ async fn control_plane_reports_degraded_without_trusted_images() {
     let mut child = child.spawn().expect("spawn control-plane");
 
     wait_for_tcp_port(port).await.expect("wait for health port");
-    let health = read_health_response(port).await.expect("read health response");
+    let health = read_authed_health_response(port).await.expect("read health response");
 
     assert_eq!(health.service_state, ServiceState::Degraded);
     assert_eq!(health.trusted_image_count, 0);
@@ -157,7 +182,7 @@ async fn control_plane_reports_unsafe_if_kvm_disappears_after_start() {
 
     wait_for_tcp_port(port).await.expect("wait for health port");
     fs::remove_file(&fixture.kvm_path).expect("remove fake kvm device");
-    let health = read_health_response(port).await.expect("read health response");
+    let health = read_authed_health_response(port).await.expect("read health response");
 
     assert_eq!(health.service_state, ServiceState::Unsafe);
     assert!(!health.kvm_available);
@@ -167,6 +192,90 @@ async fn control_plane_reports_unsafe_if_kvm_disappears_after_start() {
             .iter()
             .any(|reason| reason.starts_with("missing_kvm_path:"))
     );
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_rejects_requests_without_a_service_token() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (status_line, response): (String, ErrorResponse) =
+        get_json_response_with_bearer_token(port, "/api/v1/health", None)
+            .await
+            .expect("read unauthorized response");
+
+    assert!(status_line.contains("401"), "{status_line}");
+    assert_eq!(response.error_code, ErrorCode::Unauthorized);
+    assert!(response.message.contains("service token is missing"));
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_rejects_wrong_scope_tokens() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (status_line, response): (String, ErrorResponse) = post_json_response_with_bearer_token(
+        port,
+        "/api/v1/vm/acquire",
+        Some(HONEYPOT_WATCH_SCOPE_TOKEN),
+        &acquire_request("session-authz"),
+    )
+    .await
+    .expect("read forbidden response");
+
+    assert!(status_line.contains("403"), "{status_line}");
+    assert_eq!(response.error_code, ErrorCode::Forbidden);
+    assert!(response.message.contains("gateway.honeypot.control-plane"));
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -200,7 +309,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     wait_for_tcp_port(port).await.expect("wait for control-plane port");
 
     let (status_line, acquire): (String, AcquireVmResponse) =
-        post_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-1"))
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-1"))
             .await
             .expect("acquire lease");
     assert!(status_line.contains("200"), "{status_line}");
@@ -211,7 +320,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert_eq!(acquire.backend_credential_ref, "cred-ref-session-1");
     assert!(acquire.vm_name.starts_with("honeypot-"));
 
-    let (status_line, reset): (String, ResetVmResponse) = post_json_response(
+    let (status_line, reset): (String, ResetVmResponse) = post_authed_json_response(
         port,
         &format!("/api/v1/vm/{}/reset", acquire.vm_lease_id),
         &ResetVmRequest {
@@ -233,7 +342,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
         acquire.vm_lease_id,
         honeypot_contracts::SCHEMA_VERSION
     );
-    let (status_line, stream): (String, StreamEndpointResponse) = get_json_response(port, &stream_path)
+    let (status_line, stream): (String, StreamEndpointResponse) = get_authed_json_response(port, &stream_path)
         .await
         .expect("get stream endpoint");
     assert!(status_line.contains("200"), "{status_line}");
@@ -241,7 +350,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert!(stream.source_ready);
     assert!(stream.capture_source_ref.starts_with("gateway-recording://"));
 
-    let (status_line, release): (String, ReleaseVmResponse) = post_json_response(
+    let (status_line, release): (String, ReleaseVmResponse) = post_authed_json_response(
         port,
         &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
         &ReleaseVmRequest {
@@ -258,7 +367,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert_eq!(release.release_state, ReleaseState::Recycling);
     assert!(release.recycle_required);
 
-    let (status_line, recycle): (String, RecycleVmResponse) = post_json_response(
+    let (status_line, recycle): (String, RecycleVmResponse) = post_authed_json_response(
         port,
         &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
         &RecycleVmRequest {
@@ -276,7 +385,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert_eq!(recycle.pool_state, PoolState::Ready);
     assert!(!recycle.quarantined);
 
-    let health = read_health_response(port).await.expect("read health response");
+    let health = read_authed_health_response(port).await.expect("read health response");
     assert_eq!(health.active_lease_count, 0);
     assert_eq!(health.quarantined_lease_count, 0);
 
@@ -311,13 +420,20 @@ async fn control_plane_reports_no_capacity_when_the_pool_is_exhausted() {
 
     wait_for_tcp_port(port).await.expect("wait for control-plane port");
 
-    let _ = post_json_response::<_, serde_json::Value>(port, "/api/v1/vm/acquire", &acquire_request("session-1"))
-        .await
-        .expect("acquire first lease");
+    let _ =
+        post_authed_json_response::<_, serde_json::Value>(port, "/api/v1/vm/acquire", &acquire_request("session-1"))
+            .await
+            .expect("acquire first lease");
     let request_body = serde_json::to_vec(&acquire_request("session-2")).expect("serialize acquire request");
-    let (status_line, body) = send_http_request(port, "POST", "/api/v1/vm/acquire", Some(&request_body))
-        .await
-        .expect("send second acquire request");
+    let (status_line, body) = send_http_request(
+        port,
+        "POST",
+        "/api/v1/vm/acquire",
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        Some(&request_body),
+    )
+    .await
+    .expect("send second acquire request");
     let error: ErrorResponse = serde_json::from_slice(&body).expect("parse error response");
 
     assert!(status_line.contains("503"), "{status_line}");
@@ -356,11 +472,11 @@ async fn control_plane_quarantines_simulated_recycle_failures() {
     wait_for_tcp_port(port).await.expect("wait for control-plane port");
 
     let (_, acquire): (String, AcquireVmResponse) =
-        post_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-1"))
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-1"))
             .await
             .expect("acquire lease");
 
-    let (status_line, recycle): (String, RecycleVmResponse) = post_json_response(
+    let (status_line, recycle): (String, RecycleVmResponse) = post_authed_json_response(
         port,
         &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
         &RecycleVmRequest {
@@ -379,7 +495,7 @@ async fn control_plane_quarantines_simulated_recycle_failures() {
     assert_eq!(recycle.pool_state, PoolState::Quarantined);
     assert!(recycle.quarantined);
 
-    let health = read_health_response(port).await.expect("read health response");
+    let health = read_authed_health_response(port).await.expect("read health response");
     assert_eq!(health.active_lease_count, 0);
     assert_eq!(health.quarantined_lease_count, 1);
 

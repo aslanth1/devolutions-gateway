@@ -700,6 +700,10 @@
           "type": "integer",
           "default": 5,
           "description": "Control-plane connect timeout in seconds."
+        },
+        "ServiceBearerToken": {
+          "type": "string",
+          "description": "Bearer token that authenticates proxy-to-control-plane requests."
         }
       },
       "additionalProperties": false

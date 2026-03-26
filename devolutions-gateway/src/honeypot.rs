@@ -773,6 +773,7 @@ impl HoneypotStreamError {
 #[derive(Clone)]
 pub struct HoneypotControlPlaneClient {
     endpoint: url::Url,
+    service_bearer_token: String,
     client: reqwest::Client,
 }
 
@@ -788,7 +789,16 @@ impl HoneypotControlPlaneClient {
             .build()
             .context("build honeypot control-plane client")?;
 
-        Ok(Some(Self { endpoint, client }))
+        let service_bearer_token = conf
+            .service_bearer_token
+            .clone()
+            .context("honeypot control-plane endpoint requires Honeypot.ControlPlane.ServiceBearerToken")?;
+
+        Ok(Some(Self {
+            endpoint,
+            service_bearer_token,
+            client,
+        }))
     }
 
     pub fn endpoint(&self) -> &url::Url {
@@ -833,6 +843,7 @@ impl HoneypotControlPlaneClient {
         let response = self
             .client
             .post(self.url(path)?)
+            .bearer_auth(&self.service_bearer_token)
             .json(request)
             .send()
             .await
@@ -854,6 +865,7 @@ impl HoneypotControlPlaneClient {
         let response = self
             .client
             .get(self.url(path)?)
+            .bearer_auth(&self.service_bearer_token)
             .query(request)
             .send()
             .await
@@ -904,6 +916,8 @@ mod tests {
     use std::sync::Arc;
 
     use axum::extract::{Path, Query, State};
+    use axum::http::HeaderMap;
+    use axum::http::header::AUTHORIZATION;
     use axum::{
         Json, Router,
         routing::{get, post},
@@ -927,9 +941,19 @@ mod tests {
     use crate::session::{ConnectionModeDetails, SessionInfo};
     use crate::token::{ApplicationProtocol, Protocol, RecordingPolicy, SessionTtl};
 
+    const TEST_CONTROL_PLANE_SERVICE_TOKEN: &str = "test-control-plane-service-token";
+
+    fn assert_service_token(headers: &HeaderMap) {
+        assert_eq!(
+            headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()),
+            Some("Bearer test-control-plane-service-token")
+        );
+    }
+
     #[tokio::test]
     async fn control_plane_client_reads_typed_health_response() {
-        async fn health_handler() -> Json<HealthResponse> {
+        async fn health_handler(headers: HeaderMap) -> Json<HealthResponse> {
+            assert_service_token(&headers);
             Json(HealthResponse {
                 schema_version: honeypot_contracts::SCHEMA_VERSION,
                 correlation_id: "corr-1".to_owned(),
@@ -955,6 +979,7 @@ mod tests {
             endpoint: Some(format!("http://{addr}/").parse().expect("parse endpoint")),
             request_timeout: std::time::Duration::from_secs(5),
             connect_timeout: std::time::Duration::from_secs(2),
+            service_bearer_token: Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()),
         };
 
         let client = HoneypotControlPlaneClient::from_conf(&conf)
@@ -1159,6 +1184,7 @@ mod tests {
                         endpoint: Some(format!("http://{addr}/").parse().expect("parse endpoint")),
                         request_timeout: std::time::Duration::from_secs(5),
                         connect_timeout: std::time::Duration::from_secs(2),
+                        service_bearer_token: Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()),
                     })
                     .expect("build client")
                     .expect("enabled client"),
@@ -1171,7 +1197,9 @@ mod tests {
         }
     }
 
-    async fn test_health_handler() -> Json<HealthResponse> {
+    async fn test_health_handler(headers: HeaderMap) -> Json<HealthResponse> {
+        assert_service_token(&headers);
+
         Json(HealthResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: "corr-health".to_owned(),
@@ -1184,7 +1212,12 @@ mod tests {
         })
     }
 
-    async fn test_acquire_handler(Json(request): Json<AcquireVmRequest>) -> Json<AcquireVmResponse> {
+    async fn test_acquire_handler(
+        headers: HeaderMap,
+        Json(request): Json<AcquireVmRequest>,
+    ) -> Json<AcquireVmResponse> {
+        assert_service_token(&headers);
+
         Json(AcquireVmResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: format!("corr-acquire-{}", request.session_id),
@@ -1201,9 +1234,11 @@ mod tests {
 
     async fn test_release_handler(
         State(state): State<TestControlPlaneState>,
+        headers: HeaderMap,
         Path(vm_lease_id): Path<String>,
         Json(_request): Json<ReleaseVmRequest>,
     ) -> Json<ReleaseVmResponse> {
+        assert_service_token(&headers);
         state.released.lock().push(vm_lease_id.clone());
 
         Json(ReleaseVmResponse {
@@ -1217,9 +1252,11 @@ mod tests {
 
     async fn test_recycle_handler(
         State(state): State<TestControlPlaneState>,
+        headers: HeaderMap,
         Path(vm_lease_id): Path<String>,
         Json(_request): Json<RecycleVmRequest>,
     ) -> Json<RecycleVmResponse> {
+        assert_service_token(&headers);
         state.recycled.lock().push(vm_lease_id.clone());
 
         Json(RecycleVmResponse {
@@ -1233,9 +1270,11 @@ mod tests {
     }
 
     async fn test_stream_handler(
+        headers: HeaderMap,
         Path(vm_lease_id): Path<String>,
         Query(_request): Query<StreamEndpointRequest>,
     ) -> Json<StreamEndpointResponse> {
+        assert_service_token(&headers);
         Json(StreamEndpointResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: format!("corr-stream-{vm_lease_id}"),

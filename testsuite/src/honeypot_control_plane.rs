@@ -25,6 +25,10 @@ static HONEYPOT_CONTROL_PLANE_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
 pub struct HoneypotControlPlaneTestConfig {
     #[builder(setter(into))]
     pub bind_addr: String,
+    #[builder(default = true)]
+    pub service_token_validation_disabled: bool,
+    #[builder(default, setter(into, strip_option))]
+    pub proxy_verifier_public_key_pem: Option<String>,
     #[builder(setter(into))]
     pub data_dir: PathBuf,
     #[builder(setter(into))]
@@ -65,6 +69,8 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
     let mut document = format!(
         "[http]\n\
          bind_addr = \"{}\"\n\n\
+         [auth]\n\
+         service_token_validation_disabled = {}\n\n\
          [runtime]\n\
          enable_guest_agent = {}\n\n\
          [paths]\n\
@@ -77,6 +83,7 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
          secret_dir = \"{}\"\n\
          kvm_path = \"{}\"\n",
         config.bind_addr,
+        config.service_token_validation_disabled,
         config.enable_guest_agent,
         config.data_dir.display(),
         config.image_store.display(),
@@ -92,11 +99,25 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
         document.push_str(&format!("qga_dir = \"{}\"\n", qga_dir.display()));
     }
 
+    if let Some(proxy_verifier_public_key_pem) = &config.proxy_verifier_public_key_pem {
+        document.push_str(&format!(
+            "\nauth.proxy_verifier_public_key_pem = '''\n{}\n'''\n",
+            proxy_verifier_public_key_pem
+        ));
+    }
+
     std::fs::write(path, document).with_context(|| format!("write control-plane config at {}", path.display()))
 }
 
 pub async fn read_health_response(port: u16) -> anyhow::Result<HealthResponse> {
-    let (_, response) = get_json_response(port, "/api/v1/health").await?;
+    read_health_response_with_bearer_token(port, None).await
+}
+
+pub async fn read_health_response_with_bearer_token(
+    port: u16,
+    bearer_token: Option<&str>,
+) -> anyhow::Result<HealthResponse> {
+    let (_, response) = get_json_response_with_bearer_token(port, "/api/v1/health", bearer_token).await?;
     Ok(response)
 }
 
@@ -104,7 +125,18 @@ pub async fn get_json_response<Response>(port: u16, path: &str) -> anyhow::Resul
 where
     Response: DeserializeOwned,
 {
-    let (status_line, body) = send_http_request(port, "GET", path, None).await?;
+    get_json_response_with_bearer_token(port, path, None).await
+}
+
+pub async fn get_json_response_with_bearer_token<Response>(
+    port: u16,
+    path: &str,
+    bearer_token: Option<&str>,
+) -> anyhow::Result<(String, Response)>
+where
+    Response: DeserializeOwned,
+{
+    let (status_line, body) = send_http_request(port, "GET", path, bearer_token, None).await?;
     let response = serde_json::from_slice(&body).context("parse json response body")?;
     Ok((status_line, response))
 }
@@ -118,8 +150,21 @@ where
     Request: Serialize,
     Response: DeserializeOwned,
 {
+    post_json_response_with_bearer_token(port, path, None, request).await
+}
+
+pub async fn post_json_response_with_bearer_token<Request, Response>(
+    port: u16,
+    path: &str,
+    bearer_token: Option<&str>,
+    request: &Request,
+) -> anyhow::Result<(String, Response)>
+where
+    Request: Serialize,
+    Response: DeserializeOwned,
+{
     let body = serde_json::to_vec(request).context("serialize json request body")?;
-    let (status_line, body) = send_http_request(port, "POST", path, Some(&body)).await?;
+    let (status_line, body) = send_http_request(port, "POST", path, bearer_token, Some(&body)).await?;
     let response = serde_json::from_slice(&body).context("parse json response body")?;
     Ok((status_line, response))
 }
@@ -128,19 +173,28 @@ pub async fn send_http_request(
     port: u16,
     method: &str,
     path: &str,
+    bearer_token: Option<&str>,
     body: Option<&[u8]>,
 ) -> anyhow::Result<(String, Vec<u8>)> {
     let mut stream = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .with_context(|| format!("connect to honeypot control-plane endpoint on port {port}"))?;
 
-    let request = match body {
-        Some(body) => format!(
-            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            body.len()
-        ),
-        None => format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"),
-    };
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
+
+    if let Some(bearer_token) = bearer_token {
+        request.push_str(&format!("Authorization: Bearer {bearer_token}\r\n"));
+    }
+
+    match body {
+        Some(body) => {
+            request.push_str(&format!(
+                "Content-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            ));
+        }
+        None => request.push_str("\r\n"),
+    }
 
     stream
         .write_all(request.as_bytes())
