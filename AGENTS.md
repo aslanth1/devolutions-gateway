@@ -137,7 +137,7 @@ Pass when: any new surface explicitly extends or replaces `session.rs`, `subscri
 - [ ] Reuse `devolutions-gateway/src/api/preflight.rs` for short-lived credential mapping instead of inventing a second credential provisioning API.
 Pass when: the control-plane and proxy contracts explicitly reference `provision-credentials`.
 
-- [ ] Extend `devolutions-gateway/src/session.rs` and `devolutions-gateway/src/subscriber.rs` to publish honeypot session state and frontend event payloads.
+- [x] Extend `devolutions-gateway/src/session.rs` and `devolutions-gateway/src/subscriber.rs` to publish honeypot session state and frontend event payloads.
 Pass when: the event schema covers start, assignment, stream ready, disconnect, kill, recycle requested, and recycled outcomes.
 
 - [ ] Review `devolutions-gateway/src/api/sessions.rs` and `devolutions-gateway/src/api/session.rs` before inventing new session-management APIs.
@@ -446,7 +446,7 @@ Pass when: the proxy-visible session model can distinguish disconnect, kill, rec
 - [x] Extend the session state machine to include honeypot-specific lifecycle states.
 Pass when: the proxy can emit connected, assigned, ready, disconnected, killed, recycle requested, and recycled outcomes.
 
-- [ ] Extend subscriber and traffic signals so the frontend can track tiles without scraping logs.
+- [x] Extend subscriber and traffic signals so the frontend can track tiles without scraping logs.
 Pass when: the frontend can discover live sessions and terminal states through structured events and APIs.
 
 - [x] Reuse `/jet/sessions` and `/jet/session/{id}/terminate` where possible.
@@ -517,7 +517,7 @@ Pass when: the endpoint exists as a stub and returns a structured `disabled_by_p
 - [ ] Add a clipboard capture placeholder behind explicit policy checks.
 Pass when: the endpoint exists as a stub and returns a structured `disabled_by_policy` response until intentionally enabled.
 
-- [ ] Add frontend container health and readiness checks.
+- [x] Add frontend container health and readiness checks.
 Pass when: compose and Rust tests can detect successful startup, bootstrap API reachability, and stream-tile readiness.
 
 ## Milestone 4: Stream Delivery Path

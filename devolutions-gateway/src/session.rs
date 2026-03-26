@@ -166,30 +166,22 @@ pub async fn add_session_in_progress(
 
     let honeypot_session = info.clone();
     let association_id = info.id;
-    let start_timestamp = info.start_timestamp;
 
     sessions
         .new_session(info, notify_kill, disconnect_interest)
         .await
         .context("couldn't register new session")?;
 
-    let message = subscriber::Message::session_started(subscriber::SubscriberSessionInfo {
-        association_id,
-        start_timestamp,
-    });
-
-    if let Err(error) = subscriber_tx.try_send(message) {
-        warn!(%error, "Failed to send subscriber message");
-    }
-
     if let Err(error) = sessions.honeypot().record_session_started(&honeypot_session).await {
         let _ = sessions.sync_honeypot_metadata(association_id).await;
-        let _ = sessions.remove_session(association_id).await;
+        let removed_session = sessions
+            .remove_session(association_id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| honeypot_session.clone());
 
-        let message = subscriber::Message::session_ended(subscriber::SubscriberSessionInfo {
-            association_id,
-            start_timestamp,
-        });
+        let message = subscriber::Message::session_ended(removed_session);
 
         if let Err(send_error) = subscriber_tx.try_send(message) {
             warn!(%send_error, "Failed to send subscriber message");
@@ -199,6 +191,18 @@ pub async fn add_session_in_progress(
     }
 
     let _ = sessions.sync_honeypot_metadata(association_id).await;
+    let subscriber_session = sessions
+        .get_session_info(association_id)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(honeypot_session);
+
+    let message = subscriber::Message::session_started(subscriber_session);
+
+    if let Err(error) = subscriber_tx.try_send(message) {
+        warn!(%error, "Failed to send subscriber message");
+    }
 
     Ok(())
 }
@@ -245,10 +249,7 @@ pub async fn remove_session_in_progress(
         .context("couldn't remove running session")?;
 
     if let Some(session) = removed_session {
-        let message = subscriber::Message::session_ended(subscriber::SubscriberSessionInfo {
-            association_id: id,
-            start_timestamp: session.start_timestamp,
-        });
+        let message = subscriber::Message::session_ended(session.clone());
 
         if let Err(error) = subscriber_tx.try_send(message) {
             warn!(%error, "Failed to send subscriber message");

@@ -13,6 +13,7 @@ use base64::prelude::*;
 use honeypot_contracts::events::{SessionState, StreamState};
 use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
 use honeypot_contracts::stream::{StreamPreview, StreamTokenResponse, StreamTransport};
+use serde_json::Value;
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_frontend::{
     HoneypotFrontendTestConfig, find_unused_port, honeypot_frontend_tokio_cmd, read_http_response, send_http_request,
@@ -109,6 +110,110 @@ async fn frontend_dashboard_renders_bootstrap_sessions() {
     let _ = child.wait().await;
     proxy_handle.abort();
     let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_health_reports_ready_when_bootstrap_is_reachable() {
+    let (proxy_addr, proxy_handle, _observed_tokens, _terminated_sessions, _system_terminate_requests) =
+        start_mock_proxy(mock_state(
+            BootstrapResponse {
+                schema_version: honeypot_contracts::SCHEMA_VERSION,
+                correlation_id: "bootstrap-health-ready".to_owned(),
+                generated_at: "2026-03-26T12:00:00Z".to_owned(),
+                replay_cursor: "6".to_owned(),
+                sessions: vec![BootstrapSession {
+                    session_id: Uuid::new_v4().to_string(),
+                    vm_lease_id: Some("lease-health".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-health".to_owned(),
+                    last_session_seq: 3,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-health".to_owned(),
+                        transport: StreamTransport::Sse,
+                        stream_endpoint: "https://streams.example/health".to_owned(),
+                        token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
+                    }),
+                }],
+            },
+            String::new(),
+            HashMap::new(),
+        ))
+        .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let (status_line, _headers, body) = read_http_response(port, "/health").await.expect("read health response");
+    let body: Value = serde_json::from_slice(&body).expect("decode health json");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(body["service_state"], "ready");
+    assert_eq!(body["proxy_bootstrap_reachable"], true);
+    assert_eq!(body["live_session_count"], 1);
+    assert_eq!(body["ready_tile_count"], 1);
+    assert_eq!(body["degraded_reasons"], Value::Array(Vec::new()));
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_health_reports_degraded_when_bootstrap_is_unreachable() {
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    let missing_proxy_port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://127.0.0.1:{missing_proxy_port}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let (status_line, _headers, body) = read_http_response(port, "/health").await.expect("read health response");
+    let body: Value = serde_json::from_slice(&body).expect("decode health json");
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(body["service_state"], "degraded");
+    assert_eq!(body["proxy_bootstrap_reachable"], false);
+    assert_eq!(body["live_session_count"], 0);
+    assert_eq!(body["ready_tile_count"], 0);
+    assert!(
+        body["degraded_reasons"]
+            .as_array()
+            .expect("degraded reasons array")
+            .iter()
+            .any(|reason| reason.as_str().unwrap_or_default().contains("bootstrap unavailable"))
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
 }
 
 #[tokio::test]

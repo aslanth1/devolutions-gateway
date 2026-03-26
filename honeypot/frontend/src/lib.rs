@@ -164,11 +164,61 @@ impl FrontendRuntime {
     ) -> Result<OperatorAccess, AuthError> {
         self.auth.authorize(headers, query_token, required_scope)
     }
+
+    async fn health_snapshot(&self) -> (StatusCode, FrontendHealthResponse) {
+        match self.fetch_bootstrap().await {
+            Ok(bootstrap) => {
+                let live_session_count = bootstrap.sessions.len();
+                let ready_tile_count = bootstrap
+                    .sessions
+                    .iter()
+                    .filter(|session| session.stream_state == StreamState::Ready && session.stream_preview.is_some())
+                    .count();
+
+                (
+                    StatusCode::OK,
+                    FrontendHealthResponse {
+                        service_state: FrontendServiceState::Ready,
+                        proxy_bootstrap_reachable: true,
+                        live_session_count,
+                        ready_tile_count,
+                        degraded_reasons: Vec::new(),
+                    },
+                )
+            }
+            Err(error) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                FrontendHealthResponse {
+                    service_state: FrontendServiceState::Degraded,
+                    proxy_bootstrap_reachable: false,
+                    live_session_count: 0,
+                    ready_tile_count: 0,
+                    degraded_reasons: vec![format!("bootstrap unavailable: {error:#}")],
+                },
+            ),
+        }
+    }
 }
 
 #[derive(Clone)]
 struct AppState {
     runtime: Arc<FrontendRuntime>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum FrontendServiceState {
+    Ready,
+    Degraded,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct FrontendHealthResponse {
+    service_state: FrontendServiceState,
+    proxy_bootstrap_reachable: bool,
+    live_session_count: usize,
+    ready_tile_count: usize,
+    degraded_reasons: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -204,8 +254,9 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
     axum::serve(listener, router).await.context("serve honeypot frontend")
 }
 
-async fn health_handler() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn health_handler(State(state): State<AppState>) -> Response {
+    let (status, response) = state.runtime.health_snapshot().await;
+    (status, Json(response)).into_response()
 }
 
 #[derive(serde::Deserialize, Default)]

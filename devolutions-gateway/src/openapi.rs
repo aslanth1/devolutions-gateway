@@ -251,17 +251,10 @@ impl Modify for SecurityAddon {
 #[derive(OpenApi)]
 #[openapi(
     paths(post_subscriber_message),
-    components(schemas(SubscriberMessage, SubscriberSessionInfo, SubscriberMessageKind)),
+    components(schemas(SubscriberMessage, SessionInfo, SubscriberMessageKind)),
     modifiers(&SubscriberSecurityAddon),
 )]
 pub struct SubscriberApiDoc;
-
-#[derive(utoipa::ToSchema, Serialize)]
-struct SubscriberSessionInfo {
-    association_id: Uuid,
-    #[serde(with = "time::serde::rfc3339")]
-    start_timestamp: OffsetDateTime,
-}
 
 /// Event type for messages.
 #[allow(unused)]
@@ -290,9 +283,9 @@ struct SubscriberMessage {
     #[serde(with = "time::serde::rfc3339")]
     timestamp: OffsetDateTime,
     /// Session information associated to this event.
-    session: Option<SubscriberSessionInfo>,
+    session: Option<SessionInfo>,
     /// Session list associated to this event.
-    session_list: Option<Vec<SubscriberSessionInfo>>,
+    session_list: Option<Vec<SessionInfo>>,
 }
 
 #[allow(unused)]
