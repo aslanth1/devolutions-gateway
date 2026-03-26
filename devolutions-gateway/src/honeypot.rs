@@ -10,7 +10,7 @@ use honeypot_contracts::control_plane::{
     RecycleVmResponse, ReleaseVmRequest, ReleaseVmResponse, ResetVmRequest, ResetVmResponse, StreamEndpointRequest,
     StreamEndpointResponse, StreamPolicy,
 };
-use honeypot_contracts::error::ErrorCode;
+use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use honeypot_contracts::events::{EventEnvelope, EventPayload, SessionState, StreamState, TerminalOutcome};
 use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
 use honeypot_contracts::stream::{StreamPreview, StreamTokenResponse, StreamTransport};
@@ -255,10 +255,11 @@ impl HoneypotRuntime {
         let response = match client.acquire_vm(&request).await {
             Ok(response) => response,
             Err(error) => {
+                let (reason_code, terminal_outcome) = acquire_failure(&error);
                 let mut events = self.events.lock();
-                events.push_proxy_status_degraded(vec![session_id.clone()], "control_plane_acquire_failed");
-                events.push_prepare_failed(&session_id, attacker_addr, "control_plane_acquire_failed");
-                return Err(error).context("acquire honeypot vm");
+                events.push_proxy_status_degraded(vec![session_id.clone()], reason_code);
+                events.push_prepare_terminal(&session_id, attacker_addr, terminal_outcome, reason_code);
+                return Err(anyhow::Error::new(error)).context("acquire honeypot vm");
             }
         };
 
@@ -321,10 +322,14 @@ impl HoneypotRuntime {
                 Ok(())
             }
             Err(error) => {
+                let (reason_code, terminal_outcome) = acquire_failure(&error);
                 let mut events = self.events.lock();
-                events.push_proxy_status_degraded(vec![session_id.clone()], "control_plane_acquire_failed");
-                events.push_no_lease(session, "control_plane_acquire_failed");
-                Err(error).context("acquire honeypot vm")
+                events.push_proxy_status_degraded(vec![session_id.clone()], reason_code);
+                match terminal_outcome {
+                    TerminalOutcome::BootTimeout => events.push_boot_timeout(session, reason_code),
+                    _ => events.push_no_lease(session, reason_code),
+                }
+                Err(anyhow::Error::new(error)).context("acquire honeypot vm")
             }
         }
     }
@@ -378,10 +383,12 @@ impl HoneypotRuntime {
             },
         };
 
-        client
-            .release_vm(&binding.vm_lease_id, &release_request)
-            .await
-            .with_context(|| format!("release honeypot vm lease {}", binding.vm_lease_id))?;
+        if let Err(error) = client.release_vm(&binding.vm_lease_id, &release_request).await {
+            self.events
+                .lock()
+                .push_proxy_status_degraded(vec![session_id], release_failure(&error));
+            return Ok(());
+        }
 
         self.events.lock().push_session_recycle_requested(
             &session.id.to_string(),
@@ -390,7 +397,7 @@ impl HoneypotRuntime {
             "proxy",
         );
 
-        let recycle_response = client
+        let recycle_response = match client
             .recycle_vm(
                 &binding.vm_lease_id,
                 &RecycleVmRequest {
@@ -402,7 +409,15 @@ impl HoneypotRuntime {
                 },
             )
             .await
-            .with_context(|| format!("recycle honeypot vm lease {}", binding.vm_lease_id))?;
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.events
+                    .lock()
+                    .push_proxy_status_degraded(vec![session.id.to_string()], recycle_failure(&error));
+                return Ok(());
+            }
+        };
 
         self.events
             .lock()
@@ -450,15 +465,20 @@ impl HoneypotRuntime {
             )
             .await
             .map_err(|error| {
+                let (reason_code, failure_code, retryable) = stream_failure(&error);
                 let mut events = self.events.lock();
-                events.push_proxy_status_degraded(vec![session_id.clone()], "control_plane_stream_endpoint_failed");
+                events.push_proxy_status_degraded(vec![session_id.clone()], reason_code);
                 events.push_session_stream_failed(
                     &session_id,
                     Some(binding.vm_lease_id.clone()),
-                    ErrorCode::HostUnavailable,
-                    true,
+                    failure_code,
+                    retryable,
                 );
-                HoneypotStreamError::control_plane(error)
+                if matches!(error.error_code(), Some(ErrorCode::StreamUnavailable)) {
+                    HoneypotStreamError::StreamUnavailable
+                } else {
+                    HoneypotStreamError::control_plane(error)
+                }
             })?;
 
         if !endpoint.source_ready {
@@ -996,21 +1016,41 @@ impl HoneypotEventJournal {
         );
     }
 
-    fn push_no_lease(&mut self, session: &SessionInfo, disconnect_reason: &str) {
+    fn push_terminal_event(
+        &mut self,
+        session: &SessionInfo,
+        terminal_outcome: TerminalOutcome,
+        disconnect_reason: &str,
+        recycle_expected: bool,
+    ) {
         self.push_event(
             Some(session.id.to_string()),
             None,
             None,
             EventPayload::SessionEnded {
                 ended_at: now_rfc3339(),
-                terminal_outcome: TerminalOutcome::NoLease,
+                terminal_outcome,
                 disconnect_reason: disconnect_reason.to_owned(),
-                recycle_expected: false,
+                recycle_expected,
             },
         );
     }
 
-    fn push_prepare_failed(&mut self, session_id: &str, attacker_addr: SocketAddr, disconnect_reason: &str) {
+    fn push_no_lease(&mut self, session: &SessionInfo, disconnect_reason: &str) {
+        self.push_terminal_event(session, TerminalOutcome::NoLease, disconnect_reason, false);
+    }
+
+    fn push_boot_timeout(&mut self, session: &SessionInfo, disconnect_reason: &str) {
+        self.push_terminal_event(session, TerminalOutcome::BootTimeout, disconnect_reason, false);
+    }
+
+    fn push_prepare_terminal(
+        &mut self,
+        session_id: &str,
+        attacker_addr: SocketAddr,
+        terminal_outcome: TerminalOutcome,
+        disconnect_reason: &str,
+    ) {
         self.push_event(
             Some(session_id.to_owned()),
             None,
@@ -1028,7 +1068,7 @@ impl HoneypotEventJournal {
             None,
             EventPayload::SessionEnded {
                 ended_at: now_rfc3339(),
-                terminal_outcome: TerminalOutcome::NoLease,
+                terminal_outcome,
                 disconnect_reason: disconnect_reason.to_owned(),
                 recycle_expected: false,
             },
@@ -1298,13 +1338,54 @@ pub enum HoneypotCursorError {
 pub enum HoneypotStreamError {
     NoActiveLease,
     ControlPlaneUnavailable,
-    ControlPlane(anyhow::Error),
+    ControlPlane(HoneypotControlPlaneRequestError),
     StreamUnavailable,
 }
 
 impl HoneypotStreamError {
-    fn control_plane(error: anyhow::Error) -> Self {
+    fn control_plane(error: HoneypotControlPlaneRequestError) -> Self {
         Self::ControlPlane(error)
+    }
+}
+
+#[derive(Debug)]
+pub enum HoneypotControlPlaneRequestError {
+    Api(ErrorResponse),
+    Transport(anyhow::Error),
+}
+
+impl HoneypotControlPlaneRequestError {
+    fn api(error: ErrorResponse) -> Self {
+        Self::Api(error)
+    }
+
+    fn transport(error: anyhow::Error) -> Self {
+        Self::Transport(error)
+    }
+
+    fn error_code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::Api(error) => Some(error.error_code),
+            Self::Transport(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for HoneypotControlPlaneRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Api(error) => write!(f, "control-plane API error {:?}: {}", error.error_code, error.message),
+            Self::Transport(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for HoneypotControlPlaneRequestError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Api(_) => None,
+            Self::Transport(error) => Some(error.as_ref()),
+        }
     }
 }
 
@@ -1340,25 +1421,40 @@ impl HoneypotControlPlaneClient {
         &self.endpoint
     }
 
-    pub async fn acquire_vm(&self, request: &AcquireVmRequest) -> anyhow::Result<AcquireVmResponse> {
+    pub async fn acquire_vm(
+        &self,
+        request: &AcquireVmRequest,
+    ) -> Result<AcquireVmResponse, HoneypotControlPlaneRequestError> {
         self.post_json("api/v1/vm/acquire", request).await
     }
 
-    pub async fn release_vm(&self, vm_lease_id: &str, request: &ReleaseVmRequest) -> anyhow::Result<ReleaseVmResponse> {
+    pub async fn release_vm(
+        &self,
+        vm_lease_id: &str,
+        request: &ReleaseVmRequest,
+    ) -> Result<ReleaseVmResponse, HoneypotControlPlaneRequestError> {
         self.post_json(&format!("api/v1/vm/{vm_lease_id}/release"), request)
             .await
     }
 
-    pub async fn reset_vm(&self, vm_lease_id: &str, request: &ResetVmRequest) -> anyhow::Result<ResetVmResponse> {
+    pub async fn reset_vm(
+        &self,
+        vm_lease_id: &str,
+        request: &ResetVmRequest,
+    ) -> Result<ResetVmResponse, HoneypotControlPlaneRequestError> {
         self.post_json(&format!("api/v1/vm/{vm_lease_id}/reset"), request).await
     }
 
-    pub async fn recycle_vm(&self, vm_lease_id: &str, request: &RecycleVmRequest) -> anyhow::Result<RecycleVmResponse> {
+    pub async fn recycle_vm(
+        &self,
+        vm_lease_id: &str,
+        request: &RecycleVmRequest,
+    ) -> Result<RecycleVmResponse, HoneypotControlPlaneRequestError> {
         self.post_json(&format!("api/v1/vm/{vm_lease_id}/recycle"), request)
             .await
     }
 
-    pub async fn health(&self, request: &HealthRequest) -> anyhow::Result<HealthResponse> {
+    pub async fn health(&self, request: &HealthRequest) -> Result<HealthResponse, HoneypotControlPlaneRequestError> {
         self.get_json("api/v1/health", request).await
     }
 
@@ -1366,58 +1462,148 @@ impl HoneypotControlPlaneClient {
         &self,
         vm_lease_id: &str,
         request: &StreamEndpointRequest,
-    ) -> anyhow::Result<StreamEndpointResponse> {
+    ) -> Result<StreamEndpointResponse, HoneypotControlPlaneRequestError> {
         self.get_json(&format!("api/v1/vm/{vm_lease_id}/stream"), request).await
     }
 
-    async fn post_json<Request, Response>(&self, path: &str, request: &Request) -> anyhow::Result<Response>
+    async fn post_json<Request, Response>(
+        &self,
+        path: &str,
+        request: &Request,
+    ) -> Result<Response, HoneypotControlPlaneRequestError>
     where
         Request: serde::Serialize + ?Sized,
         Response: serde::de::DeserializeOwned,
     {
         let response = self
             .client
-            .post(self.url(path)?)
+            .post(self.url(path).map_err(HoneypotControlPlaneRequestError::transport)?)
             .bearer_auth(&self.service_bearer_token)
             .json(request)
             .send()
             .await
-            .with_context(|| format!("send POST request to control-plane path {path}"))?
-            .error_for_status()
-            .with_context(|| format!("control-plane POST request failed for path {path}"))?;
+            .map_err(|error| {
+                HoneypotControlPlaneRequestError::transport(
+                    anyhow::Error::new(error).context(format!("send POST request to control-plane path {path}")),
+                )
+            })?;
 
-        response
-            .json::<Response>()
-            .await
-            .with_context(|| format!("decode control-plane POST response for path {path}"))
+        let response = ensure_control_plane_success("POST", path, response).await?;
+
+        response.json::<Response>().await.map_err(|error| {
+            HoneypotControlPlaneRequestError::transport(
+                anyhow::Error::new(error).context(format!("decode control-plane POST response for path {path}")),
+            )
+        })
     }
 
-    async fn get_json<Request, Response>(&self, path: &str, request: &Request) -> anyhow::Result<Response>
+    async fn get_json<Request, Response>(
+        &self,
+        path: &str,
+        request: &Request,
+    ) -> Result<Response, HoneypotControlPlaneRequestError>
     where
         Request: serde::Serialize + ?Sized,
         Response: serde::de::DeserializeOwned,
     {
         let response = self
             .client
-            .get(self.url(path)?)
+            .get(self.url(path).map_err(HoneypotControlPlaneRequestError::transport)?)
             .bearer_auth(&self.service_bearer_token)
             .query(request)
             .send()
             .await
-            .with_context(|| format!("send GET request to control-plane path {path}"))?
-            .error_for_status()
-            .with_context(|| format!("control-plane GET request failed for path {path}"))?;
+            .map_err(|error| {
+                HoneypotControlPlaneRequestError::transport(
+                    anyhow::Error::new(error).context(format!("send GET request to control-plane path {path}")),
+                )
+            })?;
 
-        response
-            .json::<Response>()
-            .await
-            .with_context(|| format!("decode control-plane GET response for path {path}"))
+        let response = ensure_control_plane_success("GET", path, response).await?;
+
+        response.json::<Response>().await.map_err(|error| {
+            HoneypotControlPlaneRequestError::transport(
+                anyhow::Error::new(error).context(format!("decode control-plane GET response for path {path}")),
+            )
+        })
     }
 
     fn url(&self, path: &str) -> anyhow::Result<url::Url> {
         self.endpoint
             .join(path)
             .with_context(|| format!("join control-plane endpoint {} with path {path}", self.endpoint))
+    }
+}
+
+async fn ensure_control_plane_success(
+    method: &str,
+    path: &str,
+    response: reqwest::Response,
+) -> Result<reqwest::Response, HoneypotControlPlaneRequestError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+
+    let body = response.bytes().await.map_err(|error| {
+        HoneypotControlPlaneRequestError::transport(
+            anyhow::Error::new(error).context(format!("read control-plane {method} error body for path {path}")),
+        )
+    })?;
+
+    match serde_json::from_slice::<ErrorResponse>(&body) {
+        Ok(error) => Err(HoneypotControlPlaneRequestError::api(error)),
+        Err(parse_error) => {
+            let body = String::from_utf8_lossy(&body).into_owned();
+            Err(HoneypotControlPlaneRequestError::transport(anyhow::anyhow!(
+                "control-plane {method} request failed for path {path} with {status}: {body} ({parse_error})"
+            )))
+        }
+    }
+}
+
+fn acquire_failure(reason: &HoneypotControlPlaneRequestError) -> (&'static str, TerminalOutcome) {
+    match reason.error_code() {
+        Some(ErrorCode::NoCapacity) => ("no_capacity", TerminalOutcome::NoLease),
+        Some(ErrorCode::HostUnavailable) => ("control_plane_host_unavailable", TerminalOutcome::NoLease),
+        Some(ErrorCode::BootTimeout) => ("boot_timeout", TerminalOutcome::BootTimeout),
+        _ => ("control_plane_acquire_failed", TerminalOutcome::NoLease),
+    }
+}
+
+fn release_failure(reason: &HoneypotControlPlaneRequestError) -> &'static str {
+    match reason.error_code() {
+        Some(ErrorCode::HostUnavailable) => "control_plane_unavailable_during_release",
+        Some(ErrorCode::LeaseNotFound) => "lease_not_found_during_release",
+        Some(ErrorCode::LeaseStateConflict) => "lease_state_conflict_during_release",
+        _ => "control_plane_release_failed",
+    }
+}
+
+fn recycle_failure(reason: &HoneypotControlPlaneRequestError) -> &'static str {
+    match reason.error_code() {
+        Some(ErrorCode::RecycleFailed) => "recycle_failed",
+        Some(ErrorCode::HostUnavailable) => "control_plane_unavailable_during_recycle",
+        Some(ErrorCode::Quarantined) => "recycle_quarantined",
+        _ => "control_plane_recycle_failed",
+    }
+}
+
+fn stream_failure(reason: &HoneypotControlPlaneRequestError) -> (&'static str, ErrorCode, bool) {
+    match reason {
+        HoneypotControlPlaneRequestError::Api(error) => match error.error_code {
+            ErrorCode::StreamUnavailable => ("stream_unavailable", ErrorCode::StreamUnavailable, error.retryable),
+            ErrorCode::HostUnavailable => (
+                "control_plane_stream_host_unavailable",
+                ErrorCode::HostUnavailable,
+                error.retryable,
+            ),
+            ErrorCode::BootTimeout => ("boot_timeout", ErrorCode::BootTimeout, error.retryable),
+            other => ("control_plane_stream_failed", other, error.retryable),
+        },
+        HoneypotControlPlaneRequestError::Transport(_) => {
+            ("control_plane_stream_endpoint_failed", ErrorCode::HostUnavailable, true)
+        }
     }
 }
 
@@ -1492,7 +1678,9 @@ mod tests {
 
     use axum::extract::{Path, Query, State};
     use axum::http::HeaderMap;
+    use axum::http::StatusCode;
     use axum::http::header::AUTHORIZATION;
+    use axum::response::{IntoResponse, Response};
     use axum::{
         Json, Router,
         routing::{get, post},
@@ -1502,6 +1690,7 @@ mod tests {
         RecycleState, RecycleVmRequest, RecycleVmResponse, ReleaseState, ReleaseVmRequest, ReleaseVmResponse,
         ServiceState, StreamEndpointRequest, StreamEndpointResponse,
     };
+    use honeypot_contracts::error::{ErrorCode, ErrorResponse};
     use honeypot_contracts::events::{EventPayload, SessionState, StreamState, TerminalOutcome};
     use honeypot_contracts::stream::StreamTransport;
     use parking_lot::Mutex;
@@ -1511,7 +1700,7 @@ mod tests {
 
     use super::{
         HoneypotBackendCredentialResolver, HoneypotControlPlaneClient, HoneypotEventJournal, HoneypotFrontendRuntime,
-        HoneypotKillSwitchRuntime, HoneypotRuntime, HoneypotStreamRuntime,
+        HoneypotKillSwitchRuntime, HoneypotRuntime, HoneypotStreamError, HoneypotStreamRuntime,
     };
     use crate::config::{
         HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotKillSwitchConf,
@@ -1550,6 +1739,28 @@ mod tests {
 
     fn unique_temp_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("dgw-honeypot-{name}-{}", Uuid::new_v4()))
+    }
+
+    fn control_plane_test_error_status(error_code: ErrorCode) -> StatusCode {
+        match error_code {
+            ErrorCode::AuthFailed | ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+            ErrorCode::Forbidden => StatusCode::FORBIDDEN,
+            ErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
+            ErrorCode::LeaseNotFound => StatusCode::NOT_FOUND,
+            ErrorCode::LeaseConflict | ErrorCode::LeaseStateConflict | ErrorCode::Quarantined => StatusCode::CONFLICT,
+            ErrorCode::NoCapacity
+            | ErrorCode::ImageUntrusted
+            | ErrorCode::HostUnavailable
+            | ErrorCode::BootTimeout
+            | ErrorCode::ResetFailed
+            | ErrorCode::RecycleFailed
+            | ErrorCode::StreamUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ErrorCode::CursorExpired => StatusCode::CONFLICT,
+        }
+    }
+
+    fn test_error_response(error_code: ErrorCode, message: &str, retryable: bool) -> ErrorResponse {
+        ErrorResponse::new(format!("corr-test-{error_code:?}"), error_code, message, retryable)
     }
 
     #[tokio::test]
@@ -1915,6 +2126,239 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_session_started_maps_no_capacity_to_no_lease_and_degraded_state() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+        harness
+            .state
+            .set_acquire_error(ErrorCode::NoCapacity, "no capacity", false);
+
+        let error = harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect_err("no-capacity acquire should fail");
+        assert!(format!("{error:#}").contains("acquire honeypot vm"));
+
+        let replay = harness.runtime.stream_from_cursor("0").expect("valid cursor").0;
+        assert_eq!(replay.len(), 3);
+        assert!(matches!(replay[0].payload, EventPayload::SessionStarted { .. }));
+        assert!(matches!(
+            &replay[1].payload,
+            EventPayload::ProxyStatusDegraded { reason_code, .. } if reason_code == "no_capacity"
+        ));
+        assert!(matches!(
+            &replay[2].payload,
+            EventPayload::SessionEnded {
+                terminal_outcome: TerminalOutcome::NoLease,
+                disconnect_reason,
+                recycle_expected: false,
+                ..
+            } if disconnect_reason == "no_capacity"
+        ));
+
+        let patch = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("session metadata after no-capacity failure");
+        assert_eq!(patch.state, Some(SessionState::Disconnected));
+        assert_eq!(
+            patch.terminal.as_ref().map(|terminal| terminal.outcome),
+            Some(TerminalOutcome::NoLease)
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn record_session_started_maps_boot_timeout_to_boot_timeout_terminal_state() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+        harness
+            .state
+            .set_acquire_error(ErrorCode::BootTimeout, "boot timed out", true);
+
+        let error = harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect_err("boot-timeout acquire should fail");
+        assert!(format!("{error:#}").contains("acquire honeypot vm"));
+
+        let replay = harness.runtime.stream_from_cursor("0").expect("valid cursor").0;
+        assert_eq!(replay.len(), 3);
+        assert!(matches!(
+            &replay[1].payload,
+            EventPayload::ProxyStatusDegraded { reason_code, .. } if reason_code == "boot_timeout"
+        ));
+        assert!(matches!(
+            &replay[2].payload,
+            EventPayload::SessionEnded {
+                terminal_outcome: TerminalOutcome::BootTimeout,
+                disconnect_reason,
+                recycle_expected: false,
+                ..
+            } if disconnect_reason == "boot_timeout"
+        ));
+
+        let patch = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("session metadata after boot-timeout failure");
+        assert_eq!(patch.state, Some(SessionState::Disconnected));
+        assert_eq!(
+            patch.terminal.as_ref().map(|terminal| terminal.outcome),
+            Some(TerminalOutcome::BootTimeout)
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn record_session_ended_returns_ok_when_release_fails_and_degrades() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+        harness
+            .state
+            .set_release_error(ErrorCode::HostUnavailable, "host unavailable", true);
+
+        harness
+            .runtime
+            .record_session_ended(&session, None)
+            .await
+            .expect("release failure should not fail proxy teardown");
+
+        assert!(harness.state.released.lock().is_empty());
+        assert!(harness.state.recycled.lock().is_empty());
+
+        let replay = harness.runtime.stream_from_cursor("0").expect("valid cursor").0;
+        assert_eq!(replay.len(), 4);
+        assert!(matches!(
+            &replay[3].payload,
+            EventPayload::ProxyStatusDegraded { reason_code, .. }
+                if reason_code == "control_plane_unavailable_during_release"
+        ));
+
+        let patch = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("session metadata after release failure");
+        assert_eq!(patch.state, Some(SessionState::Disconnected));
+        assert_eq!(
+            patch.terminal.as_ref().map(|terminal| terminal.outcome),
+            Some(TerminalOutcome::Disconnected)
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn record_session_ended_keeps_recycle_requested_state_when_recycle_fails() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+        harness
+            .state
+            .set_recycle_error(ErrorCode::RecycleFailed, "recycle failed", true);
+
+        harness
+            .runtime
+            .record_session_ended(&session, None)
+            .await
+            .expect("recycle failure should not fail proxy teardown");
+
+        assert_eq!(
+            harness.state.released.lock().as_slice(),
+            &[format!("lease-{}", session.id)]
+        );
+        assert!(harness.state.recycled.lock().is_empty());
+
+        let replay = harness.runtime.stream_from_cursor("0").expect("valid cursor").0;
+        assert_eq!(replay.len(), 5);
+        assert!(matches!(
+            replay[3].payload,
+            EventPayload::SessionRecycleRequested { .. }
+        ));
+        assert!(matches!(
+            &replay[4].payload,
+            EventPayload::ProxyStatusDegraded { reason_code, .. } if reason_code == "recycle_failed"
+        ));
+
+        let patch = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("session metadata after recycle failure");
+        assert_eq!(patch.state, Some(SessionState::RecycleRequested));
+        assert_eq!(
+            patch.terminal.as_ref().map(|terminal| terminal.outcome),
+            Some(TerminalOutcome::Disconnected)
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn issue_stream_token_marks_stream_failed_when_control_plane_stream_is_unavailable() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+        harness
+            .state
+            .set_stream_error(ErrorCode::StreamUnavailable, "stream unavailable", true);
+
+        let error = harness
+            .runtime
+            .issue_stream_token(&session)
+            .await
+            .expect_err("stream-unavailable control-plane response should fail token issue");
+        assert!(matches!(error, HoneypotStreamError::StreamUnavailable));
+
+        let replay = harness.runtime.stream_from_cursor("0").expect("valid cursor").0;
+        assert_eq!(replay.len(), 4);
+        assert!(matches!(
+            &replay[2].payload,
+            EventPayload::ProxyStatusDegraded { reason_code, .. } if reason_code == "stream_unavailable"
+        ));
+        assert!(matches!(
+            &replay[3].payload,
+            EventPayload::SessionStreamFailed {
+                failure_code: ErrorCode::StreamUnavailable,
+                retryable: true,
+                stream_state: StreamState::Failed,
+                ..
+            }
+        ));
+
+        let patch = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("session metadata after stream failure");
+        assert_eq!(patch.state, Some(SessionState::Assigned));
+        assert_eq!(
+            patch.stream.as_ref().map(|stream| stream.state),
+            Some(StreamState::Failed)
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn session_kill_emits_session_killed_before_recycle() {
         let harness = test_runtime_with_control_plane().await;
         let session = test_session();
@@ -2230,8 +2674,13 @@ mod tests {
         State(state): State<TestControlPlaneState>,
         headers: HeaderMap,
         Json(request): Json<AcquireVmRequest>,
-    ) -> Json<AcquireVmResponse> {
+    ) -> Response {
         assert_service_token(&headers);
+
+        if let Some(error) = state.acquire_error.lock().clone() {
+            return (control_plane_test_error_status(error.error_code), Json(error)).into_response();
+        }
+
         state.acquired.lock().push(request.session_id.clone());
 
         Json(AcquireVmResponse {
@@ -2246,6 +2695,7 @@ mod tests {
             backend_credential_ref: request.backend_credential_ref,
             attestation_ref: "attestation:test".to_owned(),
         })
+        .into_response()
     }
 
     async fn test_release_handler(
@@ -2253,8 +2703,13 @@ mod tests {
         headers: HeaderMap,
         Path(vm_lease_id): Path<String>,
         Json(_request): Json<ReleaseVmRequest>,
-    ) -> Json<ReleaseVmResponse> {
+    ) -> Response {
         assert_service_token(&headers);
+
+        if let Some(error) = state.release_error.lock().clone() {
+            return (control_plane_test_error_status(error.error_code), Json(error)).into_response();
+        }
+
         state.released.lock().push(vm_lease_id.clone());
 
         Json(ReleaseVmResponse {
@@ -2264,6 +2719,7 @@ mod tests {
             release_state: ReleaseState::Recycling,
             recycle_required: true,
         })
+        .into_response()
     }
 
     async fn test_recycle_handler(
@@ -2271,8 +2727,13 @@ mod tests {
         headers: HeaderMap,
         Path(vm_lease_id): Path<String>,
         Json(_request): Json<RecycleVmRequest>,
-    ) -> Json<RecycleVmResponse> {
+    ) -> Response {
         assert_service_token(&headers);
+
+        if let Some(error) = state.recycle_error.lock().clone() {
+            return (control_plane_test_error_status(error.error_code), Json(error)).into_response();
+        }
+
         state.recycled.lock().push(vm_lease_id.clone());
 
         Json(RecycleVmResponse {
@@ -2283,14 +2744,21 @@ mod tests {
             pool_state: PoolState::Ready,
             quarantined: false,
         })
+        .into_response()
     }
 
     async fn test_stream_handler(
+        State(state): State<TestControlPlaneState>,
         headers: HeaderMap,
         Path(vm_lease_id): Path<String>,
         Query(_request): Query<StreamEndpointRequest>,
-    ) -> Json<StreamEndpointResponse> {
+    ) -> Response {
         assert_service_token(&headers);
+
+        if let Some(error) = state.stream_error.lock().clone() {
+            return (control_plane_test_error_status(error.error_code), Json(error)).into_response();
+        }
+
         Json(StreamEndpointResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: format!("corr-stream-{vm_lease_id}"),
@@ -2300,6 +2768,7 @@ mod tests {
             source_ready: true,
             expires_at: "2030-01-01T00:00:00Z".to_owned(),
         })
+        .into_response()
     }
 
     #[derive(Clone, Default)]
@@ -2307,6 +2776,28 @@ mod tests {
         acquired: Arc<Mutex<Vec<String>>>,
         released: Arc<Mutex<Vec<String>>>,
         recycled: Arc<Mutex<Vec<String>>>,
+        acquire_error: Arc<Mutex<Option<ErrorResponse>>>,
+        release_error: Arc<Mutex<Option<ErrorResponse>>>,
+        recycle_error: Arc<Mutex<Option<ErrorResponse>>>,
+        stream_error: Arc<Mutex<Option<ErrorResponse>>>,
+    }
+
+    impl TestControlPlaneState {
+        fn set_acquire_error(&self, error_code: ErrorCode, message: &str, retryable: bool) {
+            *self.acquire_error.lock() = Some(test_error_response(error_code, message, retryable));
+        }
+
+        fn set_release_error(&self, error_code: ErrorCode, message: &str, retryable: bool) {
+            *self.release_error.lock() = Some(test_error_response(error_code, message, retryable));
+        }
+
+        fn set_recycle_error(&self, error_code: ErrorCode, message: &str, retryable: bool) {
+            *self.recycle_error.lock() = Some(test_error_response(error_code, message, retryable));
+        }
+
+        fn set_stream_error(&self, error_code: ErrorCode, message: &str, retryable: bool) {
+            *self.stream_error.lock() = Some(test_error_response(error_code, message, retryable));
+        }
     }
 
     struct TestRuntimeHarness {

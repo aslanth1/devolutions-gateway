@@ -464,7 +464,7 @@ Pass when: the operator can quarantine a broken or suspicious session or guest w
 - [x] Add kill-switch controls.
 Pass when: the operator can revoke one session or all active sessions and the proxy tears down credential mappings and VM leases cleanly.
 
-- [ ] Add partition and timeout handling between proxy and control plane.
+- [x] Add partition and timeout handling between proxy and control plane.
 Pass when: no-lease, boot-timeout, recycle-failure, and control-plane-unavailable states are visible and recoverable.
 
 - [ ] Add proxy container health and readiness checks.

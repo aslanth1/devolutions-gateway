@@ -2,16 +2,18 @@ use std::convert::Infallible;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::StreamExt as _;
+use honeypot_contracts::error::ErrorCode;
 use serde::Deserialize;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
 use crate::DgwState;
 use crate::extract::{HoneypotStreamReadScope, HoneypotWatchScope};
-use crate::honeypot::{HoneypotCursorError, HoneypotMode, HoneypotStreamError};
-use crate::http::HttpError;
+use crate::honeypot::{HoneypotControlPlaneRequestError, HoneypotCursorError, HoneypotMode, HoneypotStreamError};
+use crate::http::{HttpError, HttpErrorBuilder};
 
 pub fn make_router<S>(state: DgwState) -> axum::Router<S> {
     let Some(runtime) = state.honeypot.runtime() else {
@@ -128,10 +130,39 @@ fn map_stream_error(error: HoneypotStreamError) -> HttpError {
         HoneypotStreamError::ControlPlaneUnavailable => {
             HttpError::bad_gateway().msg("honeypot control plane is unavailable")
         }
-        HoneypotStreamError::ControlPlane(error) => HttpError::bad_gateway()
+        HoneypotStreamError::ControlPlane(error) => map_control_plane_stream_error(error),
+        HoneypotStreamError::StreamUnavailable => {
+            HttpErrorBuilder::new(StatusCode::SERVICE_UNAVAILABLE).msg("honeypot stream is unavailable")
+        }
+    }
+}
+
+fn map_control_plane_stream_error(error: HoneypotControlPlaneRequestError) -> HttpError {
+    match error {
+        HoneypotControlPlaneRequestError::Api(error_response) => {
+            let status = match error_response.error_code {
+                ErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
+                ErrorCode::LeaseNotFound => StatusCode::NOT_FOUND,
+                ErrorCode::LeaseConflict | ErrorCode::LeaseStateConflict | ErrorCode::Quarantined => {
+                    StatusCode::CONFLICT
+                }
+                ErrorCode::NoCapacity
+                | ErrorCode::HostUnavailable
+                | ErrorCode::BootTimeout
+                | ErrorCode::ResetFailed
+                | ErrorCode::RecycleFailed
+                | ErrorCode::StreamUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::AuthFailed | ErrorCode::Unauthorized | ErrorCode::Forbidden => StatusCode::BAD_GATEWAY,
+                ErrorCode::ImageUntrusted | ErrorCode::CursorExpired => StatusCode::BAD_GATEWAY,
+            };
+
+            HttpErrorBuilder::new(status)
+                .with_msg("honeypot control plane request failed")
+                .build(HoneypotControlPlaneRequestError::Api(error_response))
+        }
+        HoneypotControlPlaneRequestError::Transport(error) => HttpError::bad_gateway()
             .with_msg("honeypot control plane request failed")
-            .build(error),
-        HoneypotStreamError::StreamUnavailable => HttpError::bad_gateway().msg("honeypot stream is unavailable"),
+            .build(HoneypotControlPlaneRequestError::Transport(error)),
     }
 }
 
@@ -155,5 +186,56 @@ fn event_kind_name(payload: &honeypot_contracts::events::EventPayload) -> &'stat
         EventPayload::HostRecycled { .. } => "host.recycled",
         EventPayload::SessionStreamFailed { .. } => "session.stream.failed",
         EventPayload::ProxyStatusDegraded { .. } => "proxy.status.degraded",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+    use honeypot_contracts::error::{ErrorCode, ErrorResponse};
+
+    use super::{HoneypotControlPlaneRequestError, HoneypotStreamError, map_stream_error};
+
+    fn test_api_error(error_code: ErrorCode) -> HoneypotControlPlaneRequestError {
+        HoneypotControlPlaneRequestError::Api(ErrorResponse::new(
+            "corr-test",
+            error_code,
+            "test control-plane error",
+            true,
+        ))
+    }
+
+    #[test]
+    fn map_stream_error_maps_stream_unavailable_to_service_unavailable() {
+        let error = map_stream_error(HoneypotStreamError::StreamUnavailable);
+
+        assert_eq!(error.code, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn map_stream_error_maps_invalid_request_to_bad_request() {
+        let error = map_stream_error(HoneypotStreamError::ControlPlane(test_api_error(
+            ErrorCode::InvalidRequest,
+        )));
+
+        assert_eq!(error.code, StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn map_stream_error_maps_missing_lease_to_not_found() {
+        let error = map_stream_error(HoneypotStreamError::ControlPlane(test_api_error(
+            ErrorCode::LeaseNotFound,
+        )));
+
+        assert_eq!(error.code, StatusCode::NOT_FOUND);
+    }
+
+    #[test]
+    fn map_stream_error_maps_stream_contract_failures_to_service_unavailable() {
+        let error = map_stream_error(HoneypotStreamError::ControlPlane(test_api_error(
+            ErrorCode::StreamUnavailable,
+        )));
+
+        assert_eq!(error.code, StatusCode::SERVICE_UNAVAILABLE);
     }
 }
