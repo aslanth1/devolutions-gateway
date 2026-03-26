@@ -136,6 +136,17 @@ where
                 // If a credential mapping has been pushed, we automatically switch to this mode.
                 // Otherwise, we continue the generic procedure.
                 if is_rdp {
+                    sessions
+                        .honeypot()
+                        .prepare_rdp_session(
+                            info.id,
+                            info.application_protocol.clone(),
+                            info.time_to_live,
+                            token,
+                            client_addr,
+                        )
+                        .await?;
+
                     let token_id = token::extract_jti(token).context("failed to extract jti claim from token")?;
 
                     if let Some(entry) = credential_store.get(token_id) {
@@ -143,14 +154,15 @@ where
 
                         // NOTE: In the future, we could imagine performing proxy-based recording as well using RdpProxy.
                         if entry.mapping.is_some() {
-                            return crate::rdp_proxy::RdpProxy::builder()
+                            let sessions_for_proxy = sessions.clone();
+                            let result = crate::rdp_proxy::RdpProxy::builder()
                                 .conf(conf)
                                 .session_info(info)
                                 .client_addr(client_addr)
                                 .client_stream(client_stream)
                                 .server_addr(server_addr)
                                 .server_stream(server_stream)
-                                .sessions(sessions)
+                                .sessions(sessions_for_proxy)
                                 .subscriber_tx(subscriber_tx)
                                 .credential_entry(entry)
                                 .client_stream_leftover_bytes(leftover_bytes)
@@ -158,8 +170,13 @@ where
                                 .disconnect_interest(disconnect_interest)
                                 .build()
                                 .run()
-                                .await
-                                .context("encountered a failure during RDP proxying (credential injection)");
+                                .await;
+
+                            if result.is_err() {
+                                let _ = sessions.honeypot().abort_prepared_session(claims.jet_aid).await;
+                            }
+
+                            return result.context("encountered a failure during RDP proxying (credential injection)");
                         }
                     }
                 }

@@ -246,13 +246,14 @@ impl Tasks {
 
 async fn spawn_tasks(conf_handle: ConfHandle) -> anyhow::Result<Tasks> {
     let conf = conf_handle.get_conf();
-    let honeypot = devolutions_gateway::honeypot::HoneypotMode::from_conf(&conf)?;
-
     let mut tasks = Tasks::new();
 
     let token_cache = devolutions_gateway::token::new_token_cache().pipe(Arc::new);
 
     let jrl = load_jrl_from_disk(&conf)?;
+
+    let credential_store = CredentialStoreHandle::new();
+    let honeypot = devolutions_gateway::honeypot::HoneypotMode::from_conf(&conf, credential_store.clone())?;
 
     let (session_manager_handle, session_manager_rx) = session_manager_channel(honeypot.clone());
 
@@ -268,8 +269,6 @@ async fn spawn_tasks(conf_handle: ConfHandle) -> anyhow::Result<Tasks> {
         devolutions_gateway::traffic_audit::TrafficAuditManagerTask::init(conf.traffic_audit_database.as_str())
             .await
             .context("failed to initialize traffic audit manager")?;
-
-    let credential_store = CredentialStoreHandle::new();
 
     let filesystem_monitor_config_cache = devolutions_gateway::api::monitoring::FilesystemConfigCache::new(
         config::get_data_dir().join("monitors_cache.json"),

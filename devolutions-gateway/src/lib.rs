@@ -80,7 +80,8 @@ impl DgwState {
     pub fn mock(json_config: &str) -> anyhow::Result<(Self, MockHandles)> {
         let conf_handle = config::ConfHandle::mock(json_config)?;
         let conf = conf_handle.get_conf();
-        let honeypot = honeypot::HoneypotMode::from_conf(&conf)?;
+        let credential_store = credential::CredentialStoreHandle::new();
+        let honeypot = honeypot::HoneypotMode::from_conf(&conf, credential_store.clone())?;
         let token_cache = Arc::new(token::new_token_cache());
         let jrl = Arc::new(parking_lot::Mutex::new(token::JrlTokenClaims::default()));
         let (session_manager_handle, session_manager_rx) = session::session_manager_channel(honeypot.clone());
@@ -89,7 +90,6 @@ impl DgwState {
         let (shutdown_handle, shutdown_signal) = devolutions_gateway_task::ShutdownHandle::new();
         let (job_queue_handle, job_queue_rx) = job_queue::JobQueueHandle::new();
         let (traffic_audit_handle, traffic_audit_rx) = traffic_audit::TrafficAuditHandle::new();
-        let credential_store = credential::CredentialStoreHandle::new();
         let monitoring_state = Arc::new(network_monitor::State::new(Arc::new(MockMonitorsCache))?);
 
         let state = Self {

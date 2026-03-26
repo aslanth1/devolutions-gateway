@@ -541,11 +541,35 @@ pub async fn handle(
         .proxy_auth
         .as_deref()
         .context("missing token in RDCleanPath PDU")?;
+    let token = token.to_owned();
+
+    if sessions.honeypot().is_enabled() {
+        let disconnected_info = if let Ok(session_id) = crate::token::extract_session_id(&token) {
+            sessions.get_disconnected_info(session_id).await.ok().flatten()
+        } else {
+            None
+        };
+
+        if let Ok(claims) = authorize(
+            client_addr,
+            &token,
+            &conf,
+            token_cache,
+            jrl,
+            active_recordings,
+            disconnected_info,
+        ) {
+            sessions
+                .honeypot()
+                .prepare_rdp_session(claims.jet_aid, claims.jet_ap, claims.jet_ttl, &token, client_addr)
+                .await?;
+        }
+    }
 
     // If a credential mapping has been pushed, we automatically switch to
     // proxy-based credential injection mode. Otherwise, we continue the usual
     // clean path procedure.
-    if let Some(entry) = crate::token::extract_jti(token)
+    if let Some(entry) = crate::token::extract_jti(&token)
         .ok()
         .and_then(|token_id| credential_store.get(token_id))
         .filter(|entry| entry.mapping.is_some())
@@ -553,19 +577,28 @@ pub async fn handle(
         anyhow::ensure!(token == entry.token, "token mismatch");
         debug!("Switching to RdpProxy for credential injection (WebSocket)");
 
-        return handle_with_credential_injection(
+        let sessions_for_proxy = sessions.clone();
+        let result = handle_with_credential_injection(
             client_stream,
             client_addr,
             conf,
             token_cache,
             jrl,
-            sessions,
+            sessions_for_proxy,
             subscriber_tx,
             active_recordings,
             cleanpath_pdu,
             entry,
         )
         .await;
+
+        if result.is_err()
+            && let Ok(session_id) = crate::token::extract_session_id(&token)
+        {
+            let _ = sessions.honeypot().abort_prepared_session(session_id).await;
+        }
+
+        return result;
     }
 
     trace!("Processing RDCleanPath");
