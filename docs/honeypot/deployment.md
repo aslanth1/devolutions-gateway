@@ -43,6 +43,7 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 ## Runtime Config Mounts
 
 - `control-plane` mounts `honeypot/docker/config/control-plane/config.toml` at `/etc/honeypot/control-plane/config.toml` as read-only and resolves `auth.proxy_verifier_public_key_pem_file` from the control-plane secret mount rather than from checked-in PEM content.
+- The checked-in `control-plane` runtime config also pins `runtime.qemu.binary_path`, `machine_type`, `cpu_model`, `vcpu_count`, `memory_mib`, and the user-mode network id so the launch plan is derived from mounted config rather than hidden defaults.
 - `proxy` mounts `honeypot/docker/config/proxy/gateway.json` at `/etc/honeypot/proxy/gateway.json` as read-only, uses `DGATEWAY_CONFIG_PATH=/etc/honeypot/proxy` from its env file so the existing Gateway loader reads the mounted `gateway.json`, and resolves `Honeypot.ControlPlane.ServiceBearerTokenFile` from the proxy secret mount rather than from checked-in config content.
 - `frontend` mounts `honeypot/docker/config/frontend/config.toml` at `/etc/honeypot/frontend/config.toml` as read-only and uses `HONEYPOT_FRONTEND_CONFIG_PATH=/etc/honeypot/frontend/config.toml` from its env file so the frontend binary reads the mounted config explicitly.
 - Config mount paths are restart-safe and are the only supported path for service-specific runtime configuration.
@@ -86,6 +87,7 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 ## QEMU Runtime Contract
 
 - `control-plane` launches `qemu-system-x86_64` directly from the container image and must not delegate launch, reset, or recycle to Bash, Python, libvirt, or unpublished host wrappers.
+- The canonical container-path for that binary is `/usr/bin/qemu-system-x86_64`, and the runtime image must include it before the service may report ready.
 - Each leased VM gets a unique `vm_lease_id`, a dedicated overlay path under `/var/lib/honeypot/leases/<lease_id>/overlay.qcow2`, a dedicated QMP socket under `/run/honeypot/qmp/<lease_id>.sock`, and an optional QGA socket under `/run/honeypot/qga/<lease_id>.sock`.
 - Any runtime temp files, display artifacts, or per-lease metadata must stay inside control-plane-owned paths tied to `vm_lease_id`.
 - A lease is reusable only after QEMU exit is confirmed, sockets are removed, the overlay and tempdirs are deleted, and the base-image chain still passes integrity and provenance checks.

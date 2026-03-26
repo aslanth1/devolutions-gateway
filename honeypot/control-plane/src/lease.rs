@@ -12,7 +12,8 @@ use honeypot_contracts::control_plane::{
 use honeypot_contracts::error::ErrorCode;
 use serde::{Deserialize, Serialize};
 
-use crate::config::PathConfig;
+use crate::config::{ControlPlaneConfig, PathConfig};
+use crate::qemu::QemuLaunchPlan;
 
 const DEFAULT_GUEST_RDP_ADDR: &str = "127.0.0.1";
 const DEFAULT_GUEST_RDP_PORT: u16 = 3389;
@@ -43,7 +44,7 @@ impl LeaseRegistry {
 
     pub(crate) fn acquire(
         &mut self,
-        paths: &PathConfig,
+        config: &ControlPlaneConfig,
         request: &AcquireVmRequest,
     ) -> Result<AcquireVmResponse, LeaseError> {
         request
@@ -57,7 +58,7 @@ impl LeaseRegistry {
             )));
         }
 
-        let trusted_images = trusted_images(paths).map_err(LeaseError::host_unavailable)?;
+        let trusted_images = trusted_images(&config.paths).map_err(LeaseError::host_unavailable)?;
         if trusted_images.is_empty() {
             return Err(LeaseError::no_capacity("no trusted image manifests are available"));
         }
@@ -65,16 +66,44 @@ impl LeaseRegistry {
         let busy_vm_names = self
             .leases
             .values()
-            .map(|lease| lease.vm_name.as_str())
+            .map(|lease| lease.vm_name.clone())
             .collect::<HashSet<_>>();
-
-        let trusted_image = trusted_images
-            .into_iter()
-            .find(|image| !busy_vm_names.contains(image.vm_name.as_str()))
-            .ok_or_else(|| LeaseError::no_capacity("all trusted images are currently assigned"))?;
 
         let vm_lease_id = self.next_lease_id();
         let lease_expires_at = now_plus_secs(u64::from(request.requested_ready_timeout_secs).max(60));
+        let mut selected = None;
+        let mut last_launch_error = None;
+
+        for trusted_image in trusted_images {
+            if busy_vm_names.contains(&trusted_image.vm_name) {
+                continue;
+            }
+
+            match QemuLaunchPlan::build(
+                config,
+                &vm_lease_id,
+                &trusted_image.vm_name,
+                &trusted_image.base_image_path,
+                trusted_image.guest_rdp_port,
+            ) {
+                Ok(launch_plan) => {
+                    selected = Some((trusted_image, launch_plan));
+                    break;
+                }
+                Err(error) => last_launch_error = Some(error),
+            }
+        }
+
+        let (trusted_image, launch_plan) = match selected {
+            Some(selected) => selected,
+            None => {
+                if let Some(error) = last_launch_error {
+                    return Err(LeaseError::host_unavailable(error));
+                }
+
+                return Err(LeaseError::no_capacity("all trusted images are currently assigned"));
+            }
+        };
 
         let snapshot = LeaseSnapshot {
             vm_lease_id: vm_lease_id.clone(),
@@ -86,9 +115,10 @@ impl LeaseRegistry {
             attestation_ref: trusted_image.attestation_ref,
             lease_state: LeaseState::Assigned,
             capture_source_ref: format!("gateway-recording://{}", trusted_image.vm_name),
+            launch_plan: LeaseLaunchPlanSnapshot::from(launch_plan),
         };
 
-        persist_active_snapshot(paths, &snapshot).map_err(LeaseError::host_unavailable)?;
+        persist_active_snapshot(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
         self.leases.insert(vm_lease_id.clone(), snapshot.clone());
 
         Ok(AcquireVmResponse {
@@ -107,7 +137,7 @@ impl LeaseRegistry {
 
     pub(crate) fn release(
         &mut self,
-        paths: &PathConfig,
+        config: &ControlPlaneConfig,
         vm_lease_id: &str,
         request: &ReleaseVmRequest,
     ) -> Result<ReleaseVmResponse, LeaseError> {
@@ -117,7 +147,7 @@ impl LeaseRegistry {
 
         let snapshot = self.require_assigned_lease(vm_lease_id, &request.session_id)?;
         snapshot.lease_state = LeaseState::Releasing;
-        persist_active_snapshot(paths, snapshot).map_err(LeaseError::host_unavailable)?;
+        persist_active_snapshot(&config.paths, snapshot).map_err(LeaseError::host_unavailable)?;
 
         Ok(ReleaseVmResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -130,7 +160,7 @@ impl LeaseRegistry {
 
     pub(crate) fn reset(
         &mut self,
-        paths: &PathConfig,
+        config: &ControlPlaneConfig,
         vm_lease_id: &str,
         request: &ResetVmRequest,
     ) -> Result<ResetVmResponse, LeaseError> {
@@ -144,7 +174,7 @@ impl LeaseRegistry {
             let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;
             let mut snapshot = snapshot;
             snapshot.lease_state = LeaseState::Quarantined;
-            move_snapshot_to_quarantine(paths, &snapshot).map_err(LeaseError::host_unavailable)?;
+            move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
 
             return Ok(ResetVmResponse {
                 schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -156,7 +186,7 @@ impl LeaseRegistry {
         }
 
         let snapshot = self.require_assigned_lease(vm_lease_id, &request.session_id)?;
-        persist_active_snapshot(paths, snapshot).map_err(LeaseError::host_unavailable)?;
+        persist_active_snapshot(&config.paths, snapshot).map_err(LeaseError::host_unavailable)?;
 
         Ok(ResetVmResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -169,7 +199,7 @@ impl LeaseRegistry {
 
     pub(crate) fn recycle(
         &mut self,
-        paths: &PathConfig,
+        config: &ControlPlaneConfig,
         vm_lease_id: &str,
         request: &RecycleVmRequest,
     ) -> Result<RecycleVmResponse, LeaseError> {
@@ -183,7 +213,7 @@ impl LeaseRegistry {
         if should_quarantine {
             let mut snapshot = snapshot;
             snapshot.lease_state = LeaseState::Quarantined;
-            move_snapshot_to_quarantine(paths, &snapshot).map_err(LeaseError::host_unavailable)?;
+            move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
 
             return Ok(RecycleVmResponse {
                 schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -195,7 +225,8 @@ impl LeaseRegistry {
             });
         }
 
-        remove_active_snapshot(paths, &snapshot.vm_lease_id).map_err(LeaseError::host_unavailable)?;
+        remove_active_snapshot(&config.paths, &snapshot.vm_lease_id).map_err(LeaseError::host_unavailable)?;
+        cleanup_runtime_artifacts(&snapshot).map_err(LeaseError::host_unavailable)?;
 
         Ok(RecycleVmResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -313,6 +344,34 @@ struct LeaseSnapshot {
     attestation_ref: String,
     lease_state: LeaseState,
     capture_source_ref: String,
+    launch_plan: LeaseLaunchPlanSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LeaseLaunchPlanSnapshot {
+    qemu_binary_path: PathBuf,
+    runtime_dir: PathBuf,
+    base_image_path: PathBuf,
+    overlay_path: PathBuf,
+    pid_file_path: PathBuf,
+    qmp_socket_path: PathBuf,
+    qga_socket_path: Option<PathBuf>,
+    argv: Vec<String>,
+}
+
+impl From<QemuLaunchPlan> for LeaseLaunchPlanSnapshot {
+    fn from(plan: QemuLaunchPlan) -> Self {
+        Self {
+            qemu_binary_path: plan.qemu_binary_path,
+            runtime_dir: plan.runtime_dir,
+            base_image_path: plan.base_image_path,
+            overlay_path: plan.overlay_path,
+            pid_file_path: plan.pid_file_path,
+            qmp_socket_path: plan.qmp_socket_path,
+            qga_socket_path: plan.qga_socket_path,
+            argv: plan.argv,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +379,19 @@ struct TrustedImage {
     vm_name: String,
     attestation_ref: String,
     guest_rdp_port: u16,
+    base_image_path: PathBuf,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TrustedImageManifestDocument {
+    #[serde(default)]
+    vm_name: Option<String>,
+    #[serde(default)]
+    attestation_ref: Option<String>,
+    #[serde(default)]
+    guest_rdp_port: Option<u16>,
+    #[serde(default)]
+    base_image_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +459,7 @@ fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedImage>> {
         .into_iter()
         .enumerate()
         .map(|(index, manifest_path)| {
+            let manifest = read_trusted_image_manifest(&manifest_path)?;
             let stem = manifest_path
                 .file_stem()
                 .and_then(|stem| stem.to_str())
@@ -394,9 +467,14 @@ fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedImage>> {
             let offset = u16::try_from(index).unwrap_or(0);
 
             Ok(TrustedImage {
-                vm_name: format!("honeypot-{stem}"),
-                attestation_ref: manifest_path.display().to_string(),
-                guest_rdp_port: DEFAULT_GUEST_RDP_PORT.saturating_add(offset),
+                vm_name: manifest.vm_name.unwrap_or_else(|| format!("honeypot-{stem}")),
+                attestation_ref: manifest
+                    .attestation_ref
+                    .unwrap_or_else(|| manifest_path.display().to_string()),
+                guest_rdp_port: manifest
+                    .guest_rdp_port
+                    .unwrap_or_else(|| DEFAULT_GUEST_RDP_PORT.saturating_add(offset)),
+                base_image_path: resolve_base_image_path(paths, &manifest_path, manifest.base_image_path),
             })
         })
         .collect()
@@ -426,6 +504,11 @@ fn read_snapshot(path: &Path) -> anyhow::Result<LeaseSnapshot> {
     serde_json::from_str(&data).with_context(|| format!("parse lease snapshot {}", path.display()))
 }
 
+fn read_trusted_image_manifest(path: &Path) -> anyhow::Result<TrustedImageManifestDocument> {
+    let data = fs::read_to_string(path).with_context(|| format!("read trusted image manifest {}", path.display()))?;
+    serde_json::from_str(&data).with_context(|| format!("parse trusted image manifest {}", path.display()))
+}
+
 fn persist_active_snapshot(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {
     let data = serde_json::to_vec_pretty(snapshot).context("serialize active lease snapshot")?;
     fs::write(active_snapshot_path(paths, &snapshot.vm_lease_id), data)
@@ -434,6 +517,7 @@ fn persist_active_snapshot(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyh
 
 fn move_snapshot_to_quarantine(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {
     remove_active_snapshot(paths, &snapshot.vm_lease_id)?;
+    move_runtime_artifacts_to_quarantine(paths, snapshot)?;
     let data = serde_json::to_vec_pretty(snapshot).context("serialize quarantined lease snapshot")?;
     fs::write(quarantine_snapshot_path(paths, &snapshot.vm_lease_id), data)
         .with_context(|| format!("write quarantined lease snapshot for {}", snapshot.vm_lease_id))
@@ -454,6 +538,79 @@ fn active_snapshot_path(paths: &PathConfig, vm_lease_id: &str) -> PathBuf {
 
 fn quarantine_snapshot_path(paths: &PathConfig, vm_lease_id: &str) -> PathBuf {
     paths.quarantine_store.join(format!("{vm_lease_id}.json"))
+}
+
+fn resolve_base_image_path(paths: &PathConfig, manifest_path: &Path, configured_path: Option<PathBuf>) -> PathBuf {
+    match configured_path {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => paths.image_store.join(path),
+        None => {
+            let stem = manifest_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("gold-image");
+            paths.image_store.join(format!("{stem}.qcow2"))
+        }
+    }
+}
+
+fn cleanup_runtime_artifacts(snapshot: &LeaseSnapshot) -> anyhow::Result<()> {
+    cleanup_runtime_socket(&snapshot.launch_plan.qmp_socket_path)?;
+
+    if let Some(qga_socket_path) = &snapshot.launch_plan.qga_socket_path {
+        cleanup_runtime_socket(qga_socket_path)?;
+    }
+
+    let pid_file_path = &snapshot.launch_plan.pid_file_path;
+    if pid_file_path.exists() {
+        fs::remove_file(pid_file_path).with_context(|| format!("remove pid file {}", pid_file_path.display()))?;
+    }
+
+    let runtime_dir = &snapshot.launch_plan.runtime_dir;
+    if runtime_dir.exists() {
+        fs::remove_dir_all(runtime_dir).with_context(|| format!("remove runtime dir {}", runtime_dir.display()))?;
+    }
+
+    Ok(())
+}
+
+fn move_runtime_artifacts_to_quarantine(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {
+    cleanup_runtime_socket(&snapshot.launch_plan.qmp_socket_path)?;
+
+    if let Some(qga_socket_path) = &snapshot.launch_plan.qga_socket_path {
+        cleanup_runtime_socket(qga_socket_path)?;
+    }
+
+    let pid_file_path = &snapshot.launch_plan.pid_file_path;
+    if pid_file_path.exists() {
+        fs::remove_file(pid_file_path).with_context(|| format!("remove pid file {}", pid_file_path.display()))?;
+    }
+
+    let runtime_dir = &snapshot.launch_plan.runtime_dir;
+    if runtime_dir.exists() {
+        let quarantine_runtime_dir = paths.quarantine_store.join(format!("{}-runtime", snapshot.vm_lease_id));
+        if quarantine_runtime_dir.exists() {
+            fs::remove_dir_all(&quarantine_runtime_dir)
+                .with_context(|| format!("clear quarantine runtime dir {}", quarantine_runtime_dir.display()))?;
+        }
+        fs::rename(runtime_dir, &quarantine_runtime_dir).with_context(|| {
+            format!(
+                "move runtime dir {} to quarantine {}",
+                runtime_dir.display(),
+                quarantine_runtime_dir.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn cleanup_runtime_socket(path: &Path) -> anyhow::Result<()> {
+    if path.exists() {
+        fs::remove_file(path).with_context(|| format!("remove runtime socket {}", path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn parse_lease_sequence(vm_lease_id: &str) -> u64 {

@@ -378,7 +378,7 @@ Pass when: the service consumes only the documented host mount paths and socket 
 - [x] Wire control-plane device access and startup contract.
 Pass when: the service consumes only the documented `/dev/kvm` and related startup contract from `deployment.md`.
 
-- [ ] Add QEMU command building and config validation in Rust.
+- [x] Add QEMU command building and config validation in Rust.
 Pass when: VM launch parameters, sockets, disks, CPU, memory, and network settings are derived from typed config rather than shell snippets.
 
 - [x] Add control-plane container health and readiness checks.

@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -36,6 +36,12 @@ const CONTROL_PLANE_SECRET_DIR: &str = "/run/secrets/honeypot/control-plane";
 const CONTROL_PLANE_PROXY_VERIFIER_PUBLIC_KEY_FILE: &str =
     "/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem";
 const CONTROL_PLANE_KVM_PATH: &str = "/dev/kvm";
+const CONTROL_PLANE_QEMU_BINARY_PATH: &str = "/usr/bin/qemu-system-x86_64";
+const CONTROL_PLANE_QEMU_MACHINE_TYPE: &str = "q35";
+const CONTROL_PLANE_QEMU_CPU_MODEL: &str = "host";
+const CONTROL_PLANE_QEMU_VCPU_COUNT: u8 = 4;
+const CONTROL_PLANE_QEMU_MEMORY_MIB: u32 = 8192;
+const CONTROL_PLANE_QEMU_NETDEV_ID: &str = "net0";
 const PROXY_ENV_FILE_REF: &str = "./env/proxy.env";
 const PROXY_CONFIG_MOUNT: &str = "./config/proxy/gateway.json:/etc/honeypot/proxy/gateway.json:ro";
 const PROXY_SECRET_MOUNT: &str = "./secrets/proxy:/run/secrets/honeypot/proxy:ro";
@@ -231,6 +237,12 @@ pub fn validate_honeypot_control_plane_runtime_contract(
         std::fs::read_to_string(env_path).with_context(|| format!("read env file at {}", env_path.display()))?;
     validate_honeypot_control_plane_env_document(&env_data)?;
 
+    let config_data =
+        std::fs::read_to_string(config_path).with_context(|| format!("read {}", config_path.display()))?;
+    anyhow::ensure!(
+        config_data.contains("[runtime.qemu]"),
+        "control-plane runtime config must pin a [runtime.qemu] table",
+    );
     let config =
         ControlPlaneConfig::load_from_path(config_path).with_context(|| format!("load {}", config_path.display()))?;
     validate_honeypot_control_plane_config(&config)
@@ -507,6 +519,50 @@ fn validate_honeypot_control_plane_config(config: &ControlPlaneConfig) -> anyhow
     anyhow::ensure!(
         config.paths.kvm_path == Path::new(CONTROL_PLANE_KVM_PATH),
         "control-plane kvm_path must be {CONTROL_PLANE_KVM_PATH}",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.binary_path == Path::new(CONTROL_PLANE_QEMU_BINARY_PATH),
+        "control-plane qemu binary_path must be {CONTROL_PLANE_QEMU_BINARY_PATH}",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.machine_type == CONTROL_PLANE_QEMU_MACHINE_TYPE,
+        "control-plane qemu machine_type must be {CONTROL_PLANE_QEMU_MACHINE_TYPE}",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.cpu_model == CONTROL_PLANE_QEMU_CPU_MODEL,
+        "control-plane qemu cpu_model must be {CONTROL_PLANE_QEMU_CPU_MODEL}",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.vcpu_count == CONTROL_PLANE_QEMU_VCPU_COUNT,
+        "control-plane qemu vcpu_count must be {CONTROL_PLANE_QEMU_VCPU_COUNT}",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.memory_mib == CONTROL_PLANE_QEMU_MEMORY_MIB,
+        "control-plane qemu memory_mib must be {CONTROL_PLANE_QEMU_MEMORY_MIB}",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.network.netdev_id == CONTROL_PLANE_QEMU_NETDEV_ID,
+        "control-plane qemu network.netdev_id must be {CONTROL_PLANE_QEMU_NETDEV_ID}",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.network.host_loopback_addr == IpAddr::V4(Ipv4Addr::LOCALHOST),
+        "control-plane qemu host_loopback_addr must stay on 127.0.0.1",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.accelerator.as_qemu_value() == "kvm",
+        "control-plane qemu accelerator must stay on kvm",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.disk_interface.as_qemu_device() == "virtio-blk-pci",
+        "control-plane qemu disk_interface must stay on virtio-blk-pci",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.network.mode.as_qemu_value() == "user",
+        "control-plane qemu network mode must stay on user",
+    );
+    anyhow::ensure!(
+        config.runtime.qemu.network.device_model.as_qemu_device() == "virtio-net-pci",
+        "control-plane qemu network device_model must stay on virtio-net-pci",
     );
     anyhow::ensure!(
         config.auth.proxy_verifier_public_key_pem.is_none(),

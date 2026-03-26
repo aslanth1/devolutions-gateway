@@ -17,7 +17,7 @@ RUN cargo build --release -p honeypot-control-plane
 FROM debian:bookworm-slim AS runtime
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates curl \
+    && apt-get install --yes --no-install-recommends ca-certificates curl qemu-system-x86 qemu-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /workspace/target/release/honeypot-control-plane /usr/local/bin/honeypot-control-plane

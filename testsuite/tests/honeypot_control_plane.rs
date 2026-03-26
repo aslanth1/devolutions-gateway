@@ -48,6 +48,8 @@ fn control_plane_fails_closed_when_required_paths_are_missing() {
 
     let existing_dir = tempdir.path().join("existing");
     fs::create_dir_all(&existing_dir).expect("create existing dir");
+    let qemu_binary_path = existing_dir.join("qemu-system-x86_64");
+    fs::write(&qemu_binary_path, []).expect("create fake qemu binary");
 
     let config = HoneypotControlPlaneTestConfig::builder()
         .bind_addr(bind_addr)
@@ -59,6 +61,7 @@ fn control_plane_fails_closed_when_required_paths_are_missing() {
         .qmp_dir(existing_dir.join("qmp"))
         .secret_dir(existing_dir.join("secrets"))
         .kvm_path(existing_dir.join("missing-kvm"))
+        .qemu_binary_path(qemu_binary_path)
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -93,6 +96,7 @@ async fn control_plane_reports_ready_when_contract_is_satisfied() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -131,6 +135,7 @@ async fn control_plane_reports_degraded_without_trusted_images() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -172,6 +177,7 @@ async fn control_plane_reports_unsafe_if_kvm_disappears_after_start() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -214,6 +220,7 @@ async fn control_plane_rejects_requests_without_a_service_token() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -254,6 +261,7 @@ async fn control_plane_rejects_wrong_scope_tokens() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -300,6 +308,7 @@ fn control_plane_fails_closed_when_proxy_verifier_key_file_is_missing() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -331,6 +340,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -427,6 +437,80 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
 }
 
 #[tokio::test]
+async fn control_plane_persists_qemu_launch_plan_metadata_on_acquire() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-launch-plan"))
+            .await
+            .expect("acquire lease");
+    let snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    let snapshot = fs::read_to_string(&snapshot_path).expect("read active lease snapshot");
+    let snapshot: serde_json::Value = serde_json::from_str(&snapshot).expect("parse lease snapshot");
+    let launch_plan = snapshot
+        .get("launch_plan")
+        .and_then(serde_json::Value::as_object)
+        .expect("launch_plan should be present");
+
+    assert_eq!(
+        launch_plan.get("qemu_binary_path").and_then(serde_json::Value::as_str),
+        fixture.qemu_binary_path.to_str()
+    );
+    assert_eq!(
+        launch_plan.get("base_image_path").and_then(serde_json::Value::as_str),
+        fixture.base_image_paths[0].to_str()
+    );
+    assert_eq!(
+        launch_plan.get("overlay_path").and_then(serde_json::Value::as_str),
+        fixture
+            .lease_store
+            .join(&acquire.vm_lease_id)
+            .join("overlay.qcow2")
+            .to_str()
+    );
+    assert_eq!(
+        launch_plan.get("qmp_socket_path").and_then(serde_json::Value::as_str),
+        fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id)).to_str()
+    );
+    assert!(
+        launch_plan
+            .get("argv")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+            .any(|arg| arg.contains("hostfwd=tcp:127.0.0.1:3389-:3389")),
+    );
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
 async fn control_plane_reports_no_capacity_when_the_pool_is_exhausted() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
@@ -443,6 +527,7 @@ async fn control_plane_reports_no_capacity_when_the_pool_is_exhausted() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -478,6 +563,56 @@ async fn control_plane_reports_no_capacity_when_the_pool_is_exhausted() {
 }
 
 #[tokio::test]
+async fn control_plane_reports_host_unavailable_when_base_image_is_missing() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    fs::remove_file(&fixture.base_image_paths[0]).expect("remove base image");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let request_body =
+        serde_json::to_vec(&acquire_request("session-missing-base-image")).expect("serialize acquire request");
+    let (status_line, body) = send_http_request(
+        port,
+        "POST",
+        "/api/v1/vm/acquire",
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        Some(&request_body),
+    )
+    .await
+    .expect("send acquire request");
+    let error: ErrorResponse = serde_json::from_slice(&body).expect("parse error response");
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(error.error_code, ErrorCode::HostUnavailable);
+    assert!(error.message.contains("base_image_path"), "{}", error.message);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
 async fn control_plane_quarantines_simulated_recycle_failures() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
@@ -494,6 +629,7 @@ async fn control_plane_quarantines_simulated_recycle_failures() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -558,9 +694,12 @@ struct RuntimeFixture {
     qmp_dir: std::path::PathBuf,
     secret_dir: std::path::PathBuf,
     kvm_path: std::path::PathBuf,
+    qemu_binary_path: std::path::PathBuf,
+    base_image_paths: Vec<std::path::PathBuf>,
 }
 
 fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> RuntimeFixture {
+    let bin_dir = root.join("bin");
     let data_dir = root.join("data");
     let image_store = root.join("images");
     let manifest_dir = image_store.join("manifests");
@@ -569,7 +708,9 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     let qmp_dir = root.join("qmp");
     let secret_dir = root.join("secrets");
     let kvm_path = root.join("kvm");
+    let qemu_binary_path = bin_dir.join("qemu-system-x86_64");
 
+    fs::create_dir_all(&bin_dir).expect("create bin dir");
     fs::create_dir_all(&data_dir).expect("create data dir");
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(&lease_store).expect("create lease dir");
@@ -577,10 +718,15 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     fs::create_dir_all(&qmp_dir).expect("create qmp dir");
     fs::create_dir_all(&secret_dir).expect("create secret dir");
     fs::write(&kvm_path, []).expect("create fake kvm device");
+    fs::write(&qemu_binary_path, []).expect("create fake qemu binary");
 
+    let mut base_image_paths = Vec::new();
     for index in 0..manifest_count {
         let manifest_path = manifest_dir.join(format!("image-{index}.json"));
         fs::write(manifest_path, "{}").expect("write fake manifest");
+        let base_image_path = image_store.join(format!("image-{index}.qcow2"));
+        fs::write(&base_image_path, []).expect("write fake base image");
+        base_image_paths.push(base_image_path);
     }
 
     RuntimeFixture {
@@ -592,5 +738,7 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
         qmp_dir,
         secret_dir,
         kvm_path,
+        qemu_binary_path,
+        base_image_paths,
     }
 }

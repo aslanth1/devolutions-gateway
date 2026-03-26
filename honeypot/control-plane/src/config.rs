@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -58,6 +58,111 @@ pub struct AuthConfig {
 #[serde(default)]
 pub struct RuntimeConfig {
     pub enable_guest_agent: bool,
+    pub qemu: QemuConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct QemuConfig {
+    pub binary_path: PathBuf,
+    pub machine_type: String,
+    pub accelerator: QemuAccelerator,
+    pub cpu_model: String,
+    pub vcpu_count: u8,
+    pub memory_mib: u32,
+    pub disk_interface: QemuDiskInterface,
+    pub network: QemuNetworkConfig,
+}
+
+impl Default for QemuConfig {
+    fn default() -> Self {
+        Self {
+            binary_path: PathBuf::from("/usr/bin/qemu-system-x86_64"),
+            machine_type: "q35".to_owned(),
+            accelerator: QemuAccelerator::Kvm,
+            cpu_model: "host".to_owned(),
+            vcpu_count: 4,
+            memory_mib: 8192,
+            disk_interface: QemuDiskInterface::VirtioBlkPci,
+            network: QemuNetworkConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QemuAccelerator {
+    Kvm,
+}
+
+impl QemuAccelerator {
+    pub fn as_qemu_value(self) -> &'static str {
+        match self {
+            Self::Kvm => "kvm",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QemuDiskInterface {
+    VirtioBlkPci,
+}
+
+impl QemuDiskInterface {
+    pub fn as_qemu_device(self) -> &'static str {
+        match self {
+            Self::VirtioBlkPci => "virtio-blk-pci",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct QemuNetworkConfig {
+    pub mode: QemuNetworkMode,
+    pub netdev_id: String,
+    pub device_model: QemuNetworkDeviceModel,
+    pub host_loopback_addr: IpAddr,
+}
+
+impl Default for QemuNetworkConfig {
+    fn default() -> Self {
+        Self {
+            mode: QemuNetworkMode::User,
+            netdev_id: "net0".to_owned(),
+            device_model: QemuNetworkDeviceModel::VirtioNetPci,
+            host_loopback_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QemuNetworkMode {
+    User,
+}
+
+impl QemuNetworkMode {
+    pub fn as_qemu_value(self) -> &'static str {
+        match self {
+            Self::User => "user",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QemuNetworkDeviceModel {
+    VirtioNetPci,
+}
+
+impl QemuNetworkDeviceModel {
+    pub fn as_qemu_device(self) -> &'static str {
+        match self {
+            Self::VirtioNetPci => "virtio-net-pci",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

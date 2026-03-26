@@ -295,6 +295,9 @@ proxy_verifier_public_key_pem_file = "/run/secrets/honeypot/control-plane/proxy-
 [runtime]
 enable_guest_agent = true
 
+[runtime.qemu]
+binary_path = "/usr/bin/qemu-system-x86_64"
+
 [paths]
 data_dir = "/var/lib/honeypot/control-plane"
 image_store = "/var/lib/honeypot/images"
@@ -341,6 +344,9 @@ inline-regression
 
 [runtime]
 enable_guest_agent = true
+
+[runtime.qemu]
+binary_path = "/usr/bin/qemu-system-x86_64"
 
 [paths]
 data_dir = "/var/lib/honeypot/control-plane"

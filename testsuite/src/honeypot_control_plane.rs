@@ -51,6 +51,18 @@ pub struct HoneypotControlPlaneTestConfig {
     pub kvm_path: PathBuf,
     #[builder(default = false)]
     pub enable_guest_agent: bool,
+    #[builder(setter(into))]
+    pub qemu_binary_path: PathBuf,
+    #[builder(default = "q35".to_owned(), setter(into))]
+    pub qemu_machine_type: String,
+    #[builder(default = "host".to_owned(), setter(into))]
+    pub qemu_cpu_model: String,
+    #[builder(default = 4)]
+    pub qemu_vcpu_count: u8,
+    #[builder(default = 8192)]
+    pub qemu_memory_mib: u32,
+    #[builder(default = "net0".to_owned(), setter(into))]
+    pub qemu_netdev_id: String,
 }
 
 pub fn honeypot_control_plane_assert_cmd() -> assert_cmd::Command {
@@ -75,6 +87,13 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
          service_token_validation_disabled = {}\n\n\
          [runtime]\n\
          enable_guest_agent = {}\n\n\
+         [runtime.qemu]\n\
+         binary_path = \"{}\"\n\
+         machine_type = \"{}\"\n\
+         cpu_model = \"{}\"\n\
+         vcpu_count = {}\n\
+         memory_mib = {}\n\
+         network.netdev_id = \"{}\"\n\n\
          [paths]\n\
          data_dir = \"{}\"\n\
          image_store = \"{}\"\n\
@@ -87,6 +106,12 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
         config.bind_addr,
         config.service_token_validation_disabled,
         config.enable_guest_agent,
+        config.qemu_binary_path.display(),
+        config.qemu_machine_type,
+        config.qemu_cpu_model,
+        config.qemu_vcpu_count,
+        config.qemu_memory_mib,
+        config.qemu_netdev_id,
         config.data_dir.display(),
         config.image_store.display(),
         config.manifest_dir.display(),

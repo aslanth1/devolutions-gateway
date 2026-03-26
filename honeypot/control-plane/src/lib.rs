@@ -2,6 +2,7 @@ mod auth;
 pub mod config;
 pub mod health;
 mod lease;
+mod qemu;
 
 use std::fs;
 use std::path::Path;
@@ -30,6 +31,7 @@ use self::auth::{AuthError, ControlPlaneAuth};
 use self::config::ControlPlaneConfig;
 use self::health::ServiceState;
 use self::lease::{LeaseError, LeaseRegistry};
+use self::qemu::validate_qemu_runtime_contract;
 
 #[derive(Debug)]
 pub struct ControlPlaneRuntime {
@@ -153,7 +155,7 @@ async fn acquire_vm_handler(
 
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .acquire(&runtime.config.paths, &request)
+        .acquire(&runtime.config, &request)
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -168,7 +170,7 @@ async fn release_vm_handler(
 
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .release(&runtime.config.paths, &vm_lease_id, &request)
+        .release(&runtime.config, &vm_lease_id, &request)
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -183,7 +185,7 @@ async fn reset_vm_handler(
 
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .reset(&runtime.config.paths, &vm_lease_id, &request)
+        .reset(&runtime.config, &vm_lease_id, &request)
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -198,7 +200,7 @@ async fn recycle_vm_handler(
 
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .recycle(&runtime.config.paths, &vm_lease_id, &request)
+        .recycle(&runtime.config, &vm_lease_id, &request)
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -227,6 +229,7 @@ fn validate_startup_contract(config: &ControlPlaneConfig) -> anyhow::Result<()> 
     ensure_dir("qmp_dir", &config.paths.qmp_dir)?;
     ensure_dir("secret_dir", &config.paths.secret_dir)?;
     ensure_exists("kvm_path", &config.paths.kvm_path)?;
+    validate_qemu_runtime_contract(config)?;
 
     if config.runtime.enable_guest_agent {
         let qga_dir = config.paths.qga_dir()?;
@@ -253,6 +256,7 @@ fn inspect_runtime(config: &ControlPlaneConfig) -> RuntimeInspection {
     inspect_dir("quarantine_store", &config.paths.quarantine_store, &mut inspection);
     inspect_dir("qmp_dir", &config.paths.qmp_dir, &mut inspection);
     inspect_dir("secret_dir", &config.paths.secret_dir, &mut inspection);
+    inspect_file("qemu_binary_path", &config.runtime.qemu.binary_path, &mut inspection);
 
     let manifest_dir = config.paths.manifest_dir();
     inspect_dir("manifest_dir", &manifest_dir, &mut inspection);
@@ -280,6 +284,18 @@ fn inspect_dir(label: &str, path: &Path, inspection: &mut RuntimeInspection) {
             .unsafe_reasons
             .push(format!("missing_{label}:{}", path.display()));
     } else if !path.is_dir() {
+        inspection
+            .unsafe_reasons
+            .push(format!("invalid_{label}:{}", path.display()));
+    }
+}
+
+fn inspect_file(label: &str, path: &Path, inspection: &mut RuntimeInspection) {
+    if !path.exists() {
+        inspection
+            .unsafe_reasons
+            .push(format!("missing_{label}:{}", path.display()));
+    } else if !path.is_file() {
         inspection
             .unsafe_reasons
             .push(format!("invalid_{label}:{}", path.display()));
