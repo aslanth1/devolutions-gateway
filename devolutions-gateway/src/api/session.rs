@@ -1,3 +1,4 @@
+use axum::Json;
 use axum::Router;
 use axum::extract::State;
 use axum::routing::post;
@@ -11,6 +12,7 @@ use crate::token::AccessScope;
 
 pub fn make_router<S>(state: DgwState) -> Router<S> {
     Router::new()
+        .route("/system/terminate", post(terminate_all_sessions))
         .route("/{id}/terminate", post(terminate_session))
         .with_state(state)
 }
@@ -58,6 +60,40 @@ pub(crate) async fn terminate_session(
     }
 }
 
+#[derive(Serialize)]
+pub(crate) struct SystemTerminateResponse {
+    system_kill_active: bool,
+    halt_new_sessions: bool,
+    terminated_sessions_requested: usize,
+}
+
+async fn terminate_all_sessions(
+    State(state): State<DgwState>,
+    scope_token: ScopeToken,
+) -> Result<Json<SystemTerminateResponse>, HttpError> {
+    if !state.honeypot.is_enabled() {
+        return Err(HttpError::not_found().msg("honeypot mode is disabled"));
+    }
+
+    let conf = state.conf_handle.get_conf();
+    ensure_honeypot_system_kill_enabled(&conf)?;
+    let kill_metadata = authorize_system_terminate_scope(&scope_token)?;
+
+    state.honeypot.activate_system_kill();
+
+    let terminated_sessions_requested = state
+        .sessions
+        .kill_all_sessions_with_metadata(kill_metadata)
+        .await
+        .map_err(HttpError::internal().err())?;
+
+    Ok(Json(SystemTerminateResponse {
+        system_kill_active: true,
+        halt_new_sessions: conf.honeypot.kill_switch.halt_new_sessions_on_system_kill,
+        terminated_sessions_requested,
+    }))
+}
+
 fn authorize_terminate_scope(
     state: &DgwState,
     scope_token: &ScopeToken,
@@ -93,5 +129,22 @@ fn ensure_honeypot_session_kill_enabled(conf: &crate::config::Conf) -> Result<()
         Ok(())
     } else {
         Err(HttpError::conflict().msg("honeypot session kill is disabled"))
+    }
+}
+
+fn authorize_system_terminate_scope(scope_token: &ScopeToken) -> Result<SessionKillMetadata, HttpError> {
+    match scope_token.0.scope {
+        AccessScope::Wildcard | AccessScope::HoneypotSystemKill => {
+            Ok(SessionKillMetadata::system_operator(scope_token.0.token_id()))
+        }
+        _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+    }
+}
+
+fn ensure_honeypot_system_kill_enabled(conf: &crate::config::Conf) -> Result<(), HttpError> {
+    if conf.honeypot.kill_switch.enable_system_kill {
+        Ok(())
+    } else {
+        Err(HttpError::conflict().msg("honeypot system kill is disabled"))
     }
 }

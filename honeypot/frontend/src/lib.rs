@@ -123,6 +123,31 @@ impl FrontendRuntime {
         }
     }
 
+    async fn kill_all_sessions(&self) -> Result<(), FrontendKillError> {
+        use reqwest::StatusCode as ReqwestStatusCode;
+
+        let terminate_url = self
+            .config
+            .proxy
+            .system_terminate_url()
+            .map_err(FrontendKillError::Proxy)?;
+        let response = self
+            .authorized(self.client.post(terminate_url))
+            .send()
+            .await
+            .context("request proxy system terminate")
+            .map_err(FrontendKillError::Proxy)?;
+
+        match response.status() {
+            ReqwestStatusCode::OK | ReqwestStatusCode::NO_CONTENT => Ok(()),
+            ReqwestStatusCode::NOT_FOUND => Err(FrontendKillError::NotFound),
+            ReqwestStatusCode::CONFLICT => Err(FrontendKillError::Conflict),
+            status => Err(FrontendKillError::Proxy(anyhow::anyhow!(
+                "proxy system terminate failed with {status}"
+            ))),
+        }
+    }
+
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(token) = &self.config.auth.proxy_bearer_token {
             request.bearer_auth(token)
@@ -167,6 +192,7 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
         .route("/tile/{id}", get(tile_handler))
         .route("/session/{id}", get(session_handler))
         .route("/session/{id}/kill", post(kill_handler))
+        .route("/system/kill", post(system_kill_handler))
         .with_state(state);
 
     let listener = TcpListener::bind(bind_addr)
@@ -330,6 +356,32 @@ async fn kill_handler(
     }
 }
 
+async fn system_kill_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<OperatorTokenQuery>,
+) -> Response {
+    let access = match state
+        .runtime
+        .authorize_operator(&headers, query.token.as_deref(), RequiredScope::SystemKill)
+    {
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
+
+    match state.runtime.kill_all_sessions().await {
+        Ok(()) => Html(render_system_kill_notice(access.raw_token())).into_response(),
+        Err(FrontendKillError::Conflict) => frontend_error(StatusCode::CONFLICT, "honeypot system kill is disabled"),
+        Err(FrontendKillError::NotFound) => {
+            frontend_error(StatusCode::NOT_FOUND, "honeypot system kill route is unavailable")
+        }
+        Err(FrontendKillError::Proxy(error)) => frontend_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("system kill request failed: {error:#}"),
+        ),
+    }
+}
+
 fn frontend_error(status: StatusCode, message: &str) -> Response {
     (status, Html(render_error_fragment(message))).into_response()
 }
@@ -353,6 +405,7 @@ fn auth_error(error: AuthError) -> Response {
 
 fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse, access: &OperatorAccess) -> String {
     let operator_token = access.raw_token();
+    let system_kill_button = render_system_kill_button(access);
     let tiles = if bootstrap.sessions.is_empty() {
         "<div class=\"empty-state\">No live sessions are visible yet.</div>".to_owned()
     } else {
@@ -576,6 +629,7 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
       <section class="status-bar">
         <div class="status-metric">Live sessions: <strong>{session_count}</strong></div>
         <div class="status-metric">Replay cursor: <code id="cursor-value">{replay_cursor}</code></div>
+        {system_kill_button}
       </section>
     </header>
     <main class="layout">
@@ -703,6 +757,7 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
 </html>"#,
         replay_cursor_json = serde_json::to_string(&bootstrap.replay_cursor).unwrap_or_else(|_| "\"0\"".to_owned()),
         operator_token_json = operator_token_json,
+        system_kill_button = system_kill_button,
     )
 }
 
@@ -819,6 +874,23 @@ fn render_kill_notice(session_id: &str, operator_token: &str) -> String {
     )
 }
 
+fn render_system_kill_notice(operator_token: &str) -> String {
+    let auth_query = operator_token_query(operator_token);
+
+    format!(
+        r#"<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>Global kill requested</strong>
+      <p>The proxy is terminating all active honeypot sessions and waiting to emit <code>session.killed</code> for each one.</p>
+      <p>New honeypot intake will stay halted when the proxy kill-switch policy requires it.</p>
+      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>"#
+    )
+}
+
 fn render_kill_button(session: &BootstrapSession, operator_token: &str, can_kill_sessions: bool) -> String {
     if !can_kill_sessions || !session_can_be_killed(session.state) {
         return String::new();
@@ -839,6 +911,26 @@ fn render_kill_button(session: &BootstrapSession, operator_token: &str, can_kill
     Kill session
   </button>
 </div>"##
+    )
+}
+
+fn render_system_kill_button(access: &OperatorAccess) -> String {
+    if !access.can_trigger_system_kill() {
+        return String::new();
+    }
+
+    let auth_query = operator_token_query(access.raw_token());
+
+    format!(
+        r##"<button
+  class="kill-button"
+  type="button"
+  hx-post="/system/kill?{auth_query}"
+  hx-target="#focus-panel"
+  hx-swap="innerHTML"
+  hx-confirm="Kill all active honeypot sessions?">
+  Global kill
+</button>"##
     )
 }
 

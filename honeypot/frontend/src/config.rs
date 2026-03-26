@@ -47,6 +47,7 @@ pub struct ProxyConfig {
     pub events_path: String,
     pub stream_token_path_template: String,
     pub terminate_path_template: String,
+    pub system_terminate_path: String,
     pub request_timeout_secs: u64,
     pub connect_timeout_secs: u64,
 }
@@ -74,6 +75,10 @@ impl ProxyConfig {
         self.url_for_path(&path)
     }
 
+    pub fn system_terminate_url(&self) -> anyhow::Result<Url> {
+        self.url_for_path(&self.system_terminate_path)
+    }
+
     fn url_for_path(&self, path: &str) -> anyhow::Result<Url> {
         let trimmed = path.trim_start_matches('/');
         self.base_url
@@ -90,6 +95,7 @@ impl Default for ProxyConfig {
             events_path: "/jet/honeypot/events".to_owned(),
             stream_token_path_template: "/jet/honeypot/session/{session_id}/stream-token".to_owned(),
             terminate_path_template: "/jet/session/{session_id}/terminate".to_owned(),
+            system_terminate_path: "/jet/session/system/terminate".to_owned(),
             request_timeout_secs: 10,
             connect_timeout_secs: 5,
         }

@@ -479,6 +479,164 @@ async fn honeypot_session_terminate_route_respects_kill_switch() -> anyhow::Resu
     Ok(())
 }
 
+#[tokio::test]
+async fn honeypot_system_terminate_route_accepts_system_kill_scope_when_enabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let system_kill_scope_token = honeypot_scope_token("gateway.honeypot.system.kill");
+    let (status_line, body) = send_http_request_with_retry(
+        config_handle.http_port(),
+        "POST",
+        "/jet/session/system/terminate",
+        &system_kill_scope_token,
+        None,
+        &[],
+    )
+    .await?;
+    let payload: serde_json::Value = serde_json::from_slice(&body).context("parse system terminate response")?;
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(payload["system_kill_active"], true);
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_system_terminate_route_requires_system_kill_scope() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let session_kill_scope_token = honeypot_scope_token("gateway.honeypot.session.kill");
+    let (status_line, _body) = send_http_request_with_retry(
+        config_handle.http_port(),
+        "POST",
+        "/jet/session/system/terminate",
+        &session_kill_scope_token,
+        None,
+        &[],
+    )
+    .await?;
+
+    assert!(status_line.contains("403"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_system_terminate_route_respects_kill_switch() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(
+            HoneypotConfig::builder()
+                .enabled(true)
+                .enable_system_kill(false)
+                .build(),
+        )
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let system_kill_scope_token = honeypot_scope_token("gateway.honeypot.system.kill");
+    let (status_line, _body) = send_http_request_with_retry(
+        config_handle.http_port(),
+        "POST",
+        "/jet/session/system/terminate",
+        &system_kill_scope_token,
+        None,
+        &[],
+    )
+    .await?;
+
+    assert!(status_line.contains("409"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_system_terminate_route_is_hidden_when_honeypot_is_disabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let kill_scope_token = honeypot_scope_token("gateway.honeypot.system.kill");
+    let (status_line, _body) = send_http_request_with_retry(
+        config_handle.http_port(),
+        "POST",
+        "/jet/session/system/terminate",
+        &kill_scope_token,
+        None,
+        &[],
+    )
+    .await?;
+
+    assert!(status_line.contains("404"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
 async fn get_json_response(http_port: u16, path: &str, token: &str) -> anyhow::Result<(String, Vec<u8>)> {
     send_http_request(http_port, "GET", path, token, None, &[]).await
 }

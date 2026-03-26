@@ -31,10 +31,10 @@ The winning direction is to extend the current Gateway data plane as the proxy c
 
 ## Execution Order
 
-- [ ] Treat Milestone 0 as the baseline gate before any honeypot implementation starts.
+- [x] Treat Milestone 0 as the baseline gate before any honeypot implementation starts.
 Pass when: the baseline test path is green, the workspace boundaries are documented, and the initial honeypot docs are created.
 
-- [ ] Treat Milestone 0.5 as a hard design freeze before Milestone 1 through Milestone 6 implementation starts.
+- [x] Treat Milestone 0.5 as a hard design freeze before Milestone 1 through Milestone 6 implementation starts.
 Pass when: every `DF-*` row below is resolved in `docs/honeypot/decisions.md` and the owning docs it names before Milestone 1 through Milestone 6 work starts.
 
 - [ ] Keep the `Decision Freeze Matrix` and `Ownership Matrix` authoritative.
@@ -149,22 +149,22 @@ Pass when: the stream plan names the reuse points or explains why they are insuf
 - [ ] Review `devolutions-gateway/src/api/webapp.rs` for token issuance and auth ideas only.
 Pass when: the honeypot frontend keeps its own UI code while reusing only the auth and token patterns that still fit.
 
-- [ ] Review and document the existing Gateway integration seams in `devolutions-gateway/src/lib.rs`, `devolutions-gateway/src/service.rs`, `devolutions-gateway/src/api/mod.rs`, `devolutions-gateway/src/extract.rs`, and `devolutions-gateway/src/middleware/auth.rs`.
+- [x] Review and document the existing Gateway integration seams in `devolutions-gateway/src/lib.rs`, `devolutions-gateway/src/service.rs`, `devolutions-gateway/src/api/mod.rs`, `devolutions-gateway/src/extract.rs`, and `devolutions-gateway/src/middleware/auth.rs`.
 Pass when: `docs/honeypot/architecture.md` states exactly where honeypot state, routes, scopes, and background tasks plug into the current binary.
 
-- [ ] Review `testsuite/src/dgw_config.rs` before inventing a second test bootstrap path.
+- [x] Review `testsuite/src/dgw_config.rs` before inventing a second test bootstrap path.
 Pass when: the honeypot test plan either extends this helper or documents why it cannot.
 
-- [ ] Write `docs/honeypot/research.md` evaluation notes for `devolutions-session`, `devolutions-agent`, `jetsocat`, `crates/transport`, `testsuite`, `video-streamer`, and `terminal-streamer`.
+- [x] Write `docs/honeypot/research.md` evaluation notes for `devolutions-session`, `devolutions-agent`, `jetsocat`, `crates/transport`, `testsuite`, `video-streamer`, and `terminal-streamer`.
 Pass when: each candidate is labeled `reuse`, `adapt`, or `do not use` with a one-sentence rationale.
 
-- [ ] Review `devolutions-agent` and `devolutions-session` for patterns only, and explicitly record whether they are out of scope for the Linux-hosted control plane.
+- [x] Review `devolutions-agent` and `devolutions-session` for patterns only, and explicitly record whether they are out of scope for the Linux-hosted control plane.
 Pass when: `docs/honeypot/research.md` says what was learned and why they are or are not reused.
 
-- [ ] Record external repo evaluation notes for `Devolutions/IronRDP`, `Devolutions/sspi-rs`, `FreeRDP/FreeRDP`, `Devolutions/MsRdpEx`, `Devolutions/picky-rs`, `Devolutions/DevoSamples-ps`, and `Devolutions/RdpCredProv`.
+- [x] Record external repo evaluation notes for `Devolutions/IronRDP`, `Devolutions/sspi-rs`, `FreeRDP/FreeRDP`, `Devolutions/MsRdpEx`, `Devolutions/picky-rs`, `Devolutions/DevoSamples-ps`, and `Devolutions/RdpCredProv`.
 Pass when: each repo is mapped to a concrete use, validation role, or explicit non-use decision, and `RdpCredProv` is marked validation-only or non-use for NLA-based credential substitution.
 
-- [ ] Record how the in-tree `cadeau` dependency and `devolutions-labs` affect the honeypot plan.
+- [x] Record how the in-tree `cadeau` dependency and `devolutions-labs` affect the honeypot plan.
 Pass when: `docs/honeypot/research.md` labels `cadeau` as a reuse or validation input and marks `devolutions-labs` as optional, validation-only, or non-use unless a concrete lab role is documented.
 
 - [ ] Keep `package/Linux/Dockerfile` and the legacy gateway container packaging path as reference-only unless a honeypot service explicitly reuses a safe fragment.
@@ -172,64 +172,64 @@ Pass when: the honeypot `proxy` and `frontend` images do not inherit the current
 
 ## Cross-Service Contracts
 
-- [ ] Add `honeypot/contracts/Cargo.toml` and `honeypot/contracts/src/lib.rs` as the shared versioned contracts crate used by `control-plane`, `proxy`, and `frontend`.
+- [x] Add `honeypot/contracts/Cargo.toml` and `honeypot/contracts/src/lib.rs` as the shared versioned contracts crate used by `control-plane`, `proxy`, and `frontend`.
 Pass when: the workspace has one canonical contracts crate path and no duplicated JSON shape definitions across services.
 
-- [ ] Add `docs/honeypot/contracts.md` as the single source of truth for control-plane, proxy, stream, and frontend payloads.
+- [x] Add `docs/honeypot/contracts.md` as the single source of truth for control-plane, proxy, stream, and frontend payloads.
 Pass when: APIs, events, stream metadata, auth scopes, and failure semantics are versioned in one place.
 
-- [ ] Define the service-to-service authentication and authorization contract.
+- [x] Define the service-to-service authentication and authorization contract.
 Pass when: `docs/honeypot/contracts.md` names how `proxy` authenticates to `control-plane`, how `frontend` authenticates to `proxy`, where trust material comes from, how it rotates, and what happens on auth failure.
 
-- [ ] Define the control-plane API for `acquire_vm`, `release_vm`, `reset_vm`, `recycle_vm`, `health`, and `stream_endpoint`.
+- [x] Define the control-plane API for `acquire_vm`, `release_vm`, `reset_vm`, `recycle_vm`, `health`, and `stream_endpoint`.
 Pass when: every call has request and response shapes plus failure semantics.
 
-- [ ] Define the proxy event schema as the source of truth for session lifecycle.
+- [x] Define the proxy event schema as the source of truth for session lifecycle.
 Pass when: the schema includes `session.started`, `session.assigned`, `session.stream.ready`, `session.ended`, `session.killed`, `session.recycle.requested`, and `host.recycled`.
 
-- [ ] Version every honeypot event with `event_id`, `schema_version`, and ordering semantics.
+- [x] Version every honeypot event with `event_id`, `schema_version`, and ordering semantics.
 Pass when: producers and consumers document replay, deduplication, and out-of-order handling.
 
-- [ ] Define backward-compatibility rules for mixed-version service peers.
+- [x] Define backward-compatibility rules for mixed-version service peers.
 Pass when: `docs/honeypot/contracts.md` says which `current` and `previous` image combinations are supported for `control-plane`, `proxy`, and `frontend`, and whether both `current -> previous` and `previous -> current` rejoin are supported for each contract family.
 
-- [ ] Define a frontend bootstrap API plus event replay model for live sessions.
+- [x] Define a frontend bootstrap API plus event replay model for live sessions.
 Pass when: a newly opened frontend can render already-running sessions without waiting for a fresh connect event.
 
-- [ ] Define how `/jet/preflight` credential mappings are bound to a session, expire, and revoke early.
+- [x] Define how `/jet/preflight` credential mappings are bound to a session, expire, and revoke early.
 Pass when: the TTL, disconnect cleanup path, kill path, recycle path, and orphan cleanup guarantees are documented.
 
-- [ ] Define the stream token and metadata contract.
+- [x] Define the stream token and metadata contract.
 Pass when: every stream is bound to `session_id`, `vm_lease_id`, a short-lived token, and a concrete stream endpoint.
 
-- [ ] Define the frontend update transport with a bias toward simple HTMX-compatible delivery.
+- [x] Define the frontend update transport with a bias toward simple HTMX-compatible delivery.
 Pass when: the design chooses SSE, long-polling, or a minimal websocket bridge and documents why.
 
-- [ ] Define the source of truth for live video streaming.
+- [x] Define the source of truth for live video streaming.
 Pass when: the design chooses between Gateway recording/streaming reuse, QEMU display capture, or another capture path and names the tradeoff.
 
-- [ ] Define frontend operator authentication and voting authorization.
+- [x] Define frontend operator authentication and voting authorization.
 Pass when: the plan states the identity source, the authentication flow, who may watch, who may propose commands, who may approve execution, who may kill sessions, and which audit fields bind actions to operator identity.
 
-- [ ] Define no-lease failure handling across control plane, proxy, and frontend.
+- [x] Define no-lease failure handling across control plane, proxy, and frontend.
 Pass when: `docs/honeypot/contracts.md` says what operators and the frontend see when no VM lease is available, which events are emitted, and how cleanup is triggered.
 
-- [ ] Define boot-timeout failure handling across control plane, proxy, and frontend.
+- [x] Define boot-timeout failure handling across control plane, proxy, and frontend.
 Pass when: `docs/honeypot/contracts.md` says what happens when a guest fails to reach ready state in time, which events are emitted, and whether retry, kill, or recycle is allowed.
 
-- [ ] Define recycle-failure handling across control plane, proxy, and frontend.
+- [x] Define recycle-failure handling across control plane, proxy, and frontend.
 Pass when: `docs/honeypot/contracts.md` says how a failed reset or recycle is surfaced, how the guest is quarantined, and how operators distinguish it from ordinary disconnects.
 
-- [ ] Define proxy or control-plane partition handling.
+- [x] Define proxy or control-plane partition handling.
 Pass when: `docs/honeypot/contracts.md` says what happens when the proxy cannot reach the control plane, how sessions degrade, and which operator-visible status is emitted.
 
-- [ ] Define stream-start failure handling.
+- [x] Define stream-start failure handling.
 Pass when: `docs/honeypot/contracts.md` says how stream bootstrap failure is reported, how the frontend behaves, and whether session observation can recover without reconnecting the attacker.
 
-- [ ] Define kill-switch handling.
+- [x] Define kill-switch handling.
 Pass when: `docs/honeypot/contracts.md` says how single-session and global kill actions terminate sessions, revoke credentials, tear down streams, and request recycle.
 
-- [ ] Define the observability contract.
+- [x] Define the observability contract.
 Pass when: logs, metrics, audit events, and correlation IDs are named for `session_id`, `vm_lease_id`, and `stream_id`.
 
 ## Container Delivery And Rollback
@@ -238,132 +238,132 @@ This section is the single source of truth for Docker topology, image naming, re
 Rows `DF-07` and `DF-08` freeze the policy here.
 Milestones below should consume these decisions rather than restate them.
 
-- [ ] Add `honeypot/docker/control-plane/Dockerfile`, `honeypot/docker/proxy/Dockerfile`, and `honeypot/docker/frontend/Dockerfile`.
+- [x] Add `honeypot/docker/control-plane/Dockerfile`, `honeypot/docker/proxy/Dockerfile`, and `honeypot/docker/frontend/Dockerfile`.
 Pass when: each runtime service has its own explicit Dockerfile path, build context, and image target, and no image merges multiple runtime responsibilities.
 
-- [ ] Add `honeypot/docker/compose.yaml` for the three-service stack.
+- [x] Add `honeypot/docker/compose.yaml` for the three-service stack.
 Pass when: the compose file defines the three services, their networks, volumes, healthchecks, and startup order without introducing extra runtime services.
 
-- [ ] Add `docs/honeypot/deployment.md` as the source of truth for Docker topology, networks, volumes, healthchecks, startup order, and rollback flow.
+- [x] Add `docs/honeypot/deployment.md` as the source of truth for Docker topology, networks, volumes, healthchecks, startup order, and rollback flow.
 Pass when: a reader can bring up, downgrade, and restore the three-service stack from repo docs alone, with compose service IDs `control-plane`, `proxy`, and `frontend`, one fixed compose project naming rule, and exact runtime env-file paths recorded under `honeypot/docker/`.
 
-- [ ] Add `docs/honeypot/release.md` as the source of truth for registry namespaces, tag scheme, digest promotion, and rollback policy.
+- [x] Add `docs/honeypot/release.md` as the source of truth for registry namespaces, tag scheme, digest promotion, and rollback policy.
 Pass when: a reader can tell where images are published, which commit-SHA and release-tag variants exist, which validation paths reject floating tags, and how a prior version is restored without rebuilding.
 
-- [ ] Define the promotion manifest that alone may update `honeypot/docker/images.lock`.
+- [x] Define the promotion manifest that alone may update `honeypot/docker/images.lock`.
 Pass when: `release.md` names the immutable or attested input, the fields it carries, and the validation path that rejects stale, unsigned, or mismatched updates.
 
-- [ ] Add `honeypot/docker/images.lock` for `control-plane`, `proxy`, and `frontend`.
+- [x] Add `honeypot/docker/images.lock` for `control-plane`, `proxy`, and `frontend`.
 Pass when: compose and Rust tests can read the exact `current` and `previous` digests for each service from this one file.
 
-- [ ] Define the `honeypot/docker/images.lock` schema.
+- [x] Define the `honeypot/docker/images.lock` schema.
 Pass when: the file contains top-level `control-plane`, `proxy`, and `frontend` entries, and each service entry records `image`, `registry`, `current.tag`, `current.digest`, `current.source_ref`, `previous.tag`, `previous.digest`, and `previous.source_ref`.
 
-- [ ] Define service image naming and registry namespaces.
+- [x] Define service image naming and registry namespaces.
 Pass when: `control-plane`, `proxy`, and `frontend` each have one canonical image name and registry namespace recorded in `release.md`.
 
-- [ ] Define semver-tag and commit-SHA tag policy.
+- [x] Define semver-tag and commit-SHA tag policy.
 Pass when: `release.md` says which tag variants are emitted for each service, which variant compose may use for human-readable inspection, and that validation still resolves digests from `honeypot/docker/images.lock`.
 
-- [ ] Define previous-version retention and promotion-by-digest policy.
+- [x] Define previous-version retention and promotion-by-digest policy.
 Pass when: each service can be pinned to a current and prior image without rebuilding, without relying on `latest`, and with a documented promotion path by digest.
 
-- [ ] Define service-specific env-file and mounted-config contracts for containerized runtime.
+- [x] Define service-specific env-file and mounted-config contracts for containerized runtime.
 Pass when: `control-plane`, `proxy`, and `frontend` each have documented env-file paths, mounted config paths, and restart-safe config behavior.
 
-- [ ] Define service-specific secret-mount contracts for containerized runtime.
+- [x] Define service-specific secret-mount contracts for containerized runtime.
 Pass when: `control-plane`, `proxy`, and `frontend` each have documented secret mount paths, ownership expectations, and reload or restart semantics without baking secrets into images.
 
-- [ ] Define the control-plane container least-privilege contract for `/dev/kvm`, host mounts, qcow2 storage, QMP or QGA sockets, and networking.
+- [x] Define the control-plane container least-privilege contract for `/dev/kvm`, host mounts, qcow2 storage, QMP or QGA sockets, and networking.
 Pass when: allowed devices, mounts, ownership, capabilities, network mode, and forbidden defaults are explicitly documented.
 
-- [ ] Define a `docker compose`-style local bring-up and rollback flow for the three services only.
+- [x] Define a `docker compose`-style local bring-up and rollback flow for the three services only.
 Pass when: `honeypot/docker/compose.yaml` consumes `honeypot/docker/images.lock`, resolves each service by pinned digest rather than floating tag, the stack starts in dependency order, reports health, and can revert one service to the previously pinned image while the other two remain current.
 
 ## Milestone 0: Baseline, Safety, and Repo Boundaries
 
-- [ ] Add a `honeypot/` workspace area for the new service code and shared contracts.
+- [x] Add a `honeypot/` workspace area for the new service code and shared contracts.
 Pass when: the root workspace and directory layout make the new surfaces obvious without introducing extra runtime services.
 
-- [ ] Add concrete crate and entrypoint anchors for the new honeypot workspaces.
+- [x] Add concrete crate and entrypoint anchors for the new honeypot workspaces.
 Pass when: `honeypot/contracts/Cargo.toml`, `honeypot/contracts/src/lib.rs`, `honeypot/control-plane/Cargo.toml`, `honeypot/control-plane/src/main.rs`, `honeypot/frontend/Cargo.toml`, and `honeypot/frontend/src/main.rs` exist, or the repo pins a documented alternative entrypoint before implementation starts.
 
-- [ ] Add the initial honeypot container layout under `honeypot/docker/`.
+- [x] Add the initial honeypot container layout under `honeypot/docker/`.
 Pass when: the repo contains `honeypot/docker/control-plane/Dockerfile`, `honeypot/docker/proxy/Dockerfile`, `honeypot/docker/frontend/Dockerfile`, `honeypot/docker/compose.yaml`, and `honeypot/docker/images.lock` before service implementation starts.
 
-- [ ] Add `docs/honeypot/architecture.md` with trust boundaries, event flow, credential flow, stream flow, and kill-switch behavior.
+- [x] Add `docs/honeypot/architecture.md` with trust boundaries, event flow, credential flow, stream flow, and kill-switch behavior.
 Pass when: a reviewer can trace attacker traffic from the public listener to VM recycle in one diagram.
 
-- [ ] Add `docs/honeypot/risk.md` covering legal scope, authorization requirements, exposure limits, Tiny11 artifact provenance, operator-content handling, and teardown policy.
+- [x] Add `docs/honeypot/risk.md` covering legal scope, authorization requirements, exposure limits, Tiny11 artifact provenance, operator-content handling, and teardown policy.
 Pass when: the repo states that this is for authorized defensive research only and names the major operational risks.
 
-- [ ] Add `docs/honeypot/research.md` summarizing local reuse points and useful external repos.
+- [x] Add `docs/honeypot/research.md` summarizing local reuse points and useful external repos.
 Pass when: the file names the local reuse anchors and the external repos to consult before implementation.
 
-- [ ] Add `docs/honeypot/deployment.md` for the Dockerized three-service stack.
+- [x] Add `docs/honeypot/deployment.md` for the Dockerized three-service stack.
 Pass when: the doc names compose service IDs, service images, project naming, env-file paths, networks, volumes, healthchecks, runtime config injection, and rollback expectations.
 
-- [ ] Add `docs/honeypot/release.md` for service image publication and rollback policy.
+- [x] Add `docs/honeypot/release.md` for service image publication and rollback policy.
 Pass when: the doc names registry namespaces, tag and digest policy, image promotion flow, and current or previous version retention.
 
-- [ ] Freeze the current non-honeypot behavior before starting fork work.
+- [x] Freeze the current non-honeypot behavior before starting fork work.
 Pass when: `cargo test -p testsuite --test integration_tests` is a known baseline and the existing routes still behave as before.
 
-- [ ] Add the honeypot config surface to `devolutions-gateway/src/config.rs` and `config_schema.json`.
+- [x] Add the honeypot config surface to `devolutions-gateway/src/config.rs` and `config_schema.json`.
 Pass when: honeypot mode, control-plane endpoint, stream policy, operator auth, kill-switch settings, and frontend settings are represented in code and schema.
 
-- [ ] Extend `testsuite/src/dgw_config.rs` for honeypot mode, control-plane endpoint, operator auth, and stream settings.
+- [x] Extend `testsuite/src/dgw_config.rs` for honeypot mode, control-plane endpoint, operator auth, and stream settings.
 Pass when: Rust integration tests can boot honeypot-mode Gateway config without handwritten JSON blobs.
 
-- [ ] Define the test tiers and lab gating strategy.
+- [x] Define the test tiers and lab gating strategy.
 Pass when: the repo states the `contract`, `host-smoke`, and `lab-e2e` tiers, which tests may touch QEMU, and how the lab tier is explicitly gated.
 
 ## Milestone 0.5: Research and Design Freeze
 
 ### Milestone 0.5a: Decision Ledger And Release Freeze
 
-- [ ] Add `docs/honeypot/decisions.md` for blocking architectural choices.
+- [x] Add `docs/honeypot/decisions.md` for blocking architectural choices.
 Pass when: each `DF-*` row records the winner, rejected alternatives, upgrade path, and links to the owning docs.
 
-- [ ] Resolve `DF-01`, `DF-07`, and `DF-09` before service implementation starts.
+- [x] Resolve `DF-01`, `DF-07`, and `DF-09` before service implementation starts.
 Pass when: proxy packaging, release namespace and tagging, promotion policy, `images.lock`, and the `contract`, `host-smoke`, and `lab-e2e` gate are frozen in the owning docs, and later milestones reference those rows instead of redefining them.
 
 ### Milestone 0.5b: Host, Image, And Runtime Freeze
 
-- [ ] Resolve `DF-05` and `DF-06` before the control plane is implemented.
+- [x] Resolve `DF-05` and `DF-06` before the control plane is implemented.
 Pass when: Windows SKU, ISO inputs, Tiny11 provenance, sealing steps, QEMU controls, runtime contract, and recycle semantics are captured in the owning docs named by those rows.
 
 ### Milestone 0.5c: Proxy, Stream, And Ownership Freeze
 
-- [ ] Resolve `DF-03` and `DF-04` before proxy or frontend implementation starts.
+- [x] Resolve `DF-03` and `DF-04` before proxy or frontend implementation starts.
 Pass when: the stream source, browser transport, ordering model, and seam ownership map are frozen in the owning docs, and no later milestone creates a second session or stream control stack without an explicit replacement note.
 
 ### Milestone 0.5d: Frontend, Operator, And Trust Decisions
 
-- [ ] Record the MVP status of keyboard capture, clipboard capture, and voted command execution under `DF-02` and `DF-08`.
+- [x] Record the MVP status of keyboard capture, clipboard capture, and voted command execution under `DF-02` and `DF-08`.
 Pass when: each feature is marked `deferred`, `stubbed`, or `approved for MVP`, and any approved surface names an authz and audit owner.
 
-- [ ] Resolve `DF-02` before any operator-facing surface is implemented.
+- [x] Resolve `DF-02` before any operator-facing surface is implemented.
 Pass when: the plan names the service-to-service auth model, the operator identity source, the watch, propose, approve, and kill roles, and the audit fields that bind every action to an operator identity.
 
-- [ ] Resolve `DF-08` before the first live-stream or evidence surface is implemented.
+- [x] Resolve `DF-08` before the first live-stream or evidence surface is implemented.
 Pass when: the plan states who can halt the whole stack, how a broken host or image is quarantined, how live sessions, leases, tokens, and backend credentials are revoked, what is stored, how secrets and PII are redacted, how long artifacts live, and how operators export evidence safely.
 
-- [ ] Resolve the provenance and promotion checks in `DF-05` and `DF-07` before the control plane is implemented.
+- [x] Resolve the provenance and promotion checks in `DF-05` and `DF-07` before the control plane is implemented.
 Pass when: the docs name the source ISO, checksums, transformation steps, and the immutable or attested promotion input that both `images.lock` and the control plane consume.
 
-- [ ] Freeze implementation only after the design set is complete.
+- [x] Freeze implementation only after the design set is complete.
 Pass when: every `DF-*` row is resolved, `docs/honeypot/decisions.md` links to the owning docs for each row, and no Milestone 1 through Milestone 6 implementation work has started early.
 
 ## Milestone 1: Gold Image and Control Plane Foundations
 
-- [ ] Create the Rust control-plane service under `honeypot/control-plane/`.
+- [x] Create the Rust control-plane service under `honeypot/control-plane/`.
 Pass when: the service exposes a stable API skeleton and a health endpoint.
 
 - [ ] Wire the `control-plane` binary into the established image target.
 Pass when: the service starts from the chosen `honeypot/docker/control-plane/` image target directly without Bash or Python entrypoint glue.
 
-- [ ] Add a typed Gateway-side control-plane client and wire it through Gateway state.
+- [x] Add a typed Gateway-side control-plane client and wire it through Gateway state.
 Pass when: the proxy can acquire, release, reset, and recycle VMs through typed Rust calls rather than ad hoc requests.
 
 - [ ] Wire control-plane runtime config injection.
@@ -381,7 +381,7 @@ Pass when: the service consumes only the documented `/dev/kvm` and related start
 - [ ] Add QEMU command building and config validation in Rust.
 Pass when: VM launch parameters, sockets, disks, CPU, memory, and network settings are derived from typed config rather than shell snippets.
 
-- [ ] Add control-plane container health and readiness checks.
+- [x] Add control-plane container health and readiness checks.
 Pass when: compose and Rust tests can distinguish startup, healthy, degraded, and unsafe host-integration states.
 
 - [ ] Implement VM lifecycle adapters for create, start, stop, and reset.
@@ -416,7 +416,7 @@ Pass when: a newly produced image boots, reaches a known-ready signal, accepts R
 
 ## Milestone 2: Proxy Honeypot Mode
 
-- [ ] Add an explicit honeypot proxy mode instead of mutating the default Gateway path silently.
+- [x] Add an explicit honeypot proxy mode instead of mutating the default Gateway path silently.
 Pass when: non-honeypot behavior stays unchanged unless honeypot mode is enabled.
 
 - [ ] Wire the `proxy` binary into the established image target.
@@ -428,16 +428,16 @@ Pass when: public listener config and control-plane endpoint flow through docume
 - [ ] Wire proxy frontend event delivery config.
 Pass when: the frontend event delivery path flows through documented env or mounted files.
 
-- [ ] Wire proxy backend credential material injection.
+- [x] Wire proxy backend credential material injection.
 Pass when: backend credential material is injected through the documented runtime contract without being baked into the image.
 
 - [ ] Wire proxy token-secret injection.
 Pass when: token-related secrets are injected through the documented runtime contract without being baked into the image.
 
-- [ ] Bind attacker-facing credentials to backend credentials through `/jet/preflight`.
+- [x] Bind attacker-facing credentials to backend credentials through `/jet/preflight`.
 Pass when: the attacker can authenticate through the proxy while the VM only receives the stored backend credentials.
 
-- [ ] Add immediate session-bound credential revocation on disconnect, kill, and recycle in addition to TTL cleanup.
+- [x] Add immediate session-bound credential revocation on disconnect, kill, and recycle in addition to TTL cleanup.
 Pass when: `/jet/preflight` mappings are removed deterministically before the periodic credential-store cleanup window.
 
 - [ ] Extend `devolutions-gateway/src/session.rs` with honeypot metadata for attacker source, assigned VM, stream metadata, and terminal outcome.
@@ -449,19 +449,19 @@ Pass when: the proxy can emit connected, assigned, ready, disconnected, killed, 
 - [ ] Extend subscriber and traffic signals so the frontend can track tiles without scraping logs.
 Pass when: the frontend can discover live sessions and terminal states through structured events and APIs.
 
-- [ ] Reuse `/jet/sessions` and `/jet/session/{id}/terminate` where possible.
+- [x] Reuse `/jet/sessions` and `/jet/session/{id}/terminate` where possible.
 Pass when: the plan either reuses these surfaces or documents replacement endpoints and why they are needed.
 
-- [ ] Add stream token issuance and stream metadata to the proxy-visible model.
+- [x] Add stream token issuance and stream metadata to the proxy-visible model.
 Pass when: a session event includes enough data for the frontend to open, replay, and close a tile deterministically.
 
-- [ ] Add explicit guest assignment and recycle markers to session events.
+- [x] Add explicit guest assignment and recycle markers to session events.
 Pass when: the frontend can tell the difference between attacker disconnect, operator kill, no-lease failure, and VM recycle.
 
 - [ ] Add quarantine controls.
 Pass when: the operator can quarantine a broken or suspicious session or guest without leaving live credential mappings behind.
 
-- [ ] Add kill-switch controls.
+- [x] Add kill-switch controls.
 Pass when: the operator can revoke one session or all active sessions and the proxy tears down credential mappings and VM leases cleanly.
 
 - [ ] Add partition and timeout handling between proxy and control plane.
@@ -472,37 +472,37 @@ Pass when: compose and Rust tests can distinguish healthy listener startup from 
 
 ## Milestone 3: Frontend MVP
 
-- [ ] Create a fresh HTMX frontend under `honeypot/frontend/`.
+- [x] Create a fresh HTMX frontend under `honeypot/frontend/`.
 Pass when: the implementation does not import or depend on the current `webapp/` application code.
 
 - [ ] Wire the `frontend` application into the established image target.
 Pass when: the service starts from the chosen `honeypot/docker/frontend/` image target and does not package the existing `webapp/` application.
 
-- [ ] Wire frontend proxy event endpoint settings.
+- [x] Wire frontend proxy event endpoint settings.
 Pass when: the service consumes only documented env or mounted config for proxy event endpoints.
 
-- [ ] Wire frontend stream endpoint settings.
+- [x] Wire frontend stream endpoint settings.
 Pass when: the service consumes only documented env or mounted config for stream endpoints.
 
-- [ ] Wire frontend operator auth config.
+- [x] Wire frontend operator auth config.
 Pass when: the service consumes only documented env or mounted config for operator auth.
 
-- [ ] Wire frontend session bootstrap and runtime toggles.
+- [x] Wire frontend session bootstrap and runtime toggles.
 Pass when: the service consumes only documented env or mounted config for session bootstrap behavior and runtime toggles.
 
-- [ ] Implement operator authentication and watch authorization for the frontend.
+- [x] Implement operator authentication and watch authorization for the frontend.
 Pass when: anonymous access is either forbidden or explicitly documented as lab-only mode.
 
-- [ ] Implement a bootstrap view for already-running sessions.
+- [x] Implement a bootstrap view for already-running sessions.
 Pass when: opening the frontend renders live sessions immediately instead of waiting for a new event.
 
-- [ ] Implement the tiled live-session dashboard.
+- [x] Implement the tiled live-session dashboard.
 Pass when: active sessions render as tiles with status, origin, target VM, session age, and stream readiness.
 
-- [ ] Implement fullscreen stream mode on tile click.
+- [x] Implement fullscreen stream mode on tile click.
 Pass when: clicking a tile expands the session stream and closing it returns to the grid.
 
-- [ ] Implement disconnect-driven tile removal.
+- [x] Implement disconnect-driven tile removal.
 Pass when: `session.ended`, `session.killed`, and recycle terminal events remove or update tiles without a manual refresh.
 
 - [ ] Add a command proposal skeleton for future state-messing features.
@@ -547,16 +547,16 @@ Pass when: the lab proves where video comes from, how it is authenticated, and t
 
 ### Milestone 5a: Container Smoke And Pinning
 
-- [ ] Implement the `contract`, `host-smoke`, and `lab-e2e` test tiers in Rust.
+- [x] Implement the `contract`, `host-smoke`, and `lab-e2e` test tiers in Rust.
 Pass when: each new honeypot test fits one named tier, CI-safe checks do not require QEMU, and the lab tier only runs when explicitly enabled.
 
-- [ ] Add a Rust-native tier gate that blocks `lab-e2e` until `contract` and `host-smoke` pass.
+- [x] Add a Rust-native tier gate that blocks `lab-e2e` until `contract` and `host-smoke` pass.
 Pass when: lab selection is enforced by Rust test selection or a repo-local Rust-readable manifest rather than Bash or Python wrappers.
 
-- [ ] Pin `current` and `previous` image digests before deeper lab work starts.
+- [x] Pin `current` and `previous` image digests before deeper lab work starts.
 Pass when: the Docker smoke and compose tiers read the exact `current` and `previous` digests for each service from `honeypot/docker/images.lock` before rollback or lab tests run.
 
-- [ ] Add a Rust lockfile-schema validation test for `honeypot/docker/images.lock`.
+- [x] Add a Rust lockfile-schema validation test for `honeypot/docker/images.lock`.
 Pass when: tests fail if `control-plane`, `proxy`, or `frontend` is missing, if `current` or `previous` digest fields are missing, or if validation paths try to use a floating tag.
 
 - [ ] Add a Rust Docker smoke-test tier for the three service images.
@@ -584,7 +584,7 @@ Pass when: the test boots `current/current/previous` and verifies the downgraded
 
 ### Milestone 5c: Contract And Lab Harness Validation
 
-- [ ] Keep honeypot e2e coverage inside `testsuite/tests/` and the existing `integration_tests` harness unless a split is justified.
+- [x] Keep honeypot e2e coverage inside `testsuite/tests/` and the existing `integration_tests` harness unless a split is justified.
 Pass when: the test layout remains discoverable and any new harness has a written reason.
 
 - [ ] Add contract tests for config parsing, schema versioning, and event payloads.
@@ -649,7 +649,7 @@ Pass when: expired mappings are removed deterministically and do not survive dis
 - [ ] Add a no-lease handling test.
 Pass when: the proxy and frontend surface the no-lease outcome clearly and do not leave behind partial session or VM state.
 
-- [ ] Add a kill-switch action test.
+- [x] Add a kill-switch action test.
 Pass when: single-session and global kill actions tear down sessions and revoke credentials deterministically.
 
 - [ ] Add an orphan-cleanup test.
@@ -694,15 +694,15 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 
 - [ ] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
 - [ ] Milestone 0 and Milestone 0.5 are complete before Milestone 1 through Milestone 6 implementation starts.
-- [ ] The design-freeze docs exist before implementation starts.
+- [x] The design-freeze docs exist before implementation starts.
 - [ ] The three honeypot services each have their own Docker image, build context, healthcheck, and runtime config contract.
-- [ ] Current and previous image digests are pinned for `control-plane`, `proxy`, and `frontend`, and rollback does not require rebuilding.
-- [ ] `honeypot/docker/images.lock` has a documented schema for `control-plane`, `proxy`, and `frontend`, and release or test paths reject floating tags.
+- [x] Current and previous image digests are pinned for `control-plane`, `proxy`, and `frontend`, and rollback does not require rebuilding.
+- [x] `honeypot/docker/images.lock` has a documented schema for `control-plane`, `proxy`, and `frontend`, and release or test paths reject floating tags.
 - [ ] Mixed-version `current` or `previous` service combinations are documented and validated before rollback is considered safe.
-- [ ] The test plan is split into `contract`, `host-smoke`, and `lab-e2e` tiers.
+- [x] The test plan is split into `contract`, `host-smoke`, and `lab-e2e` tiers.
 - [ ] The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.
 - [ ] The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.
-- [ ] The frontend can bootstrap, create, update, fullscreen, and remove tiles from live session events.
+- [x] The frontend can bootstrap, create, update, fullscreen, and remove tiles from live session events.
 - [ ] The stream path is bound to session identity and survives disconnect and recycle correctly.
 - [ ] The Rust e2e path validates both guest behavior and POSIX host artifacts.
 - [ ] Normal and failure-path teardown leave no orphaned QEMU processes, exposed control sockets, leaked overlays, stale containers, stale networks, stale volumes, or unredacted sensitive logs.

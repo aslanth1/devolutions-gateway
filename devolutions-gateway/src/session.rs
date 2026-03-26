@@ -54,6 +54,11 @@ pub async fn add_session_in_progress(
     notify_kill: Arc<Notify>,
     disconnect_interest: Option<DisconnectInterest>,
 ) -> anyhow::Result<()> {
+    if let Err(error) = sessions.honeypot().ensure_new_session_allowed(info.id) {
+        let _ = sessions.honeypot().abort_prepared_session(info.id).await;
+        return Err(error).context("couldn't admit honeypot session");
+    }
+
     let honeypot_session = info.clone();
     let association_id = info.id;
     let start_timestamp = info.start_timestamp;
@@ -172,6 +177,14 @@ impl SessionKillMetadata {
         }
     }
 
+    pub fn system_operator(operator_id: Uuid) -> Self {
+        Self {
+            scope: KillScope::System,
+            operator_id: Some(operator_id),
+            reason: SessionKillReason::OperatorRequested,
+        }
+    }
+
     pub fn gateway(reason: SessionKillReason) -> Self {
         Self {
             scope: KillScope::Session,
@@ -193,6 +206,12 @@ impl DisconnectInterest {
             ReconnectionPolicy::Allowed { window_in_seconds } => Some(DisconnectInterest {
                 window: Duration::from_secs(u64::from(window_in_seconds.get())),
             }),
+        }
+    }
+
+    fn kill_tracking_window() -> DisconnectInterest {
+        DisconnectInterest {
+            window: Duration::from_secs(60),
         }
     }
 }
@@ -224,6 +243,10 @@ enum SessionManagerMessage {
         id: Uuid,
         kill: SessionKillMetadata,
         channel: oneshot::Sender<KillResult>,
+    },
+    KillAll {
+        kill: SessionKillMetadata,
+        channel: oneshot::Sender<usize>,
     },
     GetDisconnectedInfo {
         id: Uuid,
@@ -260,6 +283,7 @@ impl fmt::Debug for SessionManagerMessage {
                 kill: _,
                 channel: _,
             } => f.debug_struct("Kill").field("id", id).finish_non_exhaustive(),
+            SessionManagerMessage::KillAll { kill: _, channel: _ } => f.debug_struct("KillAll").finish_non_exhaustive(),
             SessionManagerMessage::GetDisconnectedInfo { id, channel: _ } => f
                 .debug_struct("GetDisconnectedInfo")
                 .field("id", id)
@@ -331,6 +355,16 @@ impl SessionMessageSender {
             .ok()
             .context("couldn't send Kill message")?;
         rx.await.context("couldn't receive kill result")
+    }
+
+    pub async fn kill_all_sessions_with_metadata(&self, kill: SessionKillMetadata) -> anyhow::Result<usize> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(SessionManagerMessage::KillAll { kill, channel: tx })
+            .await
+            .ok()
+            .context("couldn't send KillAll message")?;
+        rx.await.context("couldn't receive bulk kill result")
     }
 
     pub async fn get_disconnected_info(&self, id: Uuid) -> anyhow::Result<Option<DisconnectedInfo>> {
@@ -471,9 +505,12 @@ impl SessionManagerTask {
     }
 
     fn handle_kill(&mut self, id: Uuid, kill: SessionKillMetadata) -> KillResult {
-        if let Some(interest) = self.disconnect_interest.get(&id).copied() {
-            self.update_disconnected_info(id, interest, Some(kill));
-        }
+        let interest = self
+            .disconnect_interest
+            .get(&id)
+            .copied()
+            .unwrap_or_else(DisconnectInterest::kill_tracking_window);
+        self.update_disconnected_info(id, interest, Some(kill));
 
         match self.all_notify_kill.get(&id) {
             Some(notify_kill) => {
@@ -482,6 +519,15 @@ impl SessionManagerTask {
             }
             None => KillResult::NotFound,
         }
+    }
+
+    fn handle_kill_all(&mut self, kill: SessionKillMetadata) -> usize {
+        let running_ids = self.all_notify_kill.keys().copied().collect::<Vec<_>>();
+
+        running_ids
+            .into_iter()
+            .filter(|id| matches!(self.handle_kill(*id, kill), KillResult::Success))
+            .count()
     }
 
     fn handle_get_disconnected_info(&mut self, id: Uuid) -> Option<DisconnectedInfo> {
@@ -616,6 +662,10 @@ async fn session_manager_task(
                         let kill_result = manager.handle_kill(id, kill);
                         let _ = channel.send(kill_result);
                     }
+                    SessionManagerMessage::KillAll { kill, channel } => {
+                        let killed_count = manager.handle_kill_all(kill);
+                        let _ = channel.send(killed_count);
+                    }
                     SessionManagerMessage::GetDisconnectedInfo { id, channel } => {
                         let disconnected_info = manager.handle_get_disconnected_info(id);
                         let _ = channel.send(disconnected_info);
@@ -673,6 +723,9 @@ async fn session_manager_task(
             }
             SessionManagerMessage::Kill { channel, .. } => {
                 let _ = channel.send(KillResult::Success);
+            }
+            SessionManagerMessage::KillAll { channel, .. } => {
+                let _ = channel.send(manager.all_notify_kill.len());
             }
             _ => {}
         }

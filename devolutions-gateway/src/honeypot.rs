@@ -19,8 +19,8 @@ use time::format_description::well_known::Rfc3339;
 use tokio::sync::broadcast;
 
 use crate::config::{
-    Conf, HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotStreamConf,
-    HoneypotStreamSourceKind,
+    Conf, HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotKillSwitchConf,
+    HoneypotStreamConf, HoneypotStreamSourceKind,
 };
 use crate::credential::{AppCredentialMapping, CredentialBinding, CredentialProvisionRequest, CredentialStoreHandle};
 use crate::session::{RunningSessions, SessionInfo, SessionKillMetadata};
@@ -104,12 +104,27 @@ impl HoneypotMode {
 
         Ok(())
     }
+
+    pub fn ensure_new_session_allowed(&self, session_id: uuid::Uuid) -> anyhow::Result<()> {
+        if let Some(runtime) = self.runtime() {
+            runtime.ensure_new_session_allowed(session_id)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn activate_system_kill(&self) {
+        if let Some(runtime) = self.runtime() {
+            runtime.activate_system_kill();
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct HoneypotRuntime {
     frontend: HoneypotFrontendRuntime,
     stream: HoneypotStreamRuntime,
+    kill_switch: HoneypotKillSwitchRuntime,
     control_plane: Option<HoneypotControlPlaneClient>,
     credential_store: CredentialStoreHandle,
     backend_credentials: HoneypotBackendCredentialResolver,
@@ -124,6 +139,7 @@ impl HoneypotRuntime {
         Ok(Self {
             frontend: HoneypotFrontendRuntime::from_conf(&conf.honeypot.frontend),
             stream: HoneypotStreamRuntime::from_conf(&conf.honeypot.stream),
+            kill_switch: HoneypotKillSwitchRuntime::from_conf(&conf.honeypot.kill_switch),
             control_plane: HoneypotControlPlaneClient::from_conf(&conf.honeypot.control_plane)?,
             credential_store,
             backend_credentials: HoneypotBackendCredentialResolver::new(HONEYPOT_BACKEND_CREDENTIALS_PATH),
@@ -144,6 +160,24 @@ impl HoneypotRuntime {
 
     pub fn control_plane(&self) -> Option<&HoneypotControlPlaneClient> {
         self.control_plane.as_ref()
+    }
+
+    pub fn activate_system_kill(&self) {
+        self.kill_switch.activate_system_kill();
+        self.events
+            .lock()
+            .push_proxy_status_degraded(Vec::new(), "system_kill_active");
+    }
+
+    fn ensure_new_session_allowed(&self, session_id: uuid::Uuid) -> anyhow::Result<()> {
+        if self.kill_switch.halt_new_sessions() {
+            self.events
+                .lock()
+                .push_proxy_status_degraded(vec![session_id.to_string()], "system_kill_active");
+            anyhow::bail!("honeypot intake halted by system kill");
+        }
+
+        Ok(())
     }
 
     pub fn bootstrap_response(&self, sessions: RunningSessions) -> BootstrapResponse {
@@ -179,6 +213,8 @@ impl HoneypotRuntime {
         token: &str,
         attacker_addr: SocketAddr,
     ) -> anyhow::Result<()> {
+        self.ensure_new_session_allowed(session_id)?;
+
         let Some(attacker_protocol) = attacker_protocol_for_protocol(application_protocol) else {
             return Ok(());
         };
@@ -542,6 +578,34 @@ impl HoneypotStreamRuntime {
             transport,
         }
     }
+}
+
+#[derive(Clone)]
+struct HoneypotKillSwitchRuntime {
+    halt_new_sessions_on_system_kill: bool,
+    state: Arc<Mutex<HoneypotKillSwitchState>>,
+}
+
+impl HoneypotKillSwitchRuntime {
+    fn from_conf(conf: &HoneypotKillSwitchConf) -> Self {
+        Self {
+            halt_new_sessions_on_system_kill: conf.halt_new_sessions_on_system_kill,
+            state: Arc::new(Mutex::new(HoneypotKillSwitchState::default())),
+        }
+    }
+
+    fn activate_system_kill(&self) {
+        self.state.lock().system_kill_active = true;
+    }
+
+    fn halt_new_sessions(&self) -> bool {
+        self.halt_new_sessions_on_system_kill && self.state.lock().system_kill_active
+    }
+}
+
+#[derive(Debug, Default)]
+struct HoneypotKillSwitchState {
+    system_kill_active: bool,
 }
 
 #[derive(Clone)]
@@ -1226,9 +1290,12 @@ mod tests {
 
     use super::{
         HoneypotBackendCredentialResolver, HoneypotControlPlaneClient, HoneypotEventJournal, HoneypotFrontendRuntime,
-        HoneypotRuntime, HoneypotStreamRuntime,
+        HoneypotKillSwitchRuntime, HoneypotRuntime, HoneypotStreamRuntime,
     };
-    use crate::config::{HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotStreamConf};
+    use crate::config::{
+        HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotKillSwitchConf,
+        HoneypotStreamConf,
+    };
     use crate::credential::{AppCredential, AppCredentialMapping, CredentialStoreHandle, Password};
     use crate::session::{ConnectionModeDetails, SessionInfo, SessionKillMetadata, SessionKillReason};
     use crate::token::{ApplicationProtocol, Protocol, RecordingPolicy, SessionTtl};
@@ -1558,6 +1625,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn system_kill_halts_new_prepared_sessions_when_configured() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+        harness.write_backend_credentials(session.id);
+        harness.runtime.activate_system_kill();
+
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            harness.runtime.prepare_rdp_session(
+                session.id,
+                session.application_protocol.clone(),
+                session.time_to_live,
+                TEST_PREPARED_SESSION_TOKEN,
+                "127.0.0.1:6666".parse().expect("parse attacker addr"),
+            ),
+        )
+        .await
+        .expect("prepare honeypot session should not time out")
+        .expect_err("system kill should halt new session preparation");
+
+        assert!(format!("{error:#}").contains("honeypot intake halted by system kill"));
+        assert!(harness.state.acquired.lock().is_empty());
+        assert!(harness.state.released.lock().is_empty());
+        assert!(harness.state.recycled.lock().is_empty());
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), harness.shutdown())
+            .await
+            .expect("shutdown should not time out");
+    }
+
+    #[tokio::test]
     async fn expired_cursor_is_rejected() {
         let runtime = test_runtime_without_control_plane();
         let session = test_session();
@@ -1569,6 +1667,35 @@ mod tests {
 
         assert!(runtime.stream_from_cursor("99").is_err());
         assert!(runtime.stream_from_cursor("bogus").is_err());
+    }
+
+    #[tokio::test]
+    async fn system_kill_emits_system_scoped_session_killed_before_recycle() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+        harness
+            .runtime
+            .record_session_ended(&session, Some(SessionKillMetadata::system_operator(Uuid::nil())))
+            .await
+            .expect("record system-killed session");
+
+        let (replay, _receiver) = harness.runtime.stream_from_cursor("0").expect("valid cursor");
+        assert_eq!(replay.len(), 5);
+        assert!(matches!(
+            replay[2].payload,
+            EventPayload::SessionKilled {
+                kill_scope: honeypot_contracts::events::KillScope::System,
+                ..
+            }
+        ));
+
+        harness.shutdown().await;
     }
 
     fn test_runtime_without_control_plane() -> HoneypotRuntime {
@@ -1595,6 +1722,7 @@ mod tests {
                 camino::Utf8PathBuf::from_path_buf(backend_credentials_path)
                     .expect("backend credential path should be UTF-8"),
             ),
+            kill_switch: HoneypotKillSwitchRuntime::from_conf(&HoneypotKillSwitchConf::default()),
             requested_ready_timeout_secs: 5,
             events: Arc::new(Mutex::new(HoneypotEventJournal::new(sender))),
         }
@@ -1635,6 +1763,7 @@ mod tests {
                     browser_transport: HoneypotBrowserTransport::Sse,
                     token_ttl: std::time::Duration::from_secs(42),
                 }),
+                kill_switch: HoneypotKillSwitchRuntime::from_conf(&HoneypotKillSwitchConf::default()),
                 control_plane: Some(
                     HoneypotControlPlaneClient::from_conf(&HoneypotControlPlaneConf {
                         endpoint: Some(format!("http://{addr}/").parse().expect("parse endpoint")),
@@ -1676,10 +1805,12 @@ mod tests {
     }
 
     async fn test_acquire_handler(
+        State(state): State<TestControlPlaneState>,
         headers: HeaderMap,
         Json(request): Json<AcquireVmRequest>,
     ) -> Json<AcquireVmResponse> {
         assert_service_token(&headers);
+        state.acquired.lock().push(request.session_id.clone());
 
         Json(AcquireVmResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -1751,6 +1882,7 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct TestControlPlaneState {
+        acquired: Arc<Mutex<Vec<String>>>,
         released: Arc<Mutex<Vec<String>>>,
         recycled: Arc<Mutex<Vec<String>>>,
     }

@@ -30,6 +30,7 @@ pub(super) enum RequiredScope {
     Watch,
     StreamRead,
     SessionKill,
+    SystemKill,
 }
 
 impl RequiredScope {
@@ -38,6 +39,7 @@ impl RequiredScope {
             Self::Watch => "gateway.honeypot.watch",
             Self::StreamRead => "gateway.honeypot.stream.read",
             Self::SessionKill => "gateway.honeypot.session.kill",
+            Self::SystemKill => "gateway.honeypot.system.kill",
         }
     }
 }
@@ -58,6 +60,10 @@ impl OperatorAccess {
             self.scope,
             AccessScope::Wildcard | AccessScope::HoneypotSessionKill | AccessScope::HoneypotSystemKill
         )
+    }
+
+    pub(super) fn can_trigger_system_kill(&self) -> bool {
+        matches!(self.scope, AccessScope::Wildcard | AccessScope::HoneypotSystemKill)
     }
 
     #[cfg(test)]
@@ -245,5 +251,6 @@ fn scope_allows(required: RequiredScope, actual: &AccessScope) -> bool {
             | (RequiredScope::StreamRead, AccessScope::HoneypotStreamRead)
             | (RequiredScope::SessionKill, AccessScope::HoneypotSessionKill)
             | (RequiredScope::SessionKill, AccessScope::HoneypotSystemKill)
+            | (RequiredScope::SystemKill, AccessScope::HoneypotSystemKill)
     )
 }
