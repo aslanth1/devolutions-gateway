@@ -1,0 +1,86 @@
+name: dgw-honeypot
+
+x-images:
+  control-plane: &control-plane-image ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy: &proxy-image ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend: &frontend-image ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+
+services:
+  control-plane:
+    image: *control-plane-image
+    build:
+      context: ../..
+      dockerfile: honeypot/docker/control-plane/Dockerfile
+    networks:
+      - honeypot-control
+    volumes:
+      - honeypot-control-plane-data:/var/lib/honeypot/control-plane
+      - /srv/honeypot/images:/var/lib/honeypot/images:rw
+      - /srv/honeypot/leases:/var/lib/honeypot/leases:rw
+      - /srv/honeypot/run/qmp:/run/honeypot/qmp:rw
+      - /srv/honeypot/run/qga:/run/honeypot/qga:rw
+      - ./config/control-plane:/etc/honeypot/control-plane:ro
+      - ./secrets/control-plane:/run/secrets/honeypot/control-plane:ro
+    devices:
+      - /dev/kvm:/dev/kvm
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/api/v1/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  proxy:
+    image: *proxy-image
+    build:
+      context: ../..
+      dockerfile: honeypot/docker/proxy/Dockerfile
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    networks:
+      - honeypot-control
+      - honeypot-edge
+    ports:
+      - "0.0.0.0:8443:8443"
+    volumes:
+      - honeypot-proxy-data:/var/lib/honeypot/proxy
+      - ./config/proxy:/etc/honeypot/proxy:ro
+      - ./secrets/proxy:/run/secrets/honeypot/proxy:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/jet/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  frontend:
+    image: *frontend-image
+    build:
+      context: ../..
+      dockerfile: honeypot/docker/frontend/Dockerfile
+    depends_on:
+      proxy:
+        condition: service_healthy
+    networks:
+      - honeypot-control
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./config/frontend:/etc/honeypot/frontend:ro
+      - ./secrets/frontend:/run/secrets/honeypot/frontend:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+networks:
+  honeypot-control:
+    internal: true
+  honeypot-edge: {}
+
+volumes:
+  honeypot-control-plane-data: {}
+  honeypot-proxy-data: {}

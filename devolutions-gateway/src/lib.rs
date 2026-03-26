@@ -19,6 +19,7 @@ pub mod config;
 pub mod credential;
 pub mod extract;
 pub mod generic_client;
+pub mod honeypot;
 pub mod http;
 pub mod interceptor;
 pub mod jmux;
@@ -51,6 +52,7 @@ pub static SYSTEM_LOGGER: std::sync::LazyLock<Arc<dyn sysevent::SystemEventSink>
 #[derive(Clone)]
 pub struct DgwState {
     pub conf_handle: config::ConfHandle,
+    pub honeypot: honeypot::HoneypotMode,
     pub token_cache: Arc<token::TokenCache>,
     pub jrl: Arc<token::CurrentJrl>,
     pub sessions: session::SessionMessageSender,
@@ -77,9 +79,11 @@ impl DgwState {
     #[doc(hidden)]
     pub fn mock(json_config: &str) -> anyhow::Result<(Self, MockHandles)> {
         let conf_handle = config::ConfHandle::mock(json_config)?;
+        let conf = conf_handle.get_conf();
+        let honeypot = honeypot::HoneypotMode::from_conf(&conf)?;
         let token_cache = Arc::new(token::new_token_cache());
         let jrl = Arc::new(parking_lot::Mutex::new(token::JrlTokenClaims::default()));
-        let (session_manager_handle, session_manager_rx) = session::session_manager_channel();
+        let (session_manager_handle, session_manager_rx) = session::session_manager_channel(honeypot.clone());
         let (recording_manager_handle, recording_manager_rx) = recording::recording_message_channel();
         let (subscriber_tx, subscriber_rx) = subscriber::subscriber_channel();
         let (shutdown_handle, shutdown_signal) = devolutions_gateway_task::ShutdownHandle::new();
@@ -90,6 +94,7 @@ impl DgwState {
 
         let state = Self {
             conf_handle,
+            honeypot,
             token_cache,
             jrl,
             sessions: session_manager_handle,

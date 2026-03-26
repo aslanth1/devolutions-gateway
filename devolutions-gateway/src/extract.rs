@@ -135,6 +135,42 @@ where
 }
 
 #[derive(Clone, Copy)]
+pub struct HoneypotWatchScope;
+
+impl<S> FromRequestParts<S> for HoneypotWatchScope
+where
+    S: Send + Sync,
+{
+    type Rejection = HttpError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match ScopeToken::from_request_parts(parts, state).await?.0.scope {
+            AccessScope::Wildcard => Ok(Self),
+            AccessScope::HoneypotWatch => Ok(Self),
+            _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct HoneypotStreamReadScope;
+
+impl<S> FromRequestParts<S> for HoneypotStreamReadScope
+where
+    S: Send + Sync,
+{
+    type Rejection = HttpError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        match ScopeToken::from_request_parts(parts, state).await?.0.scope {
+            AccessScope::Wildcard => Ok(Self),
+            AccessScope::HoneypotStreamRead => Ok(Self),
+            _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct SessionTerminateScope;
 
 impl<S> FromRequestParts<S> for SessionTerminateScope

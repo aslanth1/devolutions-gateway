@@ -246,6 +246,7 @@ impl Tasks {
 
 async fn spawn_tasks(conf_handle: ConfHandle) -> anyhow::Result<Tasks> {
     let conf = conf_handle.get_conf();
+    let honeypot = devolutions_gateway::honeypot::HoneypotMode::from_conf(&conf)?;
 
     let mut tasks = Tasks::new();
 
@@ -253,7 +254,7 @@ async fn spawn_tasks(conf_handle: ConfHandle) -> anyhow::Result<Tasks> {
 
     let jrl = load_jrl_from_disk(&conf)?;
 
-    let (session_manager_handle, session_manager_rx) = session_manager_channel();
+    let (session_manager_handle, session_manager_rx) = session_manager_channel(honeypot.clone());
 
     let (recording_manager_handle, recording_manager_rx) = recording_message_channel();
 
@@ -277,6 +278,7 @@ async fn spawn_tasks(conf_handle: ConfHandle) -> anyhow::Result<Tasks> {
 
     let state = DgwState {
         conf_handle: conf_handle.clone(),
+        honeypot,
         token_cache: Arc::clone(&token_cache),
         jrl,
         sessions: session_manager_handle.clone(),

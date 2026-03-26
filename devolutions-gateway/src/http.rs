@@ -100,6 +100,12 @@ impl HttpError {
 
     #[inline]
     #[track_caller]
+    pub fn conflict() -> HttpErrorBuilder {
+        HttpErrorBuilder::new(StatusCode::CONFLICT)
+    }
+
+    #[inline]
+    #[track_caller]
     pub fn bad_gateway() -> HttpErrorBuilder {
         HttpErrorBuilder::new(StatusCode::BAD_GATEWAY)
     }

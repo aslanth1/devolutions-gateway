@@ -108,6 +108,10 @@
       "$ref": "#/definitions/AiGatewayConf",
       "description": "JSON object describing the AI gateway configuration (experimental, requires enable_unstable)."
     },
+    "Honeypot": {
+      "$ref": "#/definitions/HoneypotConf",
+      "description": "JSON object describing the honeypot fork configuration."
+    },
     "Proxy": {
       "$ref": "#/definitions/ProxyConf",
       "description": "HTTP/SOCKS proxy configuration for outbound requests."
@@ -642,6 +646,166 @@
         "ApiVersion": {
           "type": "string",
           "description": "Azure OpenAI API version (default is 2024-02-15-preview). Can be overridden with AZURE_OPENAI_API_VERSION environment variable."
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoneypotConf": {
+      "type": "object",
+      "properties": {
+        "Enabled": {
+          "type": "boolean",
+          "description": "Whether to enable honeypot mode."
+        },
+        "ControlPlane": {
+          "$ref": "#/definitions/HoneypotControlPlaneConf",
+          "description": "Control-plane client settings."
+        },
+        "Stream": {
+          "$ref": "#/definitions/HoneypotStreamConf",
+          "description": "Live-stream policy settings."
+        },
+        "OperatorAuth": {
+          "$ref": "#/definitions/HoneypotOperatorAuthConf",
+          "description": "Operator authentication settings."
+        },
+        "KillSwitch": {
+          "$ref": "#/definitions/HoneypotKillSwitchConf",
+          "description": "Kill-switch settings."
+        },
+        "Frontend": {
+          "$ref": "#/definitions/HoneypotFrontendConf",
+          "description": "Frontend-facing settings."
+        }
+      },
+      "required": [
+        "Enabled"
+      ],
+      "additionalProperties": false
+    },
+    "HoneypotControlPlaneConf": {
+      "type": "object",
+      "properties": {
+        "Endpoint": {
+          "type": "string",
+          "format": "uri",
+          "description": "Internal control-plane HTTPS endpoint."
+        },
+        "RequestTimeoutSecs": {
+          "type": "integer",
+          "default": 30,
+          "description": "Control-plane request timeout in seconds."
+        },
+        "ConnectTimeoutSecs": {
+          "type": "integer",
+          "default": 5,
+          "description": "Control-plane connect timeout in seconds."
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoneypotStreamSourceKind": {
+      "type": "string",
+      "enum": [
+        "GatewayRecording"
+      ],
+      "default": "GatewayRecording",
+      "description": "Source of truth for honeypot live-stream capture."
+    },
+    "HoneypotBrowserTransport": {
+      "type": "string",
+      "enum": [
+        "Sse"
+      ],
+      "default": "Sse",
+      "description": "Frontend browser update transport."
+    },
+    "HoneypotStreamConf": {
+      "type": "object",
+      "properties": {
+        "SourceKind": {
+          "$ref": "#/definitions/HoneypotStreamSourceKind",
+          "description": "Live-stream source of truth."
+        },
+        "BrowserTransport": {
+          "$ref": "#/definitions/HoneypotBrowserTransport",
+          "description": "Browser update transport."
+        },
+        "TokenTtlSecs": {
+          "type": "integer",
+          "default": 60,
+          "description": "Short-lived stream token TTL in seconds."
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoneypotOperatorAuthMode": {
+      "type": "string",
+      "enum": [
+        "Disabled",
+        "ProxyLocal"
+      ],
+      "default": "Disabled",
+      "description": "Operator authentication mode for honeypot surfaces."
+    },
+    "HoneypotOperatorAuthConf": {
+      "type": "object",
+      "properties": {
+        "Mode": {
+          "$ref": "#/definitions/HoneypotOperatorAuthMode",
+          "description": "Operator authentication mode."
+        },
+        "AppTokenMaximumLifetimeSecs": {
+          "type": "integer",
+          "default": 28800,
+          "description": "Operator app-token maximum lifetime in seconds."
+        },
+        "AccessTokenMaximumLifetimeSecs": {
+          "type": "integer",
+          "default": 900,
+          "description": "Operator access-token maximum lifetime in seconds."
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoneypotKillSwitchConf": {
+      "type": "object",
+      "properties": {
+        "EnableSessionKill": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether single-session kills are enabled."
+        },
+        "EnableSystemKill": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether system-wide kills are enabled."
+        },
+        "HaltNewSessionsOnSystemKill": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether a system kill halts new honeypot sessions."
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoneypotFrontendConf": {
+      "type": "object",
+      "properties": {
+        "PublicUrl": {
+          "type": "string",
+          "format": "uri",
+          "description": "External frontend URL for operator access."
+        },
+        "BootstrapPath": {
+          "type": "string",
+          "default": "/jet/honeypot/bootstrap",
+          "description": "Frontend bootstrap path exposed by the proxy."
+        },
+        "EventsPath": {
+          "type": "string",
+          "default": "/jet/honeypot/events",
+          "description": "Frontend live-events path exposed by the proxy."
         }
       },
       "additionalProperties": false

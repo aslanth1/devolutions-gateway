@@ -1,0 +1,33 @@
+control-plane:
+  image: devolutions-gateway-honeypot/control-plane
+  registry: ghcr.io/fork-owner
+  current:
+    tag: v0.0.0-placeholder
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    source_ref: refs/heads/main
+  previous:
+    tag: v0.0.0-placeholder-prev
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    source_ref: refs/heads/main
+proxy:
+  image: devolutions-gateway-honeypot/proxy
+  registry: ghcr.io/fork-owner
+  current:
+    tag: v0.0.0-placeholder
+    digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+    source_ref: refs/heads/main
+  previous:
+    tag: v0.0.0-placeholder-prev
+    digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    source_ref: refs/heads/main
+frontend:
+  image: devolutions-gateway-honeypot/frontend
+  registry: ghcr.io/fork-owner
+  current:
+    tag: v0.0.0-placeholder
+    digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+    source_ref: refs/heads/main
+  previous:
+    tag: v0.0.0-placeholder-prev
+    digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    source_ref: refs/heads/main

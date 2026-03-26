@@ -45,7 +45,7 @@ pub struct SessionInfo {
     pub details: ConnectionModeDetails,
 }
 
-#[instrument]
+#[instrument(skip_all)]
 pub async fn add_session_in_progress(
     sessions: &SessionMessageSender,
     subscriber_tx: &subscriber::SubscriberSender,
@@ -53,6 +53,7 @@ pub async fn add_session_in_progress(
     notify_kill: Arc<Notify>,
     disconnect_interest: Option<DisconnectInterest>,
 ) -> anyhow::Result<()> {
+    let honeypot_session = info.clone();
     let association_id = info.id;
     let start_timestamp = info.start_timestamp;
 
@@ -70,10 +71,25 @@ pub async fn add_session_in_progress(
         warn!(%error, "Failed to send subscriber message");
     }
 
+    if let Err(error) = sessions.honeypot().record_session_started(&honeypot_session).await {
+        let _ = sessions.remove_session(association_id).await;
+
+        let message = subscriber::Message::session_ended(subscriber::SubscriberSessionInfo {
+            association_id,
+            start_timestamp,
+        });
+
+        if let Err(send_error) = subscriber_tx.try_send(message) {
+            warn!(%send_error, "Failed to send subscriber message");
+        }
+
+        return Err(error).context("couldn't initialize honeypot session state");
+    }
+
     Ok(())
 }
 
-#[instrument]
+#[instrument(skip_all)]
 pub async fn remove_session_in_progress(
     sessions: &SessionMessageSender,
     subscriber_tx: &subscriber::SubscriberSender,
@@ -85,6 +101,14 @@ pub async fn remove_session_in_progress(
         .context("couldn't remove running session")?;
 
     if let Some(session) = removed_session {
+        let was_killed = sessions
+            .get_disconnected_info(id)
+            .await
+            .ok()
+            .flatten()
+            .map(|info| info.was_killed)
+            .unwrap_or(false);
+
         let message = subscriber::Message::session_ended(subscriber::SubscriberSessionInfo {
             association_id: id,
             start_timestamp: session.start_timestamp,
@@ -92,6 +116,13 @@ pub async fn remove_session_in_progress(
 
         if let Err(error) = subscriber_tx.try_send(message) {
             warn!(%error, "Failed to send subscriber message");
+        }
+
+        if let Err(error) = sessions.honeypot().record_session_ended(&session, was_killed).await {
+            warn!(
+                error = format!("{error:#}"),
+                "Failed to finalize honeypot session state"
+            );
         }
     }
 
@@ -192,17 +223,24 @@ impl fmt::Debug for SessionManagerMessage {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct SessionMessageSender(mpsc::Sender<SessionManagerMessage>);
+#[derive(Clone)]
+pub struct SessionMessageSender {
+    tx: mpsc::Sender<SessionManagerMessage>,
+    honeypot: crate::honeypot::HoneypotMode,
+}
 
 impl SessionMessageSender {
+    pub fn honeypot(&self) -> &crate::honeypot::HoneypotMode {
+        &self.honeypot
+    }
+
     pub async fn new_session(
         &self,
         info: SessionInfo,
         notify_kill: Arc<Notify>,
         disconnect_interest: Option<DisconnectInterest>,
     ) -> anyhow::Result<()> {
-        self.0
+        self.tx
             .send(SessionManagerMessage::New {
                 info,
                 notify_kill,
@@ -215,7 +253,7 @@ impl SessionMessageSender {
 
     pub async fn get_session_info(&self, id: Uuid) -> anyhow::Result<Option<SessionInfo>> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.tx
             .send(SessionManagerMessage::GetInfo { id, channel: tx })
             .await
             .ok()
@@ -225,7 +263,7 @@ impl SessionMessageSender {
 
     pub async fn remove_session(&self, id: Uuid) -> anyhow::Result<Option<SessionInfo>> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.tx
             .send(SessionManagerMessage::Remove { id, channel: tx })
             .await
             .ok()
@@ -235,7 +273,7 @@ impl SessionMessageSender {
 
     pub async fn kill_session(&self, id: Uuid) -> anyhow::Result<KillResult> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.tx
             .send(SessionManagerMessage::Kill { id, channel: tx })
             .await
             .ok()
@@ -245,7 +283,7 @@ impl SessionMessageSender {
 
     pub async fn get_disconnected_info(&self, id: Uuid) -> anyhow::Result<Option<DisconnectedInfo>> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.tx
             .send(SessionManagerMessage::GetDisconnectedInfo { id, channel: tx })
             .await
             .ok()
@@ -255,7 +293,7 @@ impl SessionMessageSender {
 
     pub async fn get_running_sessions(&self) -> anyhow::Result<RunningSessions> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.tx
             .send(SessionManagerMessage::GetRunning { channel: tx })
             .await
             .ok()
@@ -265,7 +303,7 @@ impl SessionMessageSender {
 
     pub async fn get_running_session_count(&self) -> anyhow::Result<usize> {
         let (tx, rx) = oneshot::channel();
-        self.0
+        self.tx
             .send(SessionManagerMessage::GetCount { channel: tx })
             .await
             .ok()
@@ -276,8 +314,10 @@ impl SessionMessageSender {
 
 pub struct SessionMessageReceiver(mpsc::Receiver<SessionManagerMessage>);
 
-pub fn session_manager_channel() -> (SessionMessageSender, SessionMessageReceiver) {
-    mpsc::channel(64).pipe(|(tx, rx)| (SessionMessageSender(tx), SessionMessageReceiver(rx)))
+pub fn session_manager_channel(
+    honeypot: crate::honeypot::HoneypotMode,
+) -> (SessionMessageSender, SessionMessageReceiver) {
+    mpsc::channel(64).pipe(|(tx, rx)| (SessionMessageSender { tx, honeypot }, SessionMessageReceiver(rx)))
 }
 
 struct WithTtlInfo {
@@ -320,8 +360,8 @@ pub struct SessionManagerTask {
 }
 
 impl SessionManagerTask {
-    pub fn init(recording_manager_handle: RecordingMessageSender) -> Self {
-        let (tx, rx) = session_manager_channel();
+    pub fn init(recording_manager_handle: RecordingMessageSender, honeypot: crate::honeypot::HoneypotMode) -> Self {
+        let (tx, rx) = session_manager_channel(honeypot);
 
         Self::new(tx, rx, recording_manager_handle)
     }

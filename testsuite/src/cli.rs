@@ -17,21 +17,40 @@ static JETSOCAT_BIN_PATH: LazyLock<std::path::PathBuf> = LazyLock::new(|| {
     build.run().expect("build jetsocat").path().to_path_buf()
 });
 
+const JETSOCAT_SANITIZED_TERMINAL_ENV_VARS: &[&str] = &[
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "TERM",
+    "COLORTERM",
+    "CLICOLOR",
+    "CLICOLOR_FORCE",
+    "CARGO_TERM_COLOR",
+];
+
 pub fn jetsocat_assert_cmd() -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::new(&*JETSOCAT_BIN_PATH);
     cmd.env("RUST_BACKTRACE", "0");
+    for env_var in JETSOCAT_SANITIZED_TERMINAL_ENV_VARS {
+        cmd.env_remove(env_var);
+    }
     cmd
 }
 
 pub fn jetsocat_cmd() -> std::process::Command {
     let mut cmd = std::process::Command::new(&*JETSOCAT_BIN_PATH);
     cmd.env("RUST_BACKTRACE", "0");
+    for env_var in JETSOCAT_SANITIZED_TERMINAL_ENV_VARS {
+        cmd.env_remove(env_var);
+    }
     cmd
 }
 
 pub fn jetsocat_tokio_cmd() -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&*JETSOCAT_BIN_PATH);
     cmd.env("RUST_BACKTRACE", "0");
+    for env_var in JETSOCAT_SANITIZED_TERMINAL_ENV_VARS {
+        cmd.env_remove(env_var);
+    }
     cmd
 }
 

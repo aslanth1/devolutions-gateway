@@ -1327,13 +1327,22 @@ async fn mcp_proxy_terminated_on_broken_pipe() {
     let result = mcp_client.list_tools().await;
 
     // Since Jetsocat is continuously reading on the pipe, it quickly detects the pipe is broken and stops itself with an error.
-    // Our MCP client in turns try to write from stdout / read to stdin, and this fails with a BrokenPipe on our side.
+    // Our MCP client then races with the proxy shutdown.
+    // Depending on timing, the write may fail immediately or the read may observe EOF first.
     let error = result.unwrap_err();
     let error_debug_fmt = format!("{error:?}");
     #[cfg(windows)]
-    assert!(error_debug_fmt.contains("The pipe is being closed"));
+    assert!(
+        error_debug_fmt.contains("The pipe is being closed") || error_debug_fmt.contains("empty response"),
+        "{error_debug_fmt}"
+    );
     #[cfg(not(windows))]
-    assert!(error_debug_fmt.contains("Broken pipe (os error 32)"));
+    assert!(
+        error_debug_fmt.contains("Broken pipe (os error 32)")
+            || error_debug_fmt.contains("connection closed")
+            || error_debug_fmt.contains("empty response"),
+        "{error_debug_fmt}"
+    );
 
     // TODO: Once Jetsocat print the logs to stderr.
     // let mut stderr_str = String::new();

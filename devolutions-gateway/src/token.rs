@@ -434,6 +434,20 @@ pub struct AssociationTokenClaims {
 pub enum AccessScope {
     #[serde(rename = "*")]
     Wildcard,
+    #[serde(rename = "gateway.honeypot.control-plane")]
+    HoneypotControlPlane,
+    #[serde(rename = "gateway.honeypot.watch")]
+    HoneypotWatch,
+    #[serde(rename = "gateway.honeypot.stream.read")]
+    HoneypotStreamRead,
+    #[serde(rename = "gateway.honeypot.session.kill")]
+    HoneypotSessionKill,
+    #[serde(rename = "gateway.honeypot.system.kill")]
+    HoneypotSystemKill,
+    #[serde(rename = "gateway.honeypot.command.propose")]
+    HoneypotCommandPropose,
+    #[serde(rename = "gateway.honeypot.command.approve")]
+    HoneypotCommandApprove,
     #[serde(rename = "gateway.sessions.read")]
     SessionsRead,
     #[serde(rename = "gateway.session.terminate")]

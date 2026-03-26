@@ -6,5 +6,9 @@
 
 pub mod cli;
 pub mod dgw_config;
+pub mod honeypot_control_plane;
+pub mod honeypot_frontend;
+pub mod honeypot_release;
+pub mod honeypot_tiers;
 pub mod mcp_client;
 pub mod mcp_server;

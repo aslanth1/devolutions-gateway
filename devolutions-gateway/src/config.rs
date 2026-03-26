@@ -45,6 +45,13 @@ const ENV_VAR_AZURE_OPENAI_DEPLOYMENT_ID: &str = "AZURE_OPENAI_DEPLOYMENT_ID";
 const ENV_VAR_AZURE_OPENAI_API_KEY: &str = "AZURE_OPENAI_API_KEY";
 const ENV_VAR_AZURE_OPENAI_API_VERSION: &str = "AZURE_OPENAI_API_VERSION";
 const AI_GATEWAY_DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 300;
+const HONEYPOT_CONTROL_PLANE_REQUEST_TIMEOUT_SECS: u64 = 30;
+const HONEYPOT_CONTROL_PLANE_CONNECT_TIMEOUT_SECS: u64 = 5;
+const HONEYPOT_STREAM_TOKEN_TTL_SECS: u64 = 60;
+const HONEYPOT_OPERATOR_APP_TOKEN_MAXIMUM_LIFETIME_SECS: u64 = 28800;
+const HONEYPOT_OPERATOR_ACCESS_TOKEN_MAXIMUM_LIFETIME_SECS: u64 = 900;
+const HONEYPOT_FRONTEND_BOOTSTRAP_PATH: &str = "/jet/honeypot/bootstrap";
+const HONEYPOT_FRONTEND_EVENTS_PATH: &str = "/jet/honeypot/events";
 
 cfg_if! {
     if #[cfg(target_os = "windows")] {
@@ -193,6 +200,7 @@ pub struct Conf {
     pub verbosity_profile: dto::VerbosityProfile,
     pub web_app: WebAppConf,
     pub ai_gateway: AiGatewayConf,
+    pub honeypot: HoneypotConf,
     pub proxy: dto::ProxyConf,
     pub debug: dto::DebugConf,
 }
@@ -232,6 +240,70 @@ pub struct AiGatewayConf {
     pub openai: OpenAiProviderConf,
     pub openrouter: OpenRouterProviderConf,
     pub azure_openai: AzureOpenAiProviderConf,
+}
+
+#[derive(PartialEq, Debug, Clone, Default)]
+pub struct HoneypotConf {
+    pub enabled: bool,
+    pub control_plane: HoneypotControlPlaneConf,
+    pub stream: HoneypotStreamConf,
+    pub operator_auth: HoneypotOperatorAuthConf,
+    pub kill_switch: HoneypotKillSwitchConf,
+    pub frontend: HoneypotFrontendConf,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct HoneypotControlPlaneConf {
+    pub endpoint: Option<Url>,
+    pub request_timeout: std::time::Duration,
+    pub connect_timeout: std::time::Duration,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
+pub enum HoneypotStreamSourceKind {
+    #[default]
+    GatewayRecording,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
+pub enum HoneypotBrowserTransport {
+    #[default]
+    Sse,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct HoneypotStreamConf {
+    pub source_kind: HoneypotStreamSourceKind,
+    pub browser_transport: HoneypotBrowserTransport,
+    pub token_ttl: std::time::Duration,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
+pub enum HoneypotOperatorAuthMode {
+    #[default]
+    Disabled,
+    ProxyLocal,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct HoneypotOperatorAuthConf {
+    pub mode: HoneypotOperatorAuthMode,
+    pub app_token_maximum_lifetime: std::time::Duration,
+    pub access_token_maximum_lifetime: std::time::Duration,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone)]
+pub struct HoneypotKillSwitchConf {
+    pub enable_session_kill: bool,
+    pub enable_system_kill: bool,
+    pub halt_new_sessions_on_system_kill: bool,
+}
+
+#[derive(PartialEq, Debug, Clone)]
+pub struct HoneypotFrontendConf {
+    pub public_url: Option<Url>,
+    pub bootstrap_path: String,
+    pub events_path: String,
 }
 
 /// Mistral AI provider configuration
@@ -368,6 +440,172 @@ impl Default for AiGatewayConf {
             openai: OpenAiProviderConf::default(),
             openrouter: OpenRouterProviderConf::default(),
             azure_openai: AzureOpenAiProviderConf::default(),
+        }
+    }
+}
+
+impl HoneypotConf {
+    fn from_dto(value: &dto::HoneypotConf) -> Self {
+        Self {
+            enabled: value.enabled,
+            control_plane: value
+                .control_plane
+                .as_ref()
+                .map(HoneypotControlPlaneConf::from_dto)
+                .unwrap_or_default(),
+            stream: value
+                .stream
+                .as_ref()
+                .map(HoneypotStreamConf::from_dto)
+                .unwrap_or_default(),
+            operator_auth: value
+                .operator_auth
+                .as_ref()
+                .map(HoneypotOperatorAuthConf::from_dto)
+                .unwrap_or_default(),
+            kill_switch: value
+                .kill_switch
+                .as_ref()
+                .map(HoneypotKillSwitchConf::from_dto)
+                .unwrap_or_default(),
+            frontend: value
+                .frontend
+                .as_ref()
+                .map(HoneypotFrontendConf::from_dto)
+                .unwrap_or_default(),
+        }
+    }
+}
+
+impl HoneypotControlPlaneConf {
+    fn from_dto(value: &dto::HoneypotControlPlaneConf) -> Self {
+        Self {
+            endpoint: value.endpoint.clone(),
+            request_timeout: std::time::Duration::from_secs(
+                value
+                    .request_timeout_secs
+                    .unwrap_or(HONEYPOT_CONTROL_PLANE_REQUEST_TIMEOUT_SECS),
+            ),
+            connect_timeout: std::time::Duration::from_secs(
+                value
+                    .connect_timeout_secs
+                    .unwrap_or(HONEYPOT_CONTROL_PLANE_CONNECT_TIMEOUT_SECS),
+            ),
+        }
+    }
+}
+
+impl Default for HoneypotControlPlaneConf {
+    fn default() -> Self {
+        Self {
+            endpoint: None,
+            request_timeout: std::time::Duration::from_secs(HONEYPOT_CONTROL_PLANE_REQUEST_TIMEOUT_SECS),
+            connect_timeout: std::time::Duration::from_secs(HONEYPOT_CONTROL_PLANE_CONNECT_TIMEOUT_SECS),
+        }
+    }
+}
+
+impl HoneypotStreamConf {
+    fn from_dto(value: &dto::HoneypotStreamConf) -> Self {
+        Self {
+            source_kind: match value.source_kind {
+                dto::HoneypotStreamSourceKind::GatewayRecording => HoneypotStreamSourceKind::GatewayRecording,
+            },
+            browser_transport: match value.browser_transport {
+                dto::HoneypotBrowserTransport::Sse => HoneypotBrowserTransport::Sse,
+            },
+            token_ttl: std::time::Duration::from_secs(value.token_ttl_secs.unwrap_or(HONEYPOT_STREAM_TOKEN_TTL_SECS)),
+        }
+    }
+}
+
+impl Default for HoneypotStreamConf {
+    fn default() -> Self {
+        Self {
+            source_kind: HoneypotStreamSourceKind::GatewayRecording,
+            browser_transport: HoneypotBrowserTransport::Sse,
+            token_ttl: std::time::Duration::from_secs(HONEYPOT_STREAM_TOKEN_TTL_SECS),
+        }
+    }
+}
+
+impl HoneypotOperatorAuthConf {
+    fn from_dto(value: &dto::HoneypotOperatorAuthConf) -> Self {
+        Self {
+            mode: match value.mode {
+                dto::HoneypotOperatorAuthMode::Disabled => HoneypotOperatorAuthMode::Disabled,
+                dto::HoneypotOperatorAuthMode::ProxyLocal => HoneypotOperatorAuthMode::ProxyLocal,
+            },
+            app_token_maximum_lifetime: std::time::Duration::from_secs(
+                value
+                    .app_token_maximum_lifetime_secs
+                    .unwrap_or(HONEYPOT_OPERATOR_APP_TOKEN_MAXIMUM_LIFETIME_SECS),
+            ),
+            access_token_maximum_lifetime: std::time::Duration::from_secs(
+                value
+                    .access_token_maximum_lifetime_secs
+                    .unwrap_or(HONEYPOT_OPERATOR_ACCESS_TOKEN_MAXIMUM_LIFETIME_SECS),
+            ),
+        }
+    }
+}
+
+impl Default for HoneypotOperatorAuthConf {
+    fn default() -> Self {
+        Self {
+            mode: HoneypotOperatorAuthMode::Disabled,
+            app_token_maximum_lifetime: std::time::Duration::from_secs(
+                HONEYPOT_OPERATOR_APP_TOKEN_MAXIMUM_LIFETIME_SECS,
+            ),
+            access_token_maximum_lifetime: std::time::Duration::from_secs(
+                HONEYPOT_OPERATOR_ACCESS_TOKEN_MAXIMUM_LIFETIME_SECS,
+            ),
+        }
+    }
+}
+
+impl HoneypotKillSwitchConf {
+    fn from_dto(value: &dto::HoneypotKillSwitchConf) -> Self {
+        Self {
+            enable_session_kill: value.enable_session_kill.unwrap_or(true),
+            enable_system_kill: value.enable_system_kill.unwrap_or(true),
+            halt_new_sessions_on_system_kill: value.halt_new_sessions_on_system_kill.unwrap_or(true),
+        }
+    }
+}
+
+impl Default for HoneypotKillSwitchConf {
+    fn default() -> Self {
+        Self {
+            enable_session_kill: true,
+            enable_system_kill: true,
+            halt_new_sessions_on_system_kill: true,
+        }
+    }
+}
+
+impl HoneypotFrontendConf {
+    fn from_dto(value: &dto::HoneypotFrontendConf) -> Self {
+        Self {
+            public_url: value.public_url.clone(),
+            bootstrap_path: value
+                .bootstrap_path
+                .clone()
+                .unwrap_or_else(|| HONEYPOT_FRONTEND_BOOTSTRAP_PATH.to_owned()),
+            events_path: value
+                .events_path
+                .clone()
+                .unwrap_or_else(|| HONEYPOT_FRONTEND_EVENTS_PATH.to_owned()),
+        }
+    }
+}
+
+impl Default for HoneypotFrontendConf {
+    fn default() -> Self {
+        Self {
+            public_url: None,
+            bootstrap_path: HONEYPOT_FRONTEND_BOOTSTRAP_PATH.to_owned(),
+            events_path: HONEYPOT_FRONTEND_EVENTS_PATH.to_owned(),
         }
     }
 }
@@ -924,6 +1162,11 @@ impl Conf {
                 .ai_gateway
                 .as_ref()
                 .map(AiGatewayConf::from_dto)
+                .unwrap_or_default(),
+            honeypot: conf_file
+                .honeypot
+                .as_ref()
+                .map(HoneypotConf::from_dto)
                 .unwrap_or_default(),
             proxy: conf_file.proxy.clone().unwrap_or_default(),
             debug: conf_file.debug.clone().unwrap_or_default(),
@@ -1692,6 +1935,10 @@ pub mod dto {
         #[serde(skip_serializing_if = "Option::is_none")]
         pub ai_gateway: Option<AiGatewayConf>,
 
+        /// Honeypot fork configuration
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub honeypot: Option<HoneypotConf>,
+
         /// (Unstable) Folder and prefix for log files
         #[serde(skip_serializing_if = "Option::is_none")]
         pub log_file: Option<Utf8PathBuf>,
@@ -1769,6 +2016,7 @@ pub mod dto {
                 recording_path: None,
                 web_app: None,
                 ai_gateway: None,
+                honeypot: None,
                 job_queue_database: None,
                 traffic_audit_database: None,
                 proxy: None,
@@ -2295,6 +2543,137 @@ pub mod dto {
         pub api_version: Option<String>,
     }
 
+    #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct HoneypotConf {
+        /// Whether to enable honeypot mode.
+        pub enabled: bool,
+        /// Control-plane client settings.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub control_plane: Option<HoneypotControlPlaneConf>,
+        /// Stream policy settings.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub stream: Option<HoneypotStreamConf>,
+        /// Operator authentication settings.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub operator_auth: Option<HoneypotOperatorAuthConf>,
+        /// Kill-switch settings.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub kill_switch: Option<HoneypotKillSwitchConf>,
+        /// Frontend-facing settings.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub frontend: Option<HoneypotFrontendConf>,
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct HoneypotControlPlaneConf {
+        /// Internal control-plane HTTPS endpoint.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub endpoint: Option<Url>,
+        /// Request timeout in seconds.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub request_timeout_secs: Option<u64>,
+        /// Connect timeout in seconds.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub connect_timeout_secs: Option<u64>,
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
+    pub enum HoneypotStreamSourceKind {
+        #[default]
+        GatewayRecording,
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
+    pub enum HoneypotBrowserTransport {
+        #[default]
+        Sse,
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct HoneypotStreamConf {
+        /// The live-stream source of truth.
+        #[serde(default)]
+        pub source_kind: HoneypotStreamSourceKind,
+        /// Browser update transport.
+        #[serde(default)]
+        pub browser_transport: HoneypotBrowserTransport,
+        /// Short-lived stream token TTL in seconds.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub token_ttl_secs: Option<u64>,
+    }
+
+    impl Default for HoneypotStreamConf {
+        fn default() -> Self {
+            Self {
+                source_kind: HoneypotStreamSourceKind::GatewayRecording,
+                browser_transport: HoneypotBrowserTransport::Sse,
+                token_ttl_secs: None,
+            }
+        }
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
+    pub enum HoneypotOperatorAuthMode {
+        #[default]
+        Disabled,
+        ProxyLocal,
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct HoneypotOperatorAuthConf {
+        /// Operator authentication mode.
+        #[serde(default)]
+        pub mode: HoneypotOperatorAuthMode,
+        /// Operator app-token maximum lifetime in seconds.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub app_token_maximum_lifetime_secs: Option<u64>,
+        /// Scoped access-token maximum lifetime in seconds.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub access_token_maximum_lifetime_secs: Option<u64>,
+    }
+
+    impl Default for HoneypotOperatorAuthConf {
+        fn default() -> Self {
+            Self {
+                mode: HoneypotOperatorAuthMode::Disabled,
+                app_token_maximum_lifetime_secs: None,
+                access_token_maximum_lifetime_secs: None,
+            }
+        }
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct HoneypotKillSwitchConf {
+        /// Whether single-session kills are enabled.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub enable_session_kill: Option<bool>,
+        /// Whether system-wide kills are enabled.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub enable_system_kill: Option<bool>,
+        /// Whether a system kill halts new honeypot sessions.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub halt_new_sessions_on_system_kill: Option<bool>,
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct HoneypotFrontendConf {
+        /// External frontend URL for operator access.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub public_url: Option<Url>,
+        /// Frontend bootstrap path exposed by the proxy.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub bootstrap_path: Option<String>,
+        /// Frontend live-events path exposed by the proxy.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub events_path: Option<String>,
+    }
+
     /// Proxy mode determines how proxy configuration is resolved.
     #[derive(PartialEq, Eq, Debug, Clone, Copy, Hash, Default, Serialize, Deserialize)]
     pub enum ProxyMode {
@@ -2369,5 +2748,151 @@ pub mod dto {
                 }),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+    use url::Url;
+
+    use super::{
+        ConfHandle, HONEYPOT_FRONTEND_BOOTSTRAP_PATH, HONEYPOT_FRONTEND_EVENTS_PATH,
+        HONEYPOT_OPERATOR_ACCESS_TOKEN_MAXIMUM_LIFETIME_SECS, HONEYPOT_OPERATOR_APP_TOKEN_MAXIMUM_LIFETIME_SECS,
+        HONEYPOT_STREAM_TOKEN_TTL_SECS, HoneypotBrowserTransport, HoneypotOperatorAuthMode, HoneypotStreamSourceKind,
+    };
+
+    const TEST_PROVISIONER_PUBLIC_KEY: &str = "mMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4vuqLOkl1pWobt6su1XO9VskgCAwevEGs6kkNjJQBwkGnPKYLmNF1E/af1yCocfVn/OnPf9e4x+lXVyZ6LMDJxFxu+axdgOq3Ld392J1iAEbfvwlyRFnEXFOJNyylqg3bY6LvnWHL/XZczVdMD9xYfq2sO9bg3xjRW4s7r9EEYOFjqVT3VFznH9iWJVtcSEKukmS/3uKoO6lGhacvu0HgjXXdgq0R8zvR4XRJ9Fcnf0f9Ypoc+i6L80NVjrRCeVOH+Ld/2fA9bocpfLarcVqG3RjS+qgOtpyCc0jWVFF4zaGQ7LUDFkEIYILkICeMMn2ll29hmZNzsJzZJ9s6NocgQIDAQAB";
+
+    #[test]
+    fn honeypot_config_defaults_when_missing() {
+        let conf_handle = ConfHandle::mock(&minimal_config_json(json!({}))).expect("parse default config");
+        let conf = conf_handle.get_conf();
+
+        assert!(!conf.honeypot.enabled);
+        assert!(conf.honeypot.control_plane.endpoint.is_none());
+        assert_eq!(
+            conf.honeypot.stream.source_kind,
+            HoneypotStreamSourceKind::GatewayRecording
+        );
+        assert_eq!(conf.honeypot.stream.browser_transport, HoneypotBrowserTransport::Sse);
+        assert_eq!(
+            conf.honeypot.stream.token_ttl,
+            std::time::Duration::from_secs(HONEYPOT_STREAM_TOKEN_TTL_SECS)
+        );
+        assert_eq!(conf.honeypot.operator_auth.mode, HoneypotOperatorAuthMode::Disabled);
+        assert_eq!(
+            conf.honeypot.operator_auth.app_token_maximum_lifetime,
+            std::time::Duration::from_secs(HONEYPOT_OPERATOR_APP_TOKEN_MAXIMUM_LIFETIME_SECS)
+        );
+        assert_eq!(
+            conf.honeypot.operator_auth.access_token_maximum_lifetime,
+            std::time::Duration::from_secs(HONEYPOT_OPERATOR_ACCESS_TOKEN_MAXIMUM_LIFETIME_SECS)
+        );
+        assert!(conf.honeypot.kill_switch.enable_session_kill);
+        assert!(conf.honeypot.kill_switch.enable_system_kill);
+        assert!(conf.honeypot.kill_switch.halt_new_sessions_on_system_kill);
+        assert_eq!(conf.honeypot.frontend.bootstrap_path, HONEYPOT_FRONTEND_BOOTSTRAP_PATH);
+        assert_eq!(conf.honeypot.frontend.events_path, HONEYPOT_FRONTEND_EVENTS_PATH);
+    }
+
+    #[test]
+    fn honeypot_config_parses_explicit_values() {
+        let conf_handle = ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "Enabled": true,
+                "ControlPlane": {
+                    "Endpoint": "https://control-plane.internal:8443",
+                    "RequestTimeoutSecs": 45,
+                    "ConnectTimeoutSecs": 7
+                },
+                "Stream": {
+                    "SourceKind": "GatewayRecording",
+                    "BrowserTransport": "Sse",
+                    "TokenTtlSecs": 42
+                },
+                "OperatorAuth": {
+                    "Mode": "ProxyLocal",
+                    "AppTokenMaximumLifetimeSecs": 7200,
+                    "AccessTokenMaximumLifetimeSecs": 600
+                },
+                "KillSwitch": {
+                    "EnableSessionKill": false,
+                    "EnableSystemKill": true,
+                    "HaltNewSessionsOnSystemKill": false
+                },
+                "Frontend": {
+                    "PublicUrl": "https://frontend.internal",
+                    "BootstrapPath": "/custom/bootstrap",
+                    "EventsPath": "/custom/events"
+                }
+            }
+        })))
+        .expect("parse honeypot config");
+        let conf = conf_handle.get_conf();
+
+        assert!(conf.honeypot.enabled);
+        assert_eq!(
+            conf.honeypot.control_plane.endpoint.as_ref().map(Url::as_str),
+            Some("https://control-plane.internal:8443/")
+        );
+        assert_eq!(
+            conf.honeypot.control_plane.request_timeout,
+            std::time::Duration::from_secs(45)
+        );
+        assert_eq!(
+            conf.honeypot.control_plane.connect_timeout,
+            std::time::Duration::from_secs(7)
+        );
+        assert_eq!(
+            conf.honeypot.stream.source_kind,
+            HoneypotStreamSourceKind::GatewayRecording
+        );
+        assert_eq!(conf.honeypot.stream.browser_transport, HoneypotBrowserTransport::Sse);
+        assert_eq!(conf.honeypot.stream.token_ttl, std::time::Duration::from_secs(42));
+        assert_eq!(conf.honeypot.operator_auth.mode, HoneypotOperatorAuthMode::ProxyLocal);
+        assert_eq!(
+            conf.honeypot.operator_auth.app_token_maximum_lifetime,
+            std::time::Duration::from_secs(7200)
+        );
+        assert_eq!(
+            conf.honeypot.operator_auth.access_token_maximum_lifetime,
+            std::time::Duration::from_secs(600)
+        );
+        assert!(!conf.honeypot.kill_switch.enable_session_kill);
+        assert!(conf.honeypot.kill_switch.enable_system_kill);
+        assert!(!conf.honeypot.kill_switch.halt_new_sessions_on_system_kill);
+        assert_eq!(
+            conf.honeypot.frontend.public_url.as_ref().map(Url::as_str),
+            Some("https://frontend.internal/")
+        );
+        assert_eq!(conf.honeypot.frontend.bootstrap_path, "/custom/bootstrap");
+        assert_eq!(conf.honeypot.frontend.events_path, "/custom/events");
+    }
+
+    fn minimal_config_json(extra_root_fields: Value) -> String {
+        let mut root = json!({
+            "ProvisionerPublicKeyData": {
+                "Value": TEST_PROVISIONER_PUBLIC_KEY
+            },
+            "Listeners": [
+                {
+                    "InternalUrl": "tcp://127.0.0.1:8181",
+                    "ExternalUrl": "tcp://127.0.0.1:8181"
+                },
+                {
+                    "InternalUrl": "http://127.0.0.1:7171",
+                    "ExternalUrl": "http://127.0.0.1:7171"
+                }
+            ]
+        });
+
+        if let (Value::Object(root), Value::Object(extra)) = (&mut root, extra_root_fields) {
+            root.extend(extra);
+        } else {
+            panic!("expected JSON objects");
+        }
+
+        serde_json::to_string(&root).expect("serialize test config")
     }
 }

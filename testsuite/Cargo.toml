@@ -22,14 +22,18 @@ dynosaur = "0.3"
 escargot = "0.5"
 expect-test = "1.5"
 fastrand = "2"
+honeypot-contracts.path = "../honeypot/contracts"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
 tempfile = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "process"] }
 typed-builder = "0.21"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 base64 = "0.22"
 proxy-socks = { path = "../crates/proxy-socks" }
 libsql = { version = "0.9", default-features = false, features = ["core"] }
