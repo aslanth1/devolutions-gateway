@@ -47,7 +47,7 @@ impl ControlPlaneRuntime {
     pub fn new(config: ControlPlaneConfig) -> anyhow::Result<Self> {
         validate_startup_contract(&config).context("validate control-plane startup contract")?;
         let auth = ControlPlaneAuth::from_config(&config.auth).context("build control-plane auth gate")?;
-        let leases = LeaseRegistry::load(&config.paths).context("load control-plane lease registry")?;
+        let leases = LeaseRegistry::load(&config).context("load control-plane lease registry")?;
         Ok(Self {
             config,
             auth,

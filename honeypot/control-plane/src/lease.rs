@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::config::{ControlPlaneConfig, PathConfig};
 use crate::image::{trusted_images, validate_trusted_image_identity};
 use crate::qemu::QemuLaunchPlan;
-use crate::vm::{create_vm, destroy_vm, reset_vm as reset_vm_runtime, start_vm, stop_vm};
+use crate::vm::{
+    cleanup_orphaned_vm, create_vm, destroy_vm, reset_vm as reset_vm_runtime, runtime_looks_active, start_vm, stop_vm,
+};
 
 const DEFAULT_GUEST_RDP_ADDR: &str = "127.0.0.1";
 const DEFAULT_STREAM_TTL_SECS: u64 = 60;
@@ -27,15 +29,20 @@ pub(crate) struct LeaseRegistry {
 }
 
 impl LeaseRegistry {
-    pub(crate) fn load(paths: &PathConfig) -> anyhow::Result<Self> {
+    pub(crate) fn load(config: &ControlPlaneConfig) -> anyhow::Result<Self> {
         let mut leases = HashMap::new();
         let mut next_lease_sequence = 1;
 
-        for snapshot_path in json_files(&paths.lease_store)? {
+        for snapshot_path in json_files(&config.paths.lease_store)? {
             let snapshot = read_snapshot(&snapshot_path)?;
             next_lease_sequence = next_lease_sequence.max(parse_lease_sequence(&snapshot.vm_lease_id) + 1);
-            leases.insert(snapshot.vm_lease_id.clone(), snapshot);
+
+            if let Some(snapshot) = reconcile_loaded_snapshot(config, snapshot)? {
+                leases.insert(snapshot.vm_lease_id.clone(), snapshot);
+            }
         }
+
+        cleanup_untracked_runtime_artifacts(&config.paths, &leases)?;
 
         Ok(Self {
             leases,
@@ -61,6 +68,8 @@ impl LeaseRegistry {
                 request.session_id
             )));
         }
+
+        cleanup_untracked_runtime_artifacts(&config.paths, &self.leases).map_err(LeaseError::host_unavailable)?;
 
         let trusted_images = trusted_images(&config.paths).map_err(LeaseError::host_unavailable)?;
         let trusted_images = trusted_images
@@ -543,6 +552,41 @@ fn read_snapshot(path: &Path) -> anyhow::Result<LeaseSnapshot> {
     serde_json::from_str(&data).with_context(|| format!("parse lease snapshot {}", path.display()))
 }
 
+fn reconcile_loaded_snapshot(
+    config: &ControlPlaneConfig,
+    snapshot: LeaseSnapshot,
+) -> anyhow::Result<Option<LeaseSnapshot>> {
+    match runtime_looks_active(&snapshot.launch_plan) {
+        Ok(true) => Ok(Some(snapshot)),
+        Ok(false) => {
+            quarantine_orphaned_snapshot(config, snapshot)?;
+            Ok(None)
+        }
+        Err(error) => {
+            let mut snapshot = snapshot;
+            snapshot.lease_state = LeaseState::Quarantined;
+            snapshot.runtime_state = LeaseRuntimeState::Stopped;
+            cleanup_orphaned_vm(config, &snapshot.launch_plan).with_context(|| {
+                format!(
+                    "reclaim runtime artifacts for orphaned lease {} after runtime inspection failure: {error:#}",
+                    snapshot.vm_lease_id
+                )
+            })?;
+            move_snapshot_to_quarantine(&config.paths, &snapshot)?;
+            Ok(None)
+        }
+    }
+}
+
+fn quarantine_orphaned_snapshot(config: &ControlPlaneConfig, snapshot: LeaseSnapshot) -> anyhow::Result<()> {
+    let mut snapshot = snapshot;
+    snapshot.lease_state = LeaseState::Quarantined;
+    snapshot.runtime_state = LeaseRuntimeState::Stopped;
+    cleanup_orphaned_vm(config, &snapshot.launch_plan)
+        .with_context(|| format!("reclaim runtime artifacts for orphaned lease {}", snapshot.vm_lease_id))?;
+    move_snapshot_to_quarantine(&config.paths, &snapshot)
+}
+
 fn persist_active_snapshot(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {
     let data = serde_json::to_vec_pretty(snapshot).context("serialize active lease snapshot")?;
     fs::write(active_snapshot_path(paths, &snapshot.vm_lease_id), data)
@@ -572,6 +616,77 @@ fn active_snapshot_path(paths: &PathConfig, vm_lease_id: &str) -> PathBuf {
 
 fn quarantine_snapshot_path(paths: &PathConfig, vm_lease_id: &str) -> PathBuf {
     paths.quarantine_store.join(format!("{vm_lease_id}.json"))
+}
+
+fn cleanup_untracked_runtime_artifacts(
+    paths: &PathConfig,
+    leases: &HashMap<String, LeaseSnapshot>,
+) -> anyhow::Result<()> {
+    let tracked_lease_ids = leases.keys().cloned().collect::<HashSet<_>>();
+
+    let entries = fs::read_dir(&paths.lease_store)
+        .with_context(|| format!("read lease store {}", paths.lease_store.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read entry in {}", paths.lease_store.display()))?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+
+        if path.is_dir() {
+            if !tracked_lease_ids.contains(file_name.as_ref()) {
+                fs::remove_dir_all(&path).with_context(|| format!("remove orphan runtime dir {}", path.display()))?;
+            }
+            continue;
+        }
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let lease_id = if is_json_file(&path) {
+            file_name.strip_suffix(".json").unwrap_or_else(|| file_name.as_ref())
+        } else {
+            ""
+        };
+
+        if !tracked_lease_ids.contains(lease_id) && !is_json_file(&path) {
+            fs::remove_file(&path).with_context(|| format!("remove orphan lease-store artifact {}", path.display()))?;
+        }
+    }
+
+    cleanup_untracked_socket_dir(&paths.qmp_dir, &tracked_lease_ids)?;
+
+    if let Some(qga_dir) = &paths.qga_dir {
+        if !qga_dir.exists() {
+            return Ok(());
+        }
+        cleanup_untracked_socket_dir(qga_dir, &tracked_lease_ids)?;
+    }
+
+    Ok(())
+}
+
+fn cleanup_untracked_socket_dir(root: &Path, tracked_lease_ids: &HashSet<String>) -> anyhow::Result<()> {
+    let entries = fs::read_dir(root).with_context(|| format!("read runtime socket dir {}", root.display()))?;
+    for entry in entries {
+        let entry = entry.with_context(|| format!("read entry in {}", root.display()))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+
+        let tracked = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .is_some_and(|lease_id| tracked_lease_ids.contains(lease_id));
+        if tracked {
+            continue;
+        }
+
+        fs::remove_file(&path).with_context(|| format!("remove orphan runtime socket {}", path.display()))?;
+    }
+
+    Ok(())
 }
 
 fn move_runtime_artifacts_to_quarantine(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {

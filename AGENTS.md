@@ -402,7 +402,7 @@ Pass when: the control plane verifies qcow2 chain health and refuses to lease di
 - [x] Implement a VM pool with deterministic naming, lease tracking, and recycle-on-release behavior.
 Pass when: one session maps to one VM lease and a released VM returns to the chosen clean state.
 
-- [ ] Add orphaned QEMU, socket, overlay, and lease cleanup.
+- [x] Add orphaned QEMU, socket, overlay, and lease cleanup.
 Pass when: stale QEMU processes, QMP or QGA sockets, overlays, tempdirs, and lease artifacts are reclaimed deterministically after crashes or abandoned sessions.
 
 - [ ] Add host-side resource and network controls.

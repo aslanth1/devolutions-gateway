@@ -49,6 +49,34 @@ pub(crate) fn destroy_vm(plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
     cleanup_artifacts(plan)
 }
 
+pub(crate) fn runtime_looks_active(plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<bool> {
+    if !plan.runtime_dir.is_dir() || !plan.overlay_path.is_file() || !plan.pid_file_path.is_file() {
+        return Ok(false);
+    }
+
+    if !plan.qmp_socket_path.exists() {
+        return Ok(false);
+    }
+
+    if let Some(qga_socket_path) = &plan.qga_socket_path
+        && !qga_socket_path.exists()
+    {
+        return Ok(false);
+    }
+
+    let pid = read_pid(&plan.pid_file_path)?;
+    process_exists(pid)
+}
+
+pub(crate) fn cleanup_orphaned_vm(config: &ControlPlaneConfig, plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
+    match config.runtime.lifecycle_driver {
+        VmLifecycleDriver::Process => terminate_orphaned_process_vm(config, plan)?,
+        VmLifecycleDriver::Simulated => cleanup_runtime_markers(plan)?,
+    }
+
+    Ok(())
+}
+
 fn start_process_vm(plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
     let mut command = Command::new(&plan.qemu_binary_path);
     command
@@ -115,6 +143,26 @@ fn stop_simulated_vm(plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
     cleanup_runtime_markers(plan)
 }
 
+fn terminate_orphaned_process_vm(config: &ControlPlaneConfig, plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
+    if !plan.pid_file_path.exists() {
+        return cleanup_runtime_markers(plan);
+    }
+
+    let pid = read_pid(&plan.pid_file_path)?;
+    if process_exists(pid)? {
+        signal_process(pid, libc::SIGTERM)?;
+        if !wait_for_external_process_exit(pid, Duration::from_secs(config.runtime.stop_timeout_secs))? {
+            signal_process(pid, libc::SIGKILL)?;
+            anyhow::ensure!(
+                wait_for_external_process_exit(pid, Duration::from_secs(1))?,
+                "qemu pid {pid} did not exit during orphan cleanup",
+            );
+        }
+    }
+
+    cleanup_runtime_markers(plan)
+}
+
 fn cleanup_artifacts(plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
     cleanup_runtime_markers(plan)?;
 
@@ -165,6 +213,51 @@ fn read_pid(path: &std::path::Path) -> anyhow::Result<i32> {
     pid.trim()
         .parse::<i32>()
         .with_context(|| format!("parse pid from {}", path.display()))
+}
+
+fn signal_process(pid: i32, signal: i32) -> anyhow::Result<()> {
+    // SAFETY: `kill` is called with a PID parsed from our own pidfile and a fixed signal number.
+    let result = unsafe { libc::kill(pid, signal) };
+    if result == 0 {
+        return Ok(());
+    }
+
+    let error = std::io::Error::last_os_error();
+    anyhow::ensure!(
+        error.raw_os_error() == Some(libc::ESRCH),
+        "send signal {signal} to qemu pid {pid}: {error}",
+    );
+    Ok(())
+}
+
+fn process_exists(pid: i32) -> anyhow::Result<bool> {
+    // SAFETY: `kill` with signal 0 does not modify process state and only checks liveness for the parsed PID.
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return Ok(true);
+    }
+
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error).with_context(|| format!("probe qemu pid {pid} liveness")),
+    }
+}
+
+fn wait_for_external_process_exit(pid: i32, timeout: Duration) -> anyhow::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if !process_exists(pid)? {
+            return Ok(true);
+        }
+
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn wait_for_process_runtime_ready(
