@@ -29,6 +29,8 @@ pub struct HoneypotControlPlaneTestConfig {
     pub service_token_validation_disabled: bool,
     #[builder(default, setter(into, strip_option))]
     pub proxy_verifier_public_key_pem: Option<String>,
+    #[builder(default, setter(into, strip_option))]
+    pub proxy_verifier_public_key_pem_file: Option<PathBuf>,
     #[builder(setter(into))]
     pub data_dir: PathBuf,
     #[builder(setter(into))]
@@ -103,6 +105,12 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
         document.push_str(&format!(
             "\nauth.proxy_verifier_public_key_pem = '''\n{}\n'''\n",
             proxy_verifier_public_key_pem
+        ));
+    }
+    if let Some(proxy_verifier_public_key_pem_file) = &config.proxy_verifier_public_key_pem_file {
+        document.push_str(&format!(
+            "\nauth.proxy_verifier_public_key_pem_file = \"{}\"\n",
+            proxy_verifier_public_key_pem_file.display()
         ));
     }
 

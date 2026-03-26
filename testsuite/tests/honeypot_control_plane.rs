@@ -281,6 +281,39 @@ async fn control_plane_rejects_wrong_scope_tokens() {
     let _ = child.wait().await.expect("wait for control-plane exit");
 }
 
+#[test]
+fn control_plane_fails_closed_when_proxy_verifier_key_file_is_missing() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tempdir.path().join("control-plane.toml");
+    let bind_addr = format!("127.0.0.1:{}", find_unused_port());
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(bind_addr)
+        .service_token_validation_disabled(false)
+        .proxy_verifier_public_key_pem_file(fixture.secret_dir.join("missing-proxy-verifier-public-key.pem"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let output = honeypot_control_plane_assert_cmd()
+        .env(CONTROL_PLANE_CONFIG_ENV, &config_path)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("build control-plane auth gate"), "{stderr}");
+    assert!(stderr.contains("proxy_verifier_public_key_pem_file"), "{stderr}");
+}
+
 #[tokio::test]
 async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     let tempdir = tempfile::tempdir().expect("create tempdir");

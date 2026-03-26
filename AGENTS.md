@@ -369,7 +369,7 @@ Pass when: the proxy can acquire, release, reset, and recycle VMs through typed 
 - [x] Wire control-plane runtime config injection.
 Pass when: the service receives QEMU settings and image paths through documented env or mounted files.
 
-- [ ] Wire control-plane secret injection.
+- [x] Wire control-plane secret injection.
 Pass when: backend credentials and similar sensitive inputs arrive through the documented runtime contract without being baked into the image.
 
 - [x] Wire control-plane host mounts and socket paths.

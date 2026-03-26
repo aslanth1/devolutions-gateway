@@ -51,6 +51,7 @@ impl Default for HttpConfig {
 pub struct AuthConfig {
     pub service_token_validation_disabled: bool,
     pub proxy_verifier_public_key_pem: Option<String>,
+    pub proxy_verifier_public_key_pem_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

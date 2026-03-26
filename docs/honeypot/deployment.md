@@ -42,14 +42,14 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 
 ## Runtime Config Mounts
 
-- `control-plane` mounts `honeypot/docker/config/control-plane/config.toml` at `/etc/honeypot/control-plane/config.toml` as read-only.
+- `control-plane` mounts `honeypot/docker/config/control-plane/config.toml` at `/etc/honeypot/control-plane/config.toml` as read-only and resolves `auth.proxy_verifier_public_key_pem_file` from the control-plane secret mount rather than from checked-in PEM content.
 - `proxy` mounts `honeypot/docker/config/proxy/gateway.json` at `/etc/honeypot/proxy/gateway.json` as read-only, uses `DGATEWAY_CONFIG_PATH=/etc/honeypot/proxy` from its env file so the existing Gateway loader reads the mounted `gateway.json`, and resolves `Honeypot.ControlPlane.ServiceBearerTokenFile` from the proxy secret mount rather than from checked-in config content.
 - `frontend` mounts `honeypot/docker/config/frontend/config.toml` at `/etc/honeypot/frontend/config.toml` as read-only and uses `HONEYPOT_FRONTEND_CONFIG_PATH=/etc/honeypot/frontend/config.toml` from its env file so the frontend binary reads the mounted config explicitly.
 - Config mount paths are restart-safe and are the only supported path for service-specific runtime configuration.
 
 ## Secret Mounts
 
-- `control-plane` mounts `honeypot/docker/secrets/control-plane/` at `/run/secrets/honeypot/control-plane/` as read-only.
+- `control-plane` mounts `honeypot/docker/secrets/control-plane/` at `/run/secrets/honeypot/control-plane/` as read-only, and the proxy verifier public key must arrive at `/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem`.
 - `proxy` mounts `honeypot/docker/secrets/proxy/` at `/run/secrets/honeypot/proxy/` as read-only, and the MVP proxy-to-control-plane bearer token must arrive at `/run/secrets/honeypot/proxy/control-plane-service-token`.
 - `frontend` mounts `honeypot/docker/secrets/frontend/` at `/run/secrets/honeypot/frontend/` as read-only.
 - Private signing keys, verification key sets, backend credential references, and similar sensitive inputs must enter the containers only through these secret mount paths.

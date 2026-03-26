@@ -33,6 +33,8 @@ const CONTROL_PLANE_QUARANTINE_STORE: &str = "/var/lib/honeypot/quarantine";
 const CONTROL_PLANE_QMP_DIR: &str = "/run/honeypot/qmp";
 const CONTROL_PLANE_QGA_DIR: &str = "/run/honeypot/qga";
 const CONTROL_PLANE_SECRET_DIR: &str = "/run/secrets/honeypot/control-plane";
+const CONTROL_PLANE_PROXY_VERIFIER_PUBLIC_KEY_FILE: &str =
+    "/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem";
 const CONTROL_PLANE_KVM_PATH: &str = "/dev/kvm";
 const PROXY_ENV_FILE_REF: &str = "./env/proxy.env";
 const PROXY_CONFIG_MOUNT: &str = "./config/proxy/gateway.json:/etc/honeypot/proxy/gateway.json:ro";
@@ -505,6 +507,15 @@ fn validate_honeypot_control_plane_config(config: &ControlPlaneConfig) -> anyhow
     anyhow::ensure!(
         config.paths.kvm_path == Path::new(CONTROL_PLANE_KVM_PATH),
         "control-plane kvm_path must be {CONTROL_PLANE_KVM_PATH}",
+    );
+    anyhow::ensure!(
+        config.auth.proxy_verifier_public_key_pem.is_none(),
+        "control-plane runtime sample config must not check in an inline proxy verifier public key",
+    );
+    anyhow::ensure!(
+        config.auth.proxy_verifier_public_key_pem_file.as_deref()
+            == Some(Path::new(CONTROL_PLANE_PROXY_VERIFIER_PUBLIC_KEY_FILE)),
+        "control-plane proxy verifier public key file must be {CONTROL_PLANE_PROXY_VERIFIER_PUBLIC_KEY_FILE}",
     );
 
     Ok(())
