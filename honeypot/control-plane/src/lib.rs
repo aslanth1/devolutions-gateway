@@ -1,6 +1,7 @@
 mod auth;
 pub mod config;
 pub mod health;
+mod image;
 mod lease;
 mod qemu;
 mod vm;
@@ -31,6 +32,7 @@ use tokio::net::TcpListener;
 use self::auth::{AuthError, ControlPlaneAuth};
 use self::config::ControlPlaneConfig;
 use self::health::ServiceState;
+use self::image::trusted_images;
 use self::lease::{LeaseError, LeaseRegistry};
 use self::qemu::validate_qemu_runtime_contract;
 
@@ -231,6 +233,7 @@ fn validate_startup_contract(config: &ControlPlaneConfig) -> anyhow::Result<()> 
     ensure_dir("secret_dir", &config.paths.secret_dir)?;
     ensure_exists("kvm_path", &config.paths.kvm_path)?;
     validate_qemu_runtime_contract(config)?;
+    trusted_images(&config.paths).context("validate trusted image attestation manifests")?;
 
     if config.runtime.enable_guest_agent {
         let qga_dir = config.paths.qga_dir()?;
@@ -261,9 +264,16 @@ fn inspect_runtime(config: &ControlPlaneConfig) -> RuntimeInspection {
 
     let manifest_dir = config.paths.manifest_dir();
     inspect_dir("manifest_dir", &manifest_dir, &mut inspection);
-    inspection.trusted_image_count = count_entries(&manifest_dir, only_json_files);
-    if inspection.unsafe_reasons.is_empty() && inspection.trusted_image_count == 0 {
-        inspection.degraded_reasons.push("no_trusted_images".to_owned());
+    match trusted_images(&config.paths) {
+        Ok(trusted_images) => {
+            inspection.trusted_image_count = trusted_images.len();
+            if inspection.unsafe_reasons.is_empty() && inspection.trusted_image_count == 0 {
+                inspection.degraded_reasons.push("no_trusted_images".to_owned());
+            }
+        }
+        Err(error) => inspection
+            .unsafe_reasons
+            .push(format!("invalid_trusted_images:{error:#}")),
     }
 
     inspection.active_lease_count = count_entries(&config.paths.lease_store, only_json_files);

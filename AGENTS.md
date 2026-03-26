@@ -387,7 +387,7 @@ Pass when: compose and Rust tests can distinguish startup, healthy, degraded, an
 - [x] Implement VM lifecycle adapters for create, start, stop, and reset.
 Pass when: the control plane can drive a named VM through the active runtime lifecycle and surface actionable errors.
 
-- [ ] Implement VM lifecycle adapters for destroy and recycle.
+- [x] Implement VM lifecycle adapters for destroy and recycle.
 Pass when: the control plane can retire, reset, or recycle a named VM back to the chosen clean state and surface actionable errors.
 
 - [ ] Build or consume the Tiny11-derived Windows 11 gold image flow without Bash or Python wrappers.
@@ -396,7 +396,7 @@ Pass when: the image process is reproducible, documented, records provenance inp
 - [ ] Enable and verify RDP in the gold image.
 Pass when: a fresh VM from the gold image reaches a known-ready signal and accepts RDP on TCP 3389 in the lab.
 
-- [ ] Add image integrity checks before lease.
+- [x] Add image integrity checks before lease.
 Pass when: the control plane verifies qcow2 chain health and refuses to lease dirty or corrupt images.
 
 - [ ] Implement a VM pool with deterministic naming, lease tracking, and recycle-on-release behavior.

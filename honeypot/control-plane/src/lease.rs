@@ -13,11 +13,11 @@ use honeypot_contracts::error::ErrorCode;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ControlPlaneConfig, PathConfig};
+use crate::image::{trusted_images, validate_trusted_image_identity};
 use crate::qemu::QemuLaunchPlan;
 use crate::vm::{create_vm, destroy_vm, reset_vm as reset_vm_runtime, start_vm, stop_vm};
 
 const DEFAULT_GUEST_RDP_ADDR: &str = "127.0.0.1";
-const DEFAULT_GUEST_RDP_PORT: u16 = 3389;
 const DEFAULT_STREAM_TTL_SECS: u64 = 60;
 
 #[derive(Debug)]
@@ -250,6 +250,30 @@ impl LeaseRegistry {
         }
 
         let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;
+
+        if validate_trusted_image_identity(
+            &config.paths,
+            &snapshot.vm_name,
+            &snapshot.attestation_ref,
+            &snapshot.launch_plan.base_image_path,
+        )
+        .is_err()
+        {
+            let mut snapshot = snapshot;
+            snapshot.lease_state = LeaseState::Quarantined;
+            snapshot.runtime_state = LeaseRuntimeState::Stopped;
+            move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
+
+            return Ok(RecycleVmResponse {
+                schema_version: honeypot_contracts::SCHEMA_VERSION,
+                correlation_id: make_correlation_id("recycle"),
+                vm_lease_id: snapshot.vm_lease_id,
+                recycle_state: RecycleState::Quarantined,
+                pool_state: PoolState::Quarantined,
+                quarantined: true,
+            });
+        }
+
         remove_active_snapshot(&config.paths, &snapshot.vm_lease_id).map_err(LeaseError::host_unavailable)?;
 
         Ok(RecycleVmResponse {
@@ -418,26 +442,6 @@ impl From<QemuLaunchPlan> for LeaseLaunchPlanSnapshot {
 }
 
 #[derive(Debug, Clone)]
-struct TrustedImage {
-    vm_name: String,
-    attestation_ref: String,
-    guest_rdp_port: u16,
-    base_image_path: PathBuf,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct TrustedImageManifestDocument {
-    #[serde(default)]
-    vm_name: Option<String>,
-    #[serde(default)]
-    attestation_ref: Option<String>,
-    #[serde(default)]
-    guest_rdp_port: Option<u16>,
-    #[serde(default)]
-    base_image_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct LeaseError {
     pub code: ErrorCode,
     pub message: String,
@@ -494,35 +498,6 @@ impl LeaseError {
     }
 }
 
-fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedImage>> {
-    let mut manifests = json_files(&paths.manifest_dir())?;
-    manifests.sort();
-
-    manifests
-        .into_iter()
-        .enumerate()
-        .map(|(index, manifest_path)| {
-            let manifest = read_trusted_image_manifest(&manifest_path)?;
-            let stem = manifest_path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("gold-image");
-            let offset = u16::try_from(index).unwrap_or(0);
-
-            Ok(TrustedImage {
-                vm_name: manifest.vm_name.unwrap_or_else(|| format!("honeypot-{stem}")),
-                attestation_ref: manifest
-                    .attestation_ref
-                    .unwrap_or_else(|| manifest_path.display().to_string()),
-                guest_rdp_port: manifest
-                    .guest_rdp_port
-                    .unwrap_or_else(|| DEFAULT_GUEST_RDP_PORT.saturating_add(offset)),
-                base_image_path: resolve_base_image_path(paths, &manifest_path, manifest.base_image_path),
-            })
-        })
-        .collect()
-}
-
 fn json_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let entries = fs::read_dir(root).with_context(|| format!("read directory {}", root.display()))?;
@@ -545,11 +520,6 @@ fn is_json_file(path: &Path) -> bool {
 fn read_snapshot(path: &Path) -> anyhow::Result<LeaseSnapshot> {
     let data = fs::read_to_string(path).with_context(|| format!("read lease snapshot {}", path.display()))?;
     serde_json::from_str(&data).with_context(|| format!("parse lease snapshot {}", path.display()))
-}
-
-fn read_trusted_image_manifest(path: &Path) -> anyhow::Result<TrustedImageManifestDocument> {
-    let data = fs::read_to_string(path).with_context(|| format!("read trusted image manifest {}", path.display()))?;
-    serde_json::from_str(&data).with_context(|| format!("parse trusted image manifest {}", path.display()))
 }
 
 fn persist_active_snapshot(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {
@@ -581,20 +551,6 @@ fn active_snapshot_path(paths: &PathConfig, vm_lease_id: &str) -> PathBuf {
 
 fn quarantine_snapshot_path(paths: &PathConfig, vm_lease_id: &str) -> PathBuf {
     paths.quarantine_store.join(format!("{vm_lease_id}.json"))
-}
-
-fn resolve_base_image_path(paths: &PathConfig, manifest_path: &Path, configured_path: Option<PathBuf>) -> PathBuf {
-    match configured_path {
-        Some(path) if path.is_absolute() => path,
-        Some(path) => paths.image_store.join(path),
-        None => {
-            let stem = manifest_path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or("gold-image");
-            paths.image_store.join(format!("{stem}.qcow2"))
-        }
-    }
 }
 
 fn move_runtime_artifacts_to_quarantine(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {

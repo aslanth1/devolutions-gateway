@@ -6,6 +6,7 @@ use honeypot_contracts::control_plane::{
     ServiceState, StreamEndpointResponse, StreamPolicy,
 };
 use honeypot_contracts::error::{ErrorCode, ErrorResponse};
+use sha2::{Digest as _, Sha256};
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, find_unused_port, get_json_response_with_bearer_token,
@@ -96,7 +97,7 @@ async fn control_plane_reports_ready_when_contract_is_satisfied() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
-        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -135,7 +136,7 @@ async fn control_plane_reports_degraded_without_trusted_images() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
-        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -177,7 +178,7 @@ async fn control_plane_reports_unsafe_if_kvm_disappears_after_start() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
-        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -220,7 +221,7 @@ async fn control_plane_rejects_requests_without_a_service_token() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
-        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -261,7 +262,7 @@ async fn control_plane_rejects_wrong_scope_tokens() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
-        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -308,7 +309,7 @@ fn control_plane_fails_closed_when_proxy_verifier_key_file_is_missing() {
         .qmp_dir(fixture.qmp_dir.clone())
         .secret_dir(fixture.secret_dir.clone())
         .kvm_path(fixture.kvm_path.clone())
-        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
         .build();
 
     write_honeypot_control_plane_config(&config_path, &config).expect("write config");
@@ -321,6 +322,42 @@ fn control_plane_fails_closed_when_proxy_verifier_key_file_is_missing() {
     let stderr = String::from_utf8_lossy(&output.get_output().stderr);
     assert!(stderr.contains("build control-plane auth gate"), "{stderr}");
     assert!(stderr.contains("proxy_verifier_public_key_pem_file"), "{stderr}");
+}
+
+#[test]
+fn control_plane_fails_closed_when_attestation_manifest_is_incomplete() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tempdir.path().join("control-plane.toml");
+    let bind_addr = format!("127.0.0.1:{}", find_unused_port());
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    fs::write(&fixture.manifest_paths[0], "{}").expect("overwrite manifest with incomplete attestation");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(bind_addr)
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let output = honeypot_control_plane_assert_cmd()
+        .env(CONTROL_PLANE_CONFIG_ENV, &config_path)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("validate control-plane startup contract"), "{stderr}");
+    assert!(
+        stderr.contains("trusted image") || stderr.contains("vm_name"),
+        "{stderr}"
+    );
 }
 
 #[tokio::test]
@@ -615,13 +652,48 @@ async fn control_plane_reports_no_capacity_when_the_pool_is_exhausted() {
     let _ = child.wait().await.expect("wait for control-plane exit");
 }
 
+#[test]
+fn control_plane_fails_closed_when_base_image_is_missing_at_startup() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tempdir.path().join("control-plane.toml");
+    let bind_addr = format!("127.0.0.1:{}", find_unused_port());
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    fs::remove_file(&fixture.base_image_paths[0]).expect("remove base image");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(bind_addr)
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let output = honeypot_control_plane_assert_cmd()
+        .env(CONTROL_PLANE_CONFIG_ENV, &config_path)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("validate control-plane startup contract"), "{stderr}");
+    assert!(
+        stderr.contains("trusted base image") || stderr.contains("canonicalize trusted base image"),
+        "{stderr}"
+    );
+}
+
 #[tokio::test]
-async fn control_plane_reports_host_unavailable_when_base_image_is_missing() {
+async fn control_plane_reports_unsafe_when_base_image_digest_changes_after_start() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
     let config_path = tempdir.path().join("control-plane.toml");
     let fixture = create_runtime_fixture(tempdir.path(), 1);
-    fs::remove_file(&fixture.base_image_paths[0]).expect("remove base image");
 
     let config = HoneypotControlPlaneTestConfig::builder()
         .bind_addr(format!("127.0.0.1:{port}"))
@@ -643,9 +715,55 @@ async fn control_plane_reports_host_unavailable_when_base_image_is_missing() {
     let mut child = child.spawn().expect("spawn control-plane");
 
     wait_for_tcp_port(port).await.expect("wait for control-plane port");
+    fs::write(&fixture.base_image_paths[0], b"tampered-base-image").expect("tamper base image");
+
+    let health = read_authed_health_response(port).await.expect("read health response");
+    assert_eq!(health.service_state, ServiceState::Unsafe);
+    assert_eq!(health.trusted_image_count, 0);
+    assert!(
+        health
+            .degraded_reasons
+            .iter()
+            .any(|reason| reason.contains("invalid_trusted_images:")),
+        "{:?}",
+        health.degraded_reasons
+    );
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_reports_host_unavailable_when_base_image_digest_mismatches_on_acquire() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+    fs::write(&fixture.base_image_paths[0], b"tampered-base-image").expect("tamper base image");
 
     let request_body =
-        serde_json::to_vec(&acquire_request("session-missing-base-image")).expect("serialize acquire request");
+        serde_json::to_vec(&acquire_request("session-digest-mismatch")).expect("serialize acquire request");
     let (status_line, body) = send_http_request(
         port,
         "POST",
@@ -659,7 +777,11 @@ async fn control_plane_reports_host_unavailable_when_base_image_is_missing() {
 
     assert!(status_line.contains("503"), "{status_line}");
     assert_eq!(error.error_code, ErrorCode::HostUnavailable);
-    assert!(error.message.contains("base_image_path"), "{}", error.message);
+    assert!(
+        error.message.contains("base_image.sha256 mismatch"),
+        "{}",
+        error.message
+    );
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -711,6 +833,83 @@ async fn control_plane_quarantines_simulated_recycle_failures() {
     )
     .await
     .expect("recycle with simulated failure");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(recycle.recycle_state, RecycleState::Quarantined);
+    assert_eq!(recycle.pool_state, PoolState::Quarantined);
+    assert!(recycle.quarantined);
+
+    let health = read_authed_health_response(port).await.expect("read health response");
+    assert_eq!(health.active_lease_count, 0);
+    assert_eq!(health.quarantined_lease_count, 1);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_quarantines_recycle_when_base_image_digest_mismatches() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-integrity"))
+            .await
+            .expect("acquire lease");
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-integrity".to_owned(),
+            session_id: "session-integrity".to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .expect("release lease");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    fs::write(&fixture.base_image_paths[0], b"tampered-base-image").expect("tamper base image");
+
+    let (status_line, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-integrity".to_owned(),
+            session_id: "session-integrity".to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+        },
+    )
+    .await
+    .expect("recycle lease after tamper");
 
     assert!(status_line.contains("200"), "{status_line}");
     assert_eq!(recycle.recycle_state, RecycleState::Quarantined);
@@ -973,6 +1172,7 @@ struct RuntimeFixture {
     secret_dir: std::path::PathBuf,
     kvm_path: std::path::PathBuf,
     qemu_binary_path: std::path::PathBuf,
+    manifest_paths: Vec<std::path::PathBuf>,
     base_image_paths: Vec<std::path::PathBuf>,
 }
 
@@ -1000,12 +1200,15 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     fs::write(&kvm_path, []).expect("create fake kvm device");
     fs::write(&qemu_binary_path, []).expect("create fake qemu binary");
 
+    let mut manifest_paths = Vec::new();
     let mut base_image_paths = Vec::new();
     for index in 0..manifest_count {
         let manifest_path = manifest_dir.join(format!("image-{index}.json"));
-        fs::write(manifest_path, "{}").expect("write fake manifest");
         let base_image_path = image_store.join(format!("image-{index}.qcow2"));
-        fs::write(&base_image_path, []).expect("write fake base image");
+        let base_image_contents = format!("fake-base-image-{index}");
+        fs::write(&base_image_path, base_image_contents.as_bytes()).expect("write fake base image");
+        write_attested_manifest(&manifest_path, &base_image_path, index, base_image_contents.as_bytes());
+        manifest_paths.push(manifest_path);
         base_image_paths.push(base_image_path);
     }
 
@@ -1020,8 +1223,63 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
         secret_dir,
         kvm_path,
         qemu_binary_path,
+        manifest_paths,
         base_image_paths,
     }
+}
+
+fn write_attested_manifest(
+    manifest_path: &std::path::Path,
+    base_image_path: &std::path::Path,
+    index: usize,
+    base_image_contents: &[u8],
+) {
+    let manifest = serde_json::json!({
+        "vm_name": format!("honeypot-image-{index}"),
+        "attestation_ref": format!("attestation://gold-image-{index}"),
+        "guest_rdp_port": 3389u16.saturating_add(u16::try_from(index).unwrap_or(0)),
+        "base_image_path": base_image_path.file_name().and_then(std::ffi::OsStr::to_str).expect("base image file name"),
+        "source_iso": {
+            "acquisition_channel": "visual-studio-subscription",
+            "acquisition_date": "2026-03-25",
+            "filename": "windows11-pro-x64-en-us.iso",
+            "size_bytes": 1024u64,
+            "edition": "Windows 11 Pro x64",
+            "language": "en-US",
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "transformation": {
+            "timestamp": "2026-03-25T12:00:00Z",
+            "inputs": [
+                {
+                    "reference": "tiny11-builder.ps1",
+                    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                {
+                    "reference": "tiny11-base.wim",
+                    "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+                }
+            ]
+        },
+        "base_image": {
+            "sha256": sha256_hex(base_image_contents)
+        },
+        "approval": {
+            "approved_by": "operator@example.test"
+        }
+    });
+
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("serialize attested manifest"),
+    )
+    .expect("write attested manifest");
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(unix)]
