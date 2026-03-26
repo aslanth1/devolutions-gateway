@@ -19,7 +19,7 @@
       "Endpoint": "http://control-plane:8080",
       "RequestTimeoutSecs": 30,
       "ConnectTimeoutSecs": 5,
-      "ServiceBearerToken": "proxy-control-plane-placeholder"
+      "ServiceBearerTokenFile": "/run/secrets/honeypot/proxy/control-plane-service-token"
     },
     "Stream": {
       "SourceKind": "GatewayRecording",

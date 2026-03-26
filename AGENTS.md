@@ -431,7 +431,7 @@ Pass when: the frontend event delivery path flows through documented env or moun
 - [x] Wire proxy backend credential material injection.
 Pass when: backend credential material is injected through the documented runtime contract without being baked into the image.
 
-- [ ] Wire proxy token-secret injection.
+- [x] Wire proxy token-secret injection.
 Pass when: token-related secrets are injected through the documented runtime contract without being baked into the image.
 
 - [x] Bind attacker-facing credentials to backend credentials through `/jet/preflight`.

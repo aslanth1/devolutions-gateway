@@ -57,6 +57,9 @@ pub struct HoneypotConfig {
     /// Optional proxy-to-control-plane bearer token.
     #[builder(default, setter(into))]
     pub control_plane_service_bearer_token: Option<String>,
+    /// Optional proxy-to-control-plane bearer token file path.
+    #[builder(default, setter(into))]
+    pub control_plane_service_bearer_token_file: Option<String>,
     /// Optional stream source kind.
     #[builder(default, setter(into))]
     pub stream_source_kind: Option<String>,
@@ -262,6 +265,9 @@ fn build_honeypot_config_json(honeypot_config: HoneypotConfig) -> Value {
     }
     if let Some(service_bearer_token) = honeypot_config.control_plane_service_bearer_token {
         control_plane.insert("ServiceBearerToken".to_owned(), json!(service_bearer_token));
+    }
+    if let Some(service_bearer_token_file) = honeypot_config.control_plane_service_bearer_token_file {
+        control_plane.insert("ServiceBearerTokenFile".to_owned(), json!(service_bearer_token_file));
     }
     if !control_plane.is_empty() {
         honeypot.insert("ControlPlane".to_owned(), Value::Object(control_plane));

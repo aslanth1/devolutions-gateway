@@ -377,7 +377,7 @@ fn proxy_runtime_contract_rejects_missing_control_plane_endpoint() {
   "Honeypot": {
     "Enabled": true,
     "ControlPlane": {
-      "ServiceBearerToken": "proxy-control-plane-placeholder"
+      "ServiceBearerTokenFile": "/run/secrets/honeypot/proxy/control-plane-service-token"
     },
     "Frontend": {
       "PublicUrl": "http://frontend:8080",
@@ -393,6 +393,58 @@ fn proxy_runtime_contract_rejects_missing_control_plane_endpoint() {
         .expect_err("proxy runtime contract should reject missing control-plane endpoint");
 
     assert!(format!("{error:#}").contains("control-plane endpoint"), "{error:#}");
+}
+
+#[test]
+fn proxy_runtime_contract_rejects_inline_service_token_regression() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let compose_path = tempdir.path().join("compose.yaml");
+    let env_path = tempdir.path().join("proxy.env");
+    let config_path = tempdir.path().join("gateway.json");
+
+    let compose = std::fs::read_to_string(repo_relative_path(HONEYPOT_COMPOSE_PATH)).expect("read on-disk compose");
+    let env = std::fs::read_to_string(repo_relative_path(HONEYPOT_PROXY_ENV_PATH)).expect("read on-disk proxy env");
+    std::fs::write(&compose_path, compose).expect("write temp compose");
+    std::fs::write(&env_path, env).expect("write temp env");
+    std::fs::write(
+        &config_path,
+        r#"{
+  "ProvisionerPublicKeyData": {
+    "Value": "mMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4vuqLOkl1pWobt6su1XO9VskgCAwevEGs6kkNjJQBwkGnPKYLmNF1E/af1yCocfVn/OnPf9e4x+lXVyZ6LMDJxFxu+axdgOq3Ld392J1iAEbfvwlyRFnEXFOJNyylqg3bY6LvnWHL/XZczVdMD9xYfq2sO9bg3xjRW4s7r9EEYOFjqVT3VFznH9iWJVtcSEKukmS/3uKoO6lGhacvu0HgjXXdgq0R8zvR4XRJ9Fcnf0f9Ypoc+i6L80NVjrRCeVOH+Ld/2fA9bocpfLarcVqG3RjS+qgOtpyCc0jWVFF4zaGQ7LUDFkEIYILkICeMMn2ll29hmZNzsJzZJ9s6NocgQIDAQAB"
+  },
+  "Listeners": [
+    {
+      "InternalUrl": "tcp://0.0.0.0:8443",
+      "ExternalUrl": "tcp://0.0.0.0:8443"
+    },
+    {
+      "InternalUrl": "http://0.0.0.0:8080",
+      "ExternalUrl": "http://0.0.0.0:8080"
+    }
+  ],
+  "Honeypot": {
+    "Enabled": true,
+    "ControlPlane": {
+      "Endpoint": "http://control-plane:8080",
+      "ServiceBearerToken": "inline-regression"
+    },
+    "Frontend": {
+      "PublicUrl": "http://frontend:8080",
+      "BootstrapPath": "/jet/honeypot/bootstrap",
+      "EventsPath": "/jet/honeypot/events"
+    }
+  }
+}"#,
+    )
+    .expect("write temp config");
+
+    let error = validate_honeypot_proxy_runtime_contract(&compose_path, &env_path, &config_path)
+        .expect_err("proxy runtime contract should reject inline service token regression");
+
+    assert!(
+        format!("{error:#}").contains("must not check in an inline control-plane service token"),
+        "{error:#}"
+    );
 }
 
 #[test]

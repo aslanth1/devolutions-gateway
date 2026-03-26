@@ -258,6 +258,7 @@ pub struct HoneypotControlPlaneConf {
     pub request_timeout: std::time::Duration,
     pub connect_timeout: std::time::Duration,
     pub service_bearer_token: Option<String>,
+    pub service_bearer_token_file: Option<std::path::PathBuf>,
 }
 
 #[derive(PartialEq, Eq, Debug, Clone, Copy, Default)]
@@ -493,6 +494,7 @@ impl HoneypotControlPlaneConf {
                     .unwrap_or(HONEYPOT_CONTROL_PLANE_CONNECT_TIMEOUT_SECS),
             ),
             service_bearer_token: value.service_bearer_token.clone(),
+            service_bearer_token_file: value.service_bearer_token_file.clone(),
         }
     }
 }
@@ -504,6 +506,7 @@ impl Default for HoneypotControlPlaneConf {
             request_timeout: std::time::Duration::from_secs(HONEYPOT_CONTROL_PLANE_REQUEST_TIMEOUT_SECS),
             connect_timeout: std::time::Duration::from_secs(HONEYPOT_CONTROL_PLANE_CONNECT_TIMEOUT_SECS),
             service_bearer_token: None,
+            service_bearer_token_file: None,
         }
     }
 }
@@ -2583,6 +2586,9 @@ pub mod dto {
         /// Bearer token that authenticates proxy-to-control-plane requests.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub service_bearer_token: Option<String>,
+        /// Mounted secret file that contains the proxy-to-control-plane bearer token.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub service_bearer_token_file: Option<std::path::PathBuf>,
     }
 
     #[derive(PartialEq, Eq, Debug, Clone, Copy, Default, Serialize, Deserialize)]
@@ -2778,6 +2784,7 @@ mod tests {
         assert!(!conf.honeypot.enabled);
         assert!(conf.honeypot.control_plane.endpoint.is_none());
         assert!(conf.honeypot.control_plane.service_bearer_token.is_none());
+        assert!(conf.honeypot.control_plane.service_bearer_token_file.is_none());
         assert_eq!(
             conf.honeypot.stream.source_kind,
             HoneypotStreamSourceKind::GatewayRecording
@@ -2812,7 +2819,8 @@ mod tests {
                     "Endpoint": "https://control-plane.internal:8443",
                     "RequestTimeoutSecs": 45,
                     "ConnectTimeoutSecs": 7,
-                    "ServiceBearerToken": "proxy-to-control-plane"
+                    "ServiceBearerToken": "proxy-to-control-plane",
+                    "ServiceBearerTokenFile": "/run/secrets/honeypot/proxy/control-plane-service-token"
                 },
                 "Stream": {
                     "SourceKind": "GatewayRecording",
@@ -2855,6 +2863,12 @@ mod tests {
         assert_eq!(
             conf.honeypot.control_plane.service_bearer_token.as_deref(),
             Some("proxy-to-control-plane")
+        );
+        assert_eq!(
+            conf.honeypot.control_plane.service_bearer_token_file.as_deref(),
+            Some(std::path::Path::new(
+                "/run/secrets/honeypot/proxy/control-plane-service-token"
+            ))
         );
         assert_eq!(
             conf.honeypot.stream.source_kind,

@@ -704,6 +704,10 @@
         "ServiceBearerToken": {
           "type": "string",
           "description": "Bearer token that authenticates proxy-to-control-plane requests."
+        },
+        "ServiceBearerTokenFile": {
+          "type": "string",
+          "description": "Mounted secret file that contains the proxy-to-control-plane bearer token."
         }
       },
       "additionalProperties": false

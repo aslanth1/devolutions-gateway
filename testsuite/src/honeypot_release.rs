@@ -39,10 +39,10 @@ const PROXY_CONFIG_MOUNT: &str = "./config/proxy/gateway.json:/etc/honeypot/prox
 const PROXY_SECRET_MOUNT: &str = "./secrets/proxy:/run/secrets/honeypot/proxy:ro";
 const PROXY_CONFIG_DIR: &str = "/etc/honeypot/proxy";
 const PROXY_CONTROL_PLANE_ENDPOINT: &str = "http://control-plane:8080/";
+const PROXY_CONTROL_PLANE_TOKEN_FILE: &str = "/run/secrets/honeypot/proxy/control-plane-service-token";
 const PROXY_FRONTEND_PUBLIC_URL: &str = "http://frontend:8080/";
 const PROXY_HTTP_LISTENER: &str = "http://0.0.0.0:8080";
 const PROXY_TCP_LISTENER: &str = "tcp://0.0.0.0:8443";
-const PROXY_PLACEHOLDER_CONTROL_PLANE_TOKEN: &str = "proxy-control-plane-placeholder";
 const FRONTEND_CONFIG_ENV: &str = "HONEYPOT_FRONTEND_CONFIG_PATH";
 const FRONTEND_ENV_FILE_REF: &str = "./env/frontend.env";
 const FRONTEND_CONFIG_MOUNT: &str = "./config/frontend/config.toml:/etc/honeypot/frontend/config.toml:ro";
@@ -537,8 +537,13 @@ fn validate_honeypot_proxy_config_document(data: &str) -> anyhow::Result<()> {
         "proxy honeypot control-plane endpoint must be {PROXY_CONTROL_PLANE_ENDPOINT}",
     );
     anyhow::ensure!(
-        conf.honeypot.control_plane.service_bearer_token.as_deref() == Some(PROXY_PLACEHOLDER_CONTROL_PLANE_TOKEN),
-        "proxy honeypot control-plane token placeholder must be present",
+        conf.honeypot.control_plane.service_bearer_token.is_none(),
+        "proxy runtime sample config must not check in an inline control-plane service token",
+    );
+    anyhow::ensure!(
+        conf.honeypot.control_plane.service_bearer_token_file.as_deref()
+            == Some(Path::new(PROXY_CONTROL_PLANE_TOKEN_FILE)),
+        "proxy honeypot control-plane token file must be {PROXY_CONTROL_PLANE_TOKEN_FILE}",
     );
     anyhow::ensure!(
         conf.honeypot.frontend.public_url.as_ref().map(|url| url.as_str()) == Some(PROXY_FRONTEND_PUBLIC_URL),

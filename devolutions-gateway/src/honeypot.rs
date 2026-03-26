@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -1127,10 +1128,7 @@ impl HoneypotControlPlaneClient {
             .build()
             .context("build honeypot control-plane client")?;
 
-        let service_bearer_token = conf
-            .service_bearer_token
-            .clone()
-            .context("honeypot control-plane endpoint requires Honeypot.ControlPlane.ServiceBearerToken")?;
+        let service_bearer_token = resolve_service_bearer_token(conf)?;
 
         Ok(Some(Self {
             endpoint,
@@ -1222,6 +1220,29 @@ impl HoneypotControlPlaneClient {
             .join(path)
             .with_context(|| format!("join control-plane endpoint {} with path {path}", self.endpoint))
     }
+}
+
+fn resolve_service_bearer_token(conf: &HoneypotControlPlaneConf) -> anyhow::Result<String> {
+    if let Some(path) = conf.service_bearer_token_file.as_deref() {
+        return read_required_secret_file(path, "Honeypot.ControlPlane.ServiceBearerTokenFile");
+    }
+
+    conf.service_bearer_token
+        .clone()
+        .context("honeypot control-plane endpoint requires Honeypot.ControlPlane.ServiceBearerTokenFile or Honeypot.ControlPlane.ServiceBearerToken")
+}
+
+fn read_required_secret_file(path: &Path, field_name: &str) -> anyhow::Result<String> {
+    let secret = std::fs::read_to_string(path).with_context(|| format!("read {field_name} from {}", path.display()))?;
+    let secret = secret.trim();
+
+    anyhow::ensure!(
+        !secret.is_empty(),
+        "{field_name} at {} must not be empty",
+        path.display(),
+    );
+
+    Ok(secret.to_owned())
 }
 
 fn now_rfc3339() -> String {
@@ -1358,6 +1379,7 @@ mod tests {
             request_timeout: std::time::Duration::from_secs(5),
             connect_timeout: std::time::Duration::from_secs(2),
             service_bearer_token: Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()),
+            service_bearer_token_file: None,
         };
 
         let client = HoneypotControlPlaneClient::from_conf(&conf)
@@ -1378,6 +1400,53 @@ mod tests {
 
         server.abort();
         let _ = server.await;
+    }
+
+    #[test]
+    fn control_plane_client_reads_service_token_from_secret_file() {
+        let token_path = unique_temp_path("control-plane-service-token");
+        std::fs::write(&token_path, format!("{TEST_CONTROL_PLANE_SERVICE_TOKEN}\n"))
+            .expect("write control-plane service token");
+
+        let conf = HoneypotControlPlaneConf {
+            endpoint: Some("http://control-plane.internal/".parse().expect("parse endpoint")),
+            request_timeout: std::time::Duration::from_secs(5),
+            connect_timeout: std::time::Duration::from_secs(2),
+            service_bearer_token: None,
+            service_bearer_token_file: Some(token_path),
+        };
+
+        let client = HoneypotControlPlaneClient::from_conf(&conf)
+            .expect("build client")
+            .expect("enabled client");
+
+        assert_eq!(client.service_bearer_token, TEST_CONTROL_PLANE_SERVICE_TOKEN);
+
+        std::fs::remove_file(
+            conf.service_bearer_token_file
+                .as_ref()
+                .expect("configured control-plane service token file"),
+        )
+        .expect("remove control-plane service token");
+    }
+
+    #[test]
+    fn control_plane_client_rejects_missing_service_token_file() {
+        let token_path = unique_temp_path("missing-control-plane-service-token");
+        let conf = HoneypotControlPlaneConf {
+            endpoint: Some("http://control-plane.internal/".parse().expect("parse endpoint")),
+            request_timeout: std::time::Duration::from_secs(5),
+            connect_timeout: std::time::Duration::from_secs(2),
+            service_bearer_token: None,
+            service_bearer_token_file: Some(token_path),
+        };
+
+        let error = match HoneypotControlPlaneClient::from_conf(&conf) {
+            Ok(_) => panic!("missing service token file should fail"),
+            Err(error) => error,
+        };
+
+        assert!(format!("{error:#}").contains("ServiceBearerTokenFile"), "{error:#}");
     }
 
     #[tokio::test]
@@ -1770,6 +1839,7 @@ mod tests {
                         request_timeout: std::time::Duration::from_secs(5),
                         connect_timeout: std::time::Duration::from_secs(2),
                         service_bearer_token: Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()),
+                        service_bearer_token_file: None,
                     })
                     .expect("build client")
                     .expect("enabled client"),
