@@ -21,6 +21,18 @@ static HONEYPOT_CONTROL_PLANE_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
         .to_path_buf()
 });
 
+static FAKE_QEMU_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+    escargot::CargoBuild::new()
+        .manifest_path("Cargo.toml")
+        .bin("fake-qemu")
+        .current_release()
+        .current_target()
+        .run()
+        .expect("build fake qemu test helper")
+        .path()
+        .to_path_buf()
+});
+
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct HoneypotControlPlaneTestConfig {
     #[builder(setter(into))]
@@ -51,6 +63,10 @@ pub struct HoneypotControlPlaneTestConfig {
     pub kvm_path: PathBuf,
     #[builder(default = false)]
     pub enable_guest_agent: bool,
+    #[builder(default = "simulated".to_owned(), setter(into))]
+    pub lifecycle_driver: String,
+    #[builder(default = 1)]
+    pub stop_timeout_secs: u64,
     #[builder(setter(into))]
     pub qemu_binary_path: PathBuf,
     #[builder(default = "q35".to_owned(), setter(into))]
@@ -79,6 +95,10 @@ pub fn honeypot_control_plane_tokio_cmd() -> tokio::process::Command {
     cmd
 }
 
+pub fn fake_qemu_bin_path() -> PathBuf {
+    FAKE_QEMU_BIN_PATH.clone()
+}
+
 pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControlPlaneTestConfig) -> anyhow::Result<()> {
     let mut document = format!(
         "[http]\n\
@@ -87,6 +107,8 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
          service_token_validation_disabled = {}\n\n\
          [runtime]\n\
          enable_guest_agent = {}\n\n\
+         lifecycle_driver = \"{}\"\n\
+         stop_timeout_secs = {}\n\n\
          [runtime.qemu]\n\
          binary_path = \"{}\"\n\
          machine_type = \"{}\"\n\
@@ -106,6 +128,8 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
         config.bind_addr,
         config.service_token_validation_disabled,
         config.enable_guest_agent,
+        config.lifecycle_driver,
+        config.stop_timeout_secs,
         config.qemu_binary_path.display(),
         config.qemu_machine_type,
         config.qemu_cpu_model,

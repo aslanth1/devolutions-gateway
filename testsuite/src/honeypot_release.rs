@@ -42,6 +42,8 @@ const CONTROL_PLANE_QEMU_CPU_MODEL: &str = "host";
 const CONTROL_PLANE_QEMU_VCPU_COUNT: u8 = 4;
 const CONTROL_PLANE_QEMU_MEMORY_MIB: u32 = 8192;
 const CONTROL_PLANE_QEMU_NETDEV_ID: &str = "net0";
+const CONTROL_PLANE_LIFECYCLE_DRIVER: &str = "process";
+const CONTROL_PLANE_STOP_TIMEOUT_SECS: u64 = 5;
 const PROXY_ENV_FILE_REF: &str = "./env/proxy.env";
 const PROXY_CONFIG_MOUNT: &str = "./config/proxy/gateway.json:/etc/honeypot/proxy/gateway.json:ro";
 const PROXY_SECRET_MOUNT: &str = "./secrets/proxy:/run/secrets/honeypot/proxy:ro";
@@ -523,6 +525,17 @@ fn validate_honeypot_control_plane_config(config: &ControlPlaneConfig) -> anyhow
     anyhow::ensure!(
         config.runtime.qemu.binary_path == Path::new(CONTROL_PLANE_QEMU_BINARY_PATH),
         "control-plane qemu binary_path must be {CONTROL_PLANE_QEMU_BINARY_PATH}",
+    );
+    anyhow::ensure!(
+        matches!(
+            config.runtime.lifecycle_driver,
+            honeypot_control_plane::config::VmLifecycleDriver::Process
+        ),
+        "control-plane lifecycle_driver must be {CONTROL_PLANE_LIFECYCLE_DRIVER}",
+    );
+    anyhow::ensure!(
+        config.runtime.stop_timeout_secs == CONTROL_PLANE_STOP_TIMEOUT_SECS,
+        "control-plane stop_timeout_secs must be {CONTROL_PLANE_STOP_TIMEOUT_SECS}",
     );
     anyhow::ensure!(
         config.runtime.qemu.machine_type == CONTROL_PLANE_QEMU_MACHINE_TYPE,

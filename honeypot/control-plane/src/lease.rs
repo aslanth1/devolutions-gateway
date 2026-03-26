@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{ControlPlaneConfig, PathConfig};
 use crate::qemu::QemuLaunchPlan;
+use crate::vm::{create_vm, destroy_vm, reset_vm as reset_vm_runtime, start_vm, stop_vm};
 
 const DEFAULT_GUEST_RDP_ADDR: &str = "127.0.0.1";
 const DEFAULT_GUEST_RDP_PORT: u16 = 3389;
@@ -116,7 +117,13 @@ impl LeaseRegistry {
             lease_state: LeaseState::Assigned,
             capture_source_ref: format!("gateway-recording://{}", trusted_image.vm_name),
             launch_plan: LeaseLaunchPlanSnapshot::from(launch_plan),
+            runtime_state: LeaseRuntimeState::Prepared,
         };
+
+        let mut snapshot = snapshot;
+        create_vm(&snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
+        start_vm(config, &snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
+        snapshot.runtime_state = LeaseRuntimeState::Running;
 
         persist_active_snapshot(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
         self.leases.insert(vm_lease_id.clone(), snapshot.clone());
@@ -174,6 +181,8 @@ impl LeaseRegistry {
             let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;
             let mut snapshot = snapshot;
             snapshot.lease_state = LeaseState::Quarantined;
+            let _ = stop_vm(config, &snapshot.launch_plan);
+            snapshot.runtime_state = LeaseRuntimeState::Stopped;
             move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
 
             return Ok(ResetVmResponse {
@@ -186,6 +195,8 @@ impl LeaseRegistry {
         }
 
         let snapshot = self.require_assigned_lease(vm_lease_id, &request.session_id)?;
+        reset_vm_runtime(config, &snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
+        snapshot.runtime_state = LeaseRuntimeState::Running;
         persist_active_snapshot(&config.paths, snapshot).map_err(LeaseError::host_unavailable)?;
 
         Ok(ResetVmResponse {
@@ -207,12 +218,14 @@ impl LeaseRegistry {
             .ensure_supported_schema()
             .map_err(|error| LeaseError::invalid_request(error.to_string()))?;
 
-        let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;
         let should_quarantine = request.recycle_reason.contains("simulate_failure") && request.quarantine_on_failure;
 
         if should_quarantine {
+            let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;
             let mut snapshot = snapshot;
             snapshot.lease_state = LeaseState::Quarantined;
+            let _ = stop_vm(config, &snapshot.launch_plan);
+            snapshot.runtime_state = LeaseRuntimeState::Stopped;
             move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
 
             return Ok(RecycleVmResponse {
@@ -225,8 +238,19 @@ impl LeaseRegistry {
             });
         }
 
+        {
+            let snapshot = self.require_assigned_lease(vm_lease_id, &request.session_id)?;
+            if matches!(snapshot.runtime_state, LeaseRuntimeState::Running) {
+                stop_vm(config, &snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
+                snapshot.runtime_state = LeaseRuntimeState::Stopped;
+                persist_active_snapshot(&config.paths, snapshot).map_err(LeaseError::host_unavailable)?;
+            }
+
+            destroy_vm(&snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
+        }
+
+        let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;
         remove_active_snapshot(&config.paths, &snapshot.vm_lease_id).map_err(LeaseError::host_unavailable)?;
-        cleanup_runtime_artifacts(&snapshot).map_err(LeaseError::host_unavailable)?;
 
         Ok(RecycleVmResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -262,6 +286,12 @@ impl LeaseRegistry {
         if !matches!(snapshot.lease_state, LeaseState::Assigned | LeaseState::Ready) {
             return Err(LeaseError::lease_state_conflict(format!(
                 "lease {vm_lease_id} is not in a streamable state"
+            )));
+        }
+
+        if !matches!(snapshot.runtime_state, LeaseRuntimeState::Running) {
+            return Err(LeaseError::lease_state_conflict(format!(
+                "lease {vm_lease_id} is not in a running state"
             )));
         }
 
@@ -345,24 +375,37 @@ struct LeaseSnapshot {
     lease_state: LeaseState,
     capture_source_ref: String,
     launch_plan: LeaseLaunchPlanSnapshot,
+    #[serde(default)]
+    runtime_state: LeaseRuntimeState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LeaseRuntimeState {
+    #[default]
+    Prepared,
+    Running,
+    Stopped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LeaseLaunchPlanSnapshot {
-    qemu_binary_path: PathBuf,
-    runtime_dir: PathBuf,
-    base_image_path: PathBuf,
-    overlay_path: PathBuf,
-    pid_file_path: PathBuf,
-    qmp_socket_path: PathBuf,
-    qga_socket_path: Option<PathBuf>,
-    argv: Vec<String>,
+pub(crate) struct LeaseLaunchPlanSnapshot {
+    pub(crate) qemu_binary_path: PathBuf,
+    pub(crate) vm_name: String,
+    pub(crate) runtime_dir: PathBuf,
+    pub(crate) base_image_path: PathBuf,
+    pub(crate) overlay_path: PathBuf,
+    pub(crate) pid_file_path: PathBuf,
+    pub(crate) qmp_socket_path: PathBuf,
+    pub(crate) qga_socket_path: Option<PathBuf>,
+    pub(crate) argv: Vec<String>,
 }
 
 impl From<QemuLaunchPlan> for LeaseLaunchPlanSnapshot {
     fn from(plan: QemuLaunchPlan) -> Self {
         Self {
             qemu_binary_path: plan.qemu_binary_path,
+            vm_name: plan.vm_name,
             runtime_dir: plan.runtime_dir,
             base_image_path: plan.base_image_path,
             overlay_path: plan.overlay_path,
@@ -552,26 +595,6 @@ fn resolve_base_image_path(paths: &PathConfig, manifest_path: &Path, configured_
             paths.image_store.join(format!("{stem}.qcow2"))
         }
     }
-}
-
-fn cleanup_runtime_artifacts(snapshot: &LeaseSnapshot) -> anyhow::Result<()> {
-    cleanup_runtime_socket(&snapshot.launch_plan.qmp_socket_path)?;
-
-    if let Some(qga_socket_path) = &snapshot.launch_plan.qga_socket_path {
-        cleanup_runtime_socket(qga_socket_path)?;
-    }
-
-    let pid_file_path = &snapshot.launch_plan.pid_file_path;
-    if pid_file_path.exists() {
-        fs::remove_file(pid_file_path).with_context(|| format!("remove pid file {}", pid_file_path.display()))?;
-    }
-
-    let runtime_dir = &snapshot.launch_plan.runtime_dir;
-    if runtime_dir.exists() {
-        fs::remove_dir_all(runtime_dir).with_context(|| format!("remove runtime dir {}", runtime_dir.display()))?;
-    }
-
-    Ok(())
 }
 
 fn move_runtime_artifacts_to_quarantine(paths: &PathConfig, snapshot: &LeaseSnapshot) -> anyhow::Result<()> {

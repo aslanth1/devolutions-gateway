@@ -3,6 +3,7 @@ pub mod config;
 pub mod health;
 mod lease;
 mod qemu;
+mod vm;
 
 use std::fs;
 use std::path::Path;

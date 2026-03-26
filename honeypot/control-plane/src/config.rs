@@ -54,11 +54,31 @@ pub struct AuthConfig {
     pub proxy_verifier_public_key_pem_file: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct RuntimeConfig {
     pub enable_guest_agent: bool,
+    pub lifecycle_driver: VmLifecycleDriver,
+    pub stop_timeout_secs: u64,
     pub qemu: QemuConfig,
+}
+
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            enable_guest_agent: false,
+            lifecycle_driver: VmLifecycleDriver::Process,
+            stop_timeout_secs: 5,
+            qemu: QemuConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VmLifecycleDriver {
+    Process,
+    Simulated,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -15,6 +15,10 @@ name = "integration_tests"
 path = "tests/main.rs"
 harness = true
 
+[[bin]]
+name = "fake-qemu"
+path = "src/fake_qemu_bin.rs"
+
 [dependencies]
 anyhow = "1.0"
 assert_cmd = "2.1"
@@ -26,6 +30,7 @@ fastrand = "2"
 honeypot-control-plane.path = "../honeypot/control-plane"
 honeypot-contracts.path = "../honeypot/contracts"
 honeypot-frontend.path = "../honeypot/frontend"
+libc = "0.2"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

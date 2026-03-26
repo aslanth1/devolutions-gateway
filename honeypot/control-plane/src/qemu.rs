@@ -124,6 +124,10 @@ pub(crate) fn validate_qemu_runtime_contract(config: &ControlPlaneConfig) -> any
         !qemu_config.network.netdev_id.trim().is_empty(),
         "runtime.qemu.network.netdev_id must not be empty",
     );
+    anyhow::ensure!(
+        config.runtime.stop_timeout_secs > 0,
+        "runtime.stop_timeout_secs must be greater than zero",
+    );
 
     if matches!(qemu_config.network.mode, QemuNetworkMode::User) {
         anyhow::ensure!(

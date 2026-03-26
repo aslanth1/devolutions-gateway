@@ -8,7 +8,7 @@ use honeypot_contracts::control_plane::{
 use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_control_plane::{
-    HoneypotControlPlaneTestConfig, find_unused_port, get_json_response_with_bearer_token,
+    HoneypotControlPlaneTestConfig, fake_qemu_bin_path, find_unused_port, get_json_response_with_bearer_token,
     honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd, post_json_response_with_bearer_token,
     read_health_response_with_bearer_token, send_http_request, write_honeypot_control_plane_config,
 };
@@ -380,6 +380,30 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert_eq!(reset.reset_state, ResetState::ResetComplete);
     assert!(!reset.quarantine_required);
 
+    let runtime_dir = fixture.lease_store.join(&acquire.vm_lease_id);
+    let overlay_path = runtime_dir.join("overlay.qcow2");
+    let pid_file_path = runtime_dir.join("qemu.pid");
+    let qmp_socket_path = fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id));
+    let snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    let snapshot = fs::read_to_string(&snapshot_path).expect("read active lease snapshot after reset");
+    let snapshot: serde_json::Value = serde_json::from_str(&snapshot).expect("parse lease snapshot after reset");
+
+    assert_eq!(
+        snapshot.get("runtime_state").and_then(serde_json::Value::as_str),
+        Some("running")
+    );
+    assert!(overlay_path.is_file(), "missing overlay at {}", overlay_path.display());
+    assert!(
+        pid_file_path.is_file(),
+        "missing pid file at {}",
+        pid_file_path.display()
+    );
+    assert!(
+        qmp_socket_path.exists(),
+        "missing qmp socket at {}",
+        qmp_socket_path.display()
+    );
+
     let stream_path = format!(
         "/api/v1/vm/{}/stream?schema_version={}&request_id=stream-1&session_id=session-1&preferred_transport=sse",
         acquire.vm_lease_id,
@@ -427,6 +451,11 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert_eq!(recycle.recycle_state, RecycleState::Recycled);
     assert_eq!(recycle.pool_state, PoolState::Ready);
     assert!(!recycle.quarantined);
+    assert!(
+        !runtime_dir.exists(),
+        "runtime dir should be removed after recycle: {}",
+        runtime_dir.display()
+    );
 
     let health = read_authed_health_response(port).await.expect("read health response");
     assert_eq!(health.active_lease_count, 0);
@@ -496,6 +525,10 @@ async fn control_plane_persists_qemu_launch_plan_metadata_on_acquire() {
         launch_plan.get("qmp_socket_path").and_then(serde_json::Value::as_str),
         fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id)).to_str()
     );
+    assert_eq!(
+        snapshot.get("runtime_state").and_then(serde_json::Value::as_str),
+        Some("running")
+    );
     assert!(
         launch_plan
             .get("argv")
@@ -504,6 +537,26 @@ async fn control_plane_persists_qemu_launch_plan_metadata_on_acquire() {
             .flatten()
             .filter_map(serde_json::Value::as_str)
             .any(|arg| arg.contains("hostfwd=tcp:127.0.0.1:3389-:3389")),
+    );
+    assert!(
+        fixture
+            .lease_store
+            .join(&acquire.vm_lease_id)
+            .join("overlay.qcow2")
+            .is_file(),
+        "expected active lease overlay to exist",
+    );
+    assert!(
+        fixture
+            .lease_store
+            .join(&acquire.vm_lease_id)
+            .join("qemu.pid")
+            .is_file(),
+        "expected active lease pid file to exist",
+    );
+    assert!(
+        fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id)).exists(),
+        "expected active lease qmp socket to exist",
     );
 
     child.kill().await.expect("kill control-plane");
@@ -672,6 +725,230 @@ async fn control_plane_quarantines_simulated_recycle_failures() {
     let _ = child.wait().await.expect("wait for control-plane exit");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn control_plane_process_driver_assigns_and_recycles_a_typed_lease() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let process_qemu_path = install_fake_qemu_binary(tempdir.path(), "fake-qemu");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .qga_dir(fixture.qga_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .enable_guest_agent(true)
+        .lifecycle_driver("process")
+        .stop_timeout_secs(1)
+        .qemu_binary_path(process_qemu_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-process"))
+            .await
+            .expect("acquire lease");
+
+    assert!(
+        fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id)).exists(),
+        "expected qmp socket for process lifecycle driver",
+    );
+    assert!(
+        fixture.qga_dir.join(format!("{}.sock", acquire.vm_lease_id)).exists(),
+        "expected qga socket for process lifecycle driver",
+    );
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-process-1".to_owned(),
+            session_id: "session-process".to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .expect("release lease");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let (_, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-process-1".to_owned(),
+            session_id: "session-process".to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+        },
+    )
+    .await
+    .expect("recycle process-backed lease");
+    assert_eq!(recycle.recycle_state, RecycleState::Recycled);
+    assert_eq!(recycle.pool_state, PoolState::Ready);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn control_plane_process_driver_reports_qemu_startup_failures() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let process_qemu_path = install_fake_qemu_binary(tempdir.path(), "fake-qemu-early-exit");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .lifecycle_driver("process")
+        .stop_timeout_secs(1)
+        .qemu_binary_path(process_qemu_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let request_body =
+        serde_json::to_vec(&acquire_request("session-process-early-exit")).expect("serialize acquire request");
+    let (status_line, body) = send_http_request(
+        port,
+        "POST",
+        "/api/v1/vm/acquire",
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        Some(&request_body),
+    )
+    .await
+    .expect("send acquire request");
+    let error: ErrorResponse = serde_json::from_slice(&body).expect("parse error response");
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(error.error_code, ErrorCode::HostUnavailable);
+    assert!(
+        error
+            .message
+            .contains("qemu exited before the lease reached running state"),
+        "{}",
+        error.message
+    );
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn control_plane_process_driver_reports_stop_timeout_and_preserves_the_lease() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let process_qemu_path = install_fake_qemu_binary(tempdir.path(), "fake-qemu-ignore-term");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .lifecycle_driver("process")
+        .stop_timeout_secs(1)
+        .qemu_binary_path(process_qemu_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-process-timeout"))
+            .await
+            .expect("acquire lease");
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-process-timeout-1".to_owned(),
+            session_id: "session-process-timeout".to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .expect("release lease");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let request_body = serde_json::to_vec(&RecycleVmRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: "recycle-process-timeout-1".to_owned(),
+        session_id: "session-process-timeout".to_owned(),
+        recycle_reason: "release_cleanup".to_owned(),
+        quarantine_on_failure: true,
+    })
+    .expect("serialize recycle request");
+    let (status_line, body) = send_http_request(
+        port,
+        "POST",
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        Some(&request_body),
+    )
+    .await
+    .expect("send recycle request");
+    let error: ErrorResponse = serde_json::from_slice(&body).expect("parse recycle error response");
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(error.error_code, ErrorCode::HostUnavailable);
+    assert!(error.message.contains("did not exit within"), "{}", error.message);
+
+    let health = read_authed_health_response(port).await.expect("read health response");
+    assert_eq!(health.active_lease_count, 1);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
 fn acquire_request(session_id: &str) -> AcquireVmRequest {
     AcquireVmRequest {
         schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -692,6 +969,7 @@ struct RuntimeFixture {
     lease_store: std::path::PathBuf,
     quarantine_store: std::path::PathBuf,
     qmp_dir: std::path::PathBuf,
+    qga_dir: std::path::PathBuf,
     secret_dir: std::path::PathBuf,
     kvm_path: std::path::PathBuf,
     qemu_binary_path: std::path::PathBuf,
@@ -706,6 +984,7 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     let lease_store = root.join("leases");
     let quarantine_store = root.join("quarantine");
     let qmp_dir = root.join("qmp");
+    let qga_dir = root.join("qga");
     let secret_dir = root.join("secrets");
     let kvm_path = root.join("kvm");
     let qemu_binary_path = bin_dir.join("qemu-system-x86_64");
@@ -716,6 +995,7 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     fs::create_dir_all(&lease_store).expect("create lease dir");
     fs::create_dir_all(&quarantine_store).expect("create quarantine dir");
     fs::create_dir_all(&qmp_dir).expect("create qmp dir");
+    fs::create_dir_all(&qga_dir).expect("create qga dir");
     fs::create_dir_all(&secret_dir).expect("create secret dir");
     fs::write(&kvm_path, []).expect("create fake kvm device");
     fs::write(&qemu_binary_path, []).expect("create fake qemu binary");
@@ -736,9 +1016,24 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
         lease_store,
         quarantine_store,
         qmp_dir,
+        qga_dir,
         secret_dir,
         kvm_path,
         qemu_binary_path,
         base_image_paths,
     }
+}
+
+#[cfg(unix)]
+fn install_fake_qemu_binary(root: &std::path::Path, file_name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let target_path = root.join("bin").join(file_name);
+    fs::copy(fake_qemu_bin_path(), &target_path).expect("copy fake qemu binary");
+    let mut permissions = fs::metadata(&target_path)
+        .expect("read fake qemu metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&target_path, permissions).expect("set fake qemu permissions");
+    target_path
 }

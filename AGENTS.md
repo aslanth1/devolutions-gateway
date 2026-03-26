@@ -384,7 +384,7 @@ Pass when: VM launch parameters, sockets, disks, CPU, memory, and network settin
 - [x] Add control-plane container health and readiness checks.
 Pass when: compose and Rust tests can distinguish startup, healthy, degraded, and unsafe host-integration states.
 
-- [ ] Implement VM lifecycle adapters for create, start, stop, and reset.
+- [x] Implement VM lifecycle adapters for create, start, stop, and reset.
 Pass when: the control plane can drive a named VM through the active runtime lifecycle and surface actionable errors.
 
 - [ ] Implement VM lifecycle adapters for destroy and recycle.

@@ -260,10 +260,13 @@ Z/fDKMxHxeXla54kfV+HiGkH
     }
 
     fn signed_control_plane_scope_token() -> String {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time after unix epoch")
-            .as_secs() as i64;
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time after unix epoch")
+                .as_secs(),
+        )
+        .expect("unix epoch seconds fit in i64");
         let claims = serde_json::json!({
             "type": "scope",
             "scope": CONTROL_PLANE_SCOPE,
