@@ -11,15 +11,18 @@ services:
     build:
       context: ../..
       dockerfile: honeypot/docker/control-plane/Dockerfile
+    env_file:
+      - ./env/control-plane.env
     networks:
       - honeypot-control
     volumes:
       - honeypot-control-plane-data:/var/lib/honeypot/control-plane
       - /srv/honeypot/images:/var/lib/honeypot/images:rw
       - /srv/honeypot/leases:/var/lib/honeypot/leases:rw
+      - /srv/honeypot/quarantine:/var/lib/honeypot/quarantine:rw
       - /srv/honeypot/run/qmp:/run/honeypot/qmp:rw
       - /srv/honeypot/run/qga:/run/honeypot/qga:rw
-      - ./config/control-plane:/etc/honeypot/control-plane:ro
+      - ./config/control-plane/config.toml:/etc/honeypot/control-plane/config.toml:ro
       - ./secrets/control-plane:/run/secrets/honeypot/control-plane:ro
     devices:
       - /dev/kvm:/dev/kvm

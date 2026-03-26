@@ -1,0 +1,18 @@
+[http]
+bind_addr = "0.0.0.0:8080"
+
+[auth]
+service_token_validation_disabled = true
+
+[runtime]
+enable_guest_agent = true
+
+[paths]
+data_dir = "/var/lib/honeypot/control-plane"
+image_store = "/var/lib/honeypot/images"
+lease_store = "/var/lib/honeypot/leases"
+quarantine_store = "/var/lib/honeypot/quarantine"
+qmp_dir = "/run/honeypot/qmp"
+qga_dir = "/run/honeypot/qga"
+secret_dir = "/run/secrets/honeypot/control-plane"
+kvm_path = "/dev/kvm"

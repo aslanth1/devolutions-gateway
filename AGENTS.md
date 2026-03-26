@@ -360,22 +360,22 @@ Pass when: every `DF-*` row is resolved, `docs/honeypot/decisions.md` links to t
 - [x] Create the Rust control-plane service under `honeypot/control-plane/`.
 Pass when: the service exposes a stable API skeleton and a health endpoint.
 
-- [ ] Wire the `control-plane` binary into the established image target.
+- [x] Wire the `control-plane` binary into the established image target.
 Pass when: the service starts from the chosen `honeypot/docker/control-plane/` image target directly without Bash or Python entrypoint glue.
 
 - [x] Add a typed Gateway-side control-plane client and wire it through Gateway state.
 Pass when: the proxy can acquire, release, reset, and recycle VMs through typed Rust calls rather than ad hoc requests.
 
-- [ ] Wire control-plane runtime config injection.
+- [x] Wire control-plane runtime config injection.
 Pass when: the service receives QEMU settings and image paths through documented env or mounted files.
 
 - [ ] Wire control-plane secret injection.
 Pass when: backend credentials and similar sensitive inputs arrive through the documented runtime contract without being baked into the image.
 
-- [ ] Wire control-plane host mounts and socket paths.
+- [x] Wire control-plane host mounts and socket paths.
 Pass when: the service consumes only the documented host mount paths and socket paths from `deployment.md`.
 
-- [ ] Wire control-plane device access and startup contract.
+- [x] Wire control-plane device access and startup contract.
 Pass when: the service consumes only the documented `/dev/kvm` and related startup contract from `deployment.md`.
 
 - [ ] Add QEMU command building and config validation in Rust.

@@ -22,6 +22,7 @@ dynosaur = "0.3"
 escargot = "0.5"
 expect-test = "1.5"
 fastrand = "2"
+honeypot-control-plane.path = "../honeypot/control-plane"
 honeypot-contracts.path = "../honeypot/contracts"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }

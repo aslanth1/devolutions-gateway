@@ -6769,6 +6769,7 @@ dependencies = [
  "expect-test",
  "fastrand",
  "honeypot-contracts",
+ "honeypot-control-plane",
  "libsql",
  "mcp-proxy",
  "proxy-socks",

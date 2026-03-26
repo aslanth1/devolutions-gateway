@@ -1,16 +1,33 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
+use honeypot_control_plane::config::{CONTROL_PLANE_CONFIG_ENV, ControlPlaneConfig, DEFAULT_CONTROL_PLANE_CONFIG_PATH};
 use serde::Deserialize;
 
 pub const HONEYPOT_IMAGES_LOCK_PATH: &str = "honeypot/docker/images.lock";
 pub const HONEYPOT_COMPOSE_PATH: &str = "honeypot/docker/compose.yaml";
+pub const HONEYPOT_CONTROL_PLANE_ENV_PATH: &str = "honeypot/docker/env/control-plane.env";
+pub const HONEYPOT_CONTROL_PLANE_CONFIG_PATH: &str = "honeypot/docker/config/control-plane/config.toml";
 
 const CANONICAL_REGISTRY: &str = "ghcr.io/fork-owner";
 const CANONICAL_IMAGE_ROOT: &str = "devolutions-gateway-honeypot";
 const SERVICE_NAMES: [&str; 3] = ["control-plane", "frontend", "proxy"];
 const FLOATING_TAGS: [&str; 7] = ["latest", "stable", "main", "master", "edge", "dev", "nightly"];
+const CONTROL_PLANE_ENV_FILE_REF: &str = "./env/control-plane.env";
+const CONTROL_PLANE_CONFIG_MOUNT: &str =
+    "./config/control-plane/config.toml:/etc/honeypot/control-plane/config.toml:ro";
+const CONTROL_PLANE_SECRET_MOUNT: &str = "./secrets/control-plane:/run/secrets/honeypot/control-plane:ro";
+const CONTROL_PLANE_BIND_ADDR: &str = "0.0.0.0:8080";
+const CONTROL_PLANE_DATA_DIR: &str = "/var/lib/honeypot/control-plane";
+const CONTROL_PLANE_IMAGE_STORE: &str = "/var/lib/honeypot/images";
+const CONTROL_PLANE_LEASE_STORE: &str = "/var/lib/honeypot/leases";
+const CONTROL_PLANE_QUARANTINE_STORE: &str = "/var/lib/honeypot/quarantine";
+const CONTROL_PLANE_QMP_DIR: &str = "/run/honeypot/qmp";
+const CONTROL_PLANE_QGA_DIR: &str = "/run/honeypot/qga";
+const CONTROL_PLANE_SECRET_DIR: &str = "/run/secrets/honeypot/control-plane";
+const CONTROL_PLANE_KVM_PATH: &str = "/dev/kvm";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HoneypotImagesLock {
@@ -38,13 +55,33 @@ pub struct HoneypotImageRevision {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct HoneypotComposeFile {
     #[serde(rename = "x-images")]
-    image_aliases: std::collections::BTreeMap<String, String>,
-    services: std::collections::BTreeMap<String, HoneypotComposeService>,
+    image_aliases: BTreeMap<String, String>,
+    services: BTreeMap<String, HoneypotComposeService>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 struct HoneypotComposeService {
     image: String,
+    #[serde(default)]
+    env_file: Option<ComposePathRef>,
+    #[serde(default)]
+    volumes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum ComposePathRef {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl ComposePathRef {
+    fn contains(&self, expected: &str) -> bool {
+        match self {
+            Self::One(path) => path == expected,
+            Self::Many(paths) => paths.iter().any(|path| path == expected),
+        }
+    }
 }
 
 impl HoneypotImagesLock {
@@ -152,6 +189,71 @@ pub fn validate_honeypot_release_inputs(lock_path: &Path, compose_path: &Path) -
     validate_honeypot_compose_document(&compose_data, &lockfile)
 }
 
+pub fn validate_honeypot_control_plane_runtime_contract(
+    compose_path: &Path,
+    env_path: &Path,
+    config_path: &Path,
+) -> anyhow::Result<()> {
+    let compose_data = std::fs::read_to_string(compose_path)
+        .with_context(|| format!("read compose file at {}", compose_path.display()))?;
+    validate_honeypot_control_plane_compose_runtime_document(&compose_data)?;
+
+    let env_data =
+        std::fs::read_to_string(env_path).with_context(|| format!("read env file at {}", env_path.display()))?;
+    validate_honeypot_control_plane_env_document(&env_data)?;
+
+    let config =
+        ControlPlaneConfig::load_from_path(config_path).with_context(|| format!("load {}", config_path.display()))?;
+    validate_honeypot_control_plane_config(&config)
+}
+
+pub fn validate_honeypot_control_plane_compose_runtime_document(data: &str) -> anyhow::Result<()> {
+    let compose: HoneypotComposeFile = serde_yaml::from_str(data).context("deserialize honeypot compose file")?;
+    let service = compose
+        .services
+        .get("control-plane")
+        .context("missing compose service control-plane")?;
+    let env_file = service
+        .env_file
+        .as_ref()
+        .context("compose service control-plane must define env_file")?;
+
+    anyhow::ensure!(
+        env_file.contains(CONTROL_PLANE_ENV_FILE_REF),
+        "compose service control-plane must reference {CONTROL_PLANE_ENV_FILE_REF}",
+    );
+    anyhow::ensure!(
+        service
+            .volumes
+            .iter()
+            .any(|volume| volume == CONTROL_PLANE_CONFIG_MOUNT),
+        "compose service control-plane must mount {CONTROL_PLANE_CONFIG_MOUNT}",
+    );
+    anyhow::ensure!(
+        service
+            .volumes
+            .iter()
+            .any(|volume| volume == CONTROL_PLANE_SECRET_MOUNT),
+        "compose service control-plane must keep the secret mount separate at {CONTROL_PLANE_SECRET_MOUNT}",
+    );
+
+    Ok(())
+}
+
+pub fn validate_honeypot_control_plane_env_document(data: &str) -> anyhow::Result<()> {
+    let env = parse_env_document(data)?;
+    let config_path = env
+        .get(CONTROL_PLANE_CONFIG_ENV)
+        .with_context(|| format!("env file must define {CONTROL_PLANE_CONFIG_ENV}"))?;
+
+    anyhow::ensure!(
+        config_path == DEFAULT_CONTROL_PLANE_CONFIG_PATH,
+        "{CONTROL_PLANE_CONFIG_ENV} must be {DEFAULT_CONTROL_PLANE_CONFIG_PATH}",
+    );
+
+    Ok(())
+}
+
 fn validate_service_entry(service: &'static str, entry: &HoneypotImageLockEntry) -> anyhow::Result<()> {
     let expected_image = canonical_image_name(service);
     anyhow::ensure!(
@@ -223,4 +325,70 @@ fn current_image_ref(entry: &HoneypotImageLockEntry) -> String {
 
 fn canonical_image_name(service: &str) -> String {
     format!("{CANONICAL_IMAGE_ROOT}/{service}")
+}
+
+fn validate_honeypot_control_plane_config(config: &ControlPlaneConfig) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.http.bind_addr == CONTROL_PLANE_BIND_ADDR.parse::<SocketAddr>().expect("valid bind addr"),
+        "control-plane bind_addr must be {CONTROL_PLANE_BIND_ADDR}",
+    );
+    anyhow::ensure!(
+        config.paths.data_dir == Path::new(CONTROL_PLANE_DATA_DIR),
+        "control-plane data_dir must be {CONTROL_PLANE_DATA_DIR}",
+    );
+    anyhow::ensure!(
+        config.paths.image_store == Path::new(CONTROL_PLANE_IMAGE_STORE),
+        "control-plane image_store must be {CONTROL_PLANE_IMAGE_STORE}",
+    );
+    anyhow::ensure!(
+        config.paths.lease_store == Path::new(CONTROL_PLANE_LEASE_STORE),
+        "control-plane lease_store must be {CONTROL_PLANE_LEASE_STORE}",
+    );
+    anyhow::ensure!(
+        config.paths.quarantine_store == Path::new(CONTROL_PLANE_QUARANTINE_STORE),
+        "control-plane quarantine_store must be {CONTROL_PLANE_QUARANTINE_STORE}",
+    );
+    anyhow::ensure!(
+        config.paths.qmp_dir == Path::new(CONTROL_PLANE_QMP_DIR),
+        "control-plane qmp_dir must be {CONTROL_PLANE_QMP_DIR}",
+    );
+    anyhow::ensure!(
+        config.paths.qga_dir.as_deref() == Some(Path::new(CONTROL_PLANE_QGA_DIR)),
+        "control-plane qga_dir must be {CONTROL_PLANE_QGA_DIR}",
+    );
+    anyhow::ensure!(
+        config.paths.secret_dir == Path::new(CONTROL_PLANE_SECRET_DIR),
+        "control-plane secret_dir must be {CONTROL_PLANE_SECRET_DIR}",
+    );
+    anyhow::ensure!(
+        config.paths.kvm_path == Path::new(CONTROL_PLANE_KVM_PATH),
+        "control-plane kvm_path must be {CONTROL_PLANE_KVM_PATH}",
+    );
+
+    Ok(())
+}
+
+fn parse_env_document(data: &str) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut entries = BTreeMap::new();
+
+    for (index, raw_line) in data.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let (key, value) = line
+            .split_once('=')
+            .with_context(|| format!("env line {} must contain KEY=VALUE", index + 1))?;
+        let key = key.trim();
+        let value = value.trim();
+
+        anyhow::ensure!(!key.is_empty(), "env line {} must not use an empty key", index + 1);
+        anyhow::ensure!(
+            entries.insert(key.to_owned(), value.to_owned()).is_none(),
+            "env key {key} must not be repeated",
+        );
+    }
+
+    Ok(entries)
 }
