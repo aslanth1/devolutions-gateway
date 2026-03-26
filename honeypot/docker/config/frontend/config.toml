@@ -1,0 +1,18 @@
+[http]
+bind_addr = "0.0.0.0:8080"
+
+[proxy]
+base_url = "http://proxy:8080/"
+bootstrap_path = "/jet/honeypot/bootstrap"
+events_path = "/jet/honeypot/events"
+stream_token_path_template = "/jet/honeypot/session/{session_id}/stream-token"
+terminate_path_template = "/jet/session/{session_id}/terminate"
+system_terminate_path = "/jet/session/system/terminate"
+request_timeout_secs = 10
+connect_timeout_secs = 5
+
+[auth]
+operator_token_validation_disabled = true
+
+[ui]
+title = "Observation Deck"

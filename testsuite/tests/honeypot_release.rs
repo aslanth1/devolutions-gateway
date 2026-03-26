@@ -1,8 +1,10 @@
 use testsuite::honeypot_release::{
     HONEYPOT_COMPOSE_PATH, HONEYPOT_CONTROL_PLANE_CONFIG_PATH, HONEYPOT_CONTROL_PLANE_ENV_PATH,
-    HONEYPOT_IMAGES_LOCK_PATH, HONEYPOT_PROXY_CONFIG_PATH, HONEYPOT_PROXY_ENV_PATH, load_honeypot_images_lock,
-    repo_relative_path, validate_honeypot_compose_document, validate_honeypot_control_plane_compose_runtime_document,
-    validate_honeypot_control_plane_env_document, validate_honeypot_control_plane_runtime_contract,
+    HONEYPOT_FRONTEND_CONFIG_PATH, HONEYPOT_FRONTEND_ENV_PATH, HONEYPOT_IMAGES_LOCK_PATH, HONEYPOT_PROXY_CONFIG_PATH,
+    HONEYPOT_PROXY_ENV_PATH, load_honeypot_images_lock, repo_relative_path, validate_honeypot_compose_document,
+    validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
+    validate_honeypot_control_plane_runtime_contract, validate_honeypot_frontend_compose_runtime_document,
+    validate_honeypot_frontend_env_document, validate_honeypot_frontend_runtime_contract,
     validate_honeypot_images_lock_document, validate_honeypot_proxy_compose_runtime_document,
     validate_honeypot_proxy_env_document, validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
 };
@@ -29,6 +31,12 @@ fn release_inputs_on_disk_match_the_honeypot_lockfile_contract() {
         &repo_relative_path(HONEYPOT_PROXY_CONFIG_PATH),
     )
     .expect("proxy runtime config injection should match the deployment contract");
+    validate_honeypot_frontend_runtime_contract(
+        &repo_relative_path(HONEYPOT_COMPOSE_PATH),
+        &repo_relative_path(HONEYPOT_FRONTEND_ENV_PATH),
+        &repo_relative_path(HONEYPOT_FRONTEND_CONFIG_PATH),
+    )
+    .expect("frontend runtime config injection should match the deployment contract");
 }
 
 #[test]
@@ -385,4 +393,84 @@ fn proxy_runtime_contract_rejects_missing_control_plane_endpoint() {
         .expect_err("proxy runtime contract should reject missing control-plane endpoint");
 
     assert!(format!("{error:#}").contains("control-plane endpoint"), "{error:#}");
+}
+
+#[test]
+fn frontend_env_rejects_config_path_drift() {
+    let error =
+        validate_honeypot_frontend_env_document("HONEYPOT_FRONTEND_CONFIG_PATH=/etc/honeypot/frontend/other.toml\n")
+            .expect_err("frontend env contract should reject config path drift");
+
+    assert!(
+        format!("{error:#}").contains("HONEYPOT_FRONTEND_CONFIG_PATH"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn frontend_compose_runtime_contract_rejects_missing_env_file() {
+    let error = validate_honeypot_frontend_compose_runtime_document(
+        r#"
+name: dgw-honeypot
+x-images:
+  control-plane: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+services:
+  control-plane:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    volumes:
+      - ./config/frontend/config.toml:/etc/honeypot/frontend/config.toml:ro
+      - ./secrets/frontend:/run/secrets/honeypot/frontend:ro
+"#,
+    )
+    .expect_err("compose contract should reject missing frontend env_file");
+
+    assert!(format!("{error:#}").contains("env_file"), "{error:#}");
+}
+
+#[test]
+fn frontend_runtime_contract_rejects_proxy_base_url_drift() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let compose_path = tempdir.path().join("compose.yaml");
+    let env_path = tempdir.path().join("frontend.env");
+    let config_path = tempdir.path().join("config.toml");
+
+    let compose = std::fs::read_to_string(repo_relative_path(HONEYPOT_COMPOSE_PATH)).expect("read on-disk compose");
+    let env =
+        std::fs::read_to_string(repo_relative_path(HONEYPOT_FRONTEND_ENV_PATH)).expect("read on-disk frontend env");
+    std::fs::write(&compose_path, compose).expect("write temp compose");
+    std::fs::write(&env_path, env).expect("write temp env");
+    std::fs::write(
+        &config_path,
+        r#"[http]
+bind_addr = "0.0.0.0:8080"
+
+[proxy]
+base_url = "http://proxy-alt:8080/"
+bootstrap_path = "/jet/honeypot/bootstrap"
+events_path = "/jet/honeypot/events"
+stream_token_path_template = "/jet/honeypot/session/{session_id}/stream-token"
+terminate_path_template = "/jet/session/{session_id}/terminate"
+system_terminate_path = "/jet/session/system/terminate"
+request_timeout_secs = 10
+connect_timeout_secs = 5
+
+[auth]
+operator_token_validation_disabled = true
+
+[ui]
+title = "Observation Deck"
+"#,
+    )
+    .expect("write temp config");
+
+    let error = validate_honeypot_frontend_runtime_contract(&compose_path, &env_path, &config_path)
+        .expect_err("frontend runtime contract should reject proxy base_url drift");
+
+    assert!(format!("{error:#}").contains("proxy base_url"), "{error:#}");
 }

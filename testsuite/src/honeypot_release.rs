@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use devolutions_gateway::config::{Conf as GatewayConf, dto as gateway_dto};
 use honeypot_control_plane::config::{CONTROL_PLANE_CONFIG_ENV, ControlPlaneConfig, DEFAULT_CONTROL_PLANE_CONFIG_PATH};
+use honeypot_frontend::config::{DEFAULT_FRONTEND_CONFIG_PATH, FrontendConfig};
 use serde::Deserialize;
 
 pub const HONEYPOT_IMAGES_LOCK_PATH: &str = "honeypot/docker/images.lock";
@@ -13,6 +14,8 @@ pub const HONEYPOT_CONTROL_PLANE_ENV_PATH: &str = "honeypot/docker/env/control-p
 pub const HONEYPOT_CONTROL_PLANE_CONFIG_PATH: &str = "honeypot/docker/config/control-plane/config.toml";
 pub const HONEYPOT_PROXY_ENV_PATH: &str = "honeypot/docker/env/proxy.env";
 pub const HONEYPOT_PROXY_CONFIG_PATH: &str = "honeypot/docker/config/proxy/gateway.json";
+pub const HONEYPOT_FRONTEND_ENV_PATH: &str = "honeypot/docker/env/frontend.env";
+pub const HONEYPOT_FRONTEND_CONFIG_PATH: &str = "honeypot/docker/config/frontend/config.toml";
 
 const CANONICAL_REGISTRY: &str = "ghcr.io/fork-owner";
 const CANONICAL_IMAGE_ROOT: &str = "devolutions-gateway-honeypot";
@@ -40,6 +43,18 @@ const PROXY_FRONTEND_PUBLIC_URL: &str = "http://frontend:8080/";
 const PROXY_HTTP_LISTENER: &str = "http://0.0.0.0:8080";
 const PROXY_TCP_LISTENER: &str = "tcp://0.0.0.0:8443";
 const PROXY_PLACEHOLDER_CONTROL_PLANE_TOKEN: &str = "proxy-control-plane-placeholder";
+const FRONTEND_CONFIG_ENV: &str = "HONEYPOT_FRONTEND_CONFIG_PATH";
+const FRONTEND_ENV_FILE_REF: &str = "./env/frontend.env";
+const FRONTEND_CONFIG_MOUNT: &str = "./config/frontend/config.toml:/etc/honeypot/frontend/config.toml:ro";
+const FRONTEND_SECRET_MOUNT: &str = "./secrets/frontend:/run/secrets/honeypot/frontend:ro";
+const FRONTEND_BIND_ADDR: &str = "0.0.0.0:8080";
+const FRONTEND_PROXY_BASE_URL: &str = "http://proxy:8080/";
+const FRONTEND_BOOTSTRAP_PATH: &str = "/jet/honeypot/bootstrap";
+const FRONTEND_EVENTS_PATH: &str = "/jet/honeypot/events";
+const FRONTEND_STREAM_TOKEN_PATH_TEMPLATE: &str = "/jet/honeypot/session/{session_id}/stream-token";
+const FRONTEND_TERMINATE_PATH_TEMPLATE: &str = "/jet/session/{session_id}/terminate";
+const FRONTEND_SYSTEM_TERMINATE_PATH: &str = "/jet/session/system/terminate";
+const FRONTEND_TITLE: &str = "Observation Deck";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HoneypotImagesLock {
@@ -237,6 +252,24 @@ pub fn validate_honeypot_proxy_runtime_contract(
     validate_honeypot_proxy_config_document(&config_data)
 }
 
+pub fn validate_honeypot_frontend_runtime_contract(
+    compose_path: &Path,
+    env_path: &Path,
+    config_path: &Path,
+) -> anyhow::Result<()> {
+    let compose_data = std::fs::read_to_string(compose_path)
+        .with_context(|| format!("read compose file at {}", compose_path.display()))?;
+    validate_honeypot_frontend_compose_runtime_document(&compose_data)?;
+
+    let env_data =
+        std::fs::read_to_string(env_path).with_context(|| format!("read env file at {}", env_path.display()))?;
+    validate_honeypot_frontend_env_document(&env_data)?;
+
+    let config_data = std::fs::read_to_string(config_path)
+        .with_context(|| format!("read config file at {}", config_path.display()))?;
+    validate_honeypot_frontend_config_document(&config_data)
+}
+
 pub fn validate_honeypot_control_plane_compose_runtime_document(data: &str) -> anyhow::Result<()> {
     let compose: HoneypotComposeFile = serde_yaml::from_str(data).context("deserialize honeypot compose file")?;
     let service = compose
@@ -317,6 +350,47 @@ pub fn validate_honeypot_proxy_env_document(data: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         config_dir == PROXY_CONFIG_DIR,
         "DGATEWAY_CONFIG_PATH must be {PROXY_CONFIG_DIR}",
+    );
+
+    Ok(())
+}
+
+pub fn validate_honeypot_frontend_compose_runtime_document(data: &str) -> anyhow::Result<()> {
+    let compose: HoneypotComposeFile = serde_yaml::from_str(data).context("deserialize honeypot compose file")?;
+    let service = compose
+        .services
+        .get("frontend")
+        .context("missing compose service frontend")?;
+    let env_file = service
+        .env_file
+        .as_ref()
+        .context("compose service frontend must define env_file")?;
+
+    anyhow::ensure!(
+        env_file.contains(FRONTEND_ENV_FILE_REF),
+        "compose service frontend must reference {FRONTEND_ENV_FILE_REF}",
+    );
+    anyhow::ensure!(
+        service.volumes.iter().any(|volume| volume == FRONTEND_CONFIG_MOUNT),
+        "compose service frontend must mount {FRONTEND_CONFIG_MOUNT}",
+    );
+    anyhow::ensure!(
+        service.volumes.iter().any(|volume| volume == FRONTEND_SECRET_MOUNT),
+        "compose service frontend must keep the secret mount separate at {FRONTEND_SECRET_MOUNT}",
+    );
+
+    Ok(())
+}
+
+pub fn validate_honeypot_frontend_env_document(data: &str) -> anyhow::Result<()> {
+    let env = parse_env_document(data)?;
+    let config_path = env
+        .get(FRONTEND_CONFIG_ENV)
+        .with_context(|| format!("env file must define {FRONTEND_CONFIG_ENV}"))?;
+
+    anyhow::ensure!(
+        config_path == DEFAULT_FRONTEND_CONFIG_PATH,
+        "{FRONTEND_CONFIG_ENV} must be {DEFAULT_FRONTEND_CONFIG_PATH}",
     );
 
     Ok(())
@@ -477,6 +551,60 @@ fn validate_honeypot_proxy_config_document(data: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         conf.honeypot.frontend.events_path == "/jet/honeypot/events",
         "proxy frontend events path must be /jet/honeypot/events",
+    );
+
+    Ok(())
+}
+
+fn validate_honeypot_frontend_config_document(data: &str) -> anyhow::Result<()> {
+    let config: FrontendConfig = toml::from_str(data).context("deserialize frontend config.toml")?;
+
+    anyhow::ensure!(
+        config.http.bind_addr
+            == FRONTEND_BIND_ADDR
+                .parse::<SocketAddr>()
+                .expect("valid frontend bind addr"),
+        "frontend bind_addr must be {FRONTEND_BIND_ADDR}",
+    );
+    anyhow::ensure!(
+        config.proxy.base_url.as_str() == FRONTEND_PROXY_BASE_URL,
+        "frontend proxy base_url must be {FRONTEND_PROXY_BASE_URL}",
+    );
+    anyhow::ensure!(
+        config.proxy.bootstrap_path == FRONTEND_BOOTSTRAP_PATH,
+        "frontend bootstrap_path must be {FRONTEND_BOOTSTRAP_PATH}",
+    );
+    anyhow::ensure!(
+        config.proxy.events_path == FRONTEND_EVENTS_PATH,
+        "frontend events_path must be {FRONTEND_EVENTS_PATH}",
+    );
+    anyhow::ensure!(
+        config.proxy.stream_token_path_template == FRONTEND_STREAM_TOKEN_PATH_TEMPLATE,
+        "frontend stream_token_path_template must be {FRONTEND_STREAM_TOKEN_PATH_TEMPLATE}",
+    );
+    anyhow::ensure!(
+        config.proxy.terminate_path_template == FRONTEND_TERMINATE_PATH_TEMPLATE,
+        "frontend terminate_path_template must be {FRONTEND_TERMINATE_PATH_TEMPLATE}",
+    );
+    anyhow::ensure!(
+        config.proxy.system_terminate_path == FRONTEND_SYSTEM_TERMINATE_PATH,
+        "frontend system_terminate_path must be {FRONTEND_SYSTEM_TERMINATE_PATH}",
+    );
+    anyhow::ensure!(
+        config.auth.proxy_bearer_token.is_none(),
+        "frontend proxy_bearer_token must not be checked into the runtime sample config",
+    );
+    anyhow::ensure!(
+        config.auth.operator_token_validation_disabled,
+        "frontend runtime sample config must keep operator_token_validation_disabled enabled",
+    );
+    anyhow::ensure!(
+        config.auth.operator_verifier_public_key_pem.is_none(),
+        "frontend runtime sample config must not check in operator_verifier_public_key_pem",
+    );
+    anyhow::ensure!(
+        config.ui.title == FRONTEND_TITLE,
+        "frontend ui.title must be {FRONTEND_TITLE}",
     );
 
     Ok(())

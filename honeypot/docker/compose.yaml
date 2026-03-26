@@ -71,8 +71,10 @@ services:
       - honeypot-control
     ports:
       - "127.0.0.1:8080:8080"
+    env_file:
+      - ./env/frontend.env
     volumes:
-      - ./config/frontend:/etc/honeypot/frontend:ro
+      - ./config/frontend/config.toml:/etc/honeypot/frontend/config.toml:ro
       - ./secrets/frontend:/run/secrets/honeypot/frontend:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/health >/dev/null || exit 1"]

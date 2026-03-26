@@ -475,7 +475,7 @@ Pass when: compose and Rust tests can distinguish healthy listener startup from 
 - [x] Create a fresh HTMX frontend under `honeypot/frontend/`.
 Pass when: the implementation does not import or depend on the current `webapp/` application code.
 
-- [ ] Wire the `frontend` application into the established image target.
+- [x] Wire the `frontend` application into the established image target.
 Pass when: the service starts from the chosen `honeypot/docker/frontend/` image target and does not package the existing `webapp/` application.
 
 - [x] Wire frontend proxy event endpoint settings.
@@ -695,7 +695,7 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 - [ ] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
 - [ ] Milestone 0 and Milestone 0.5 are complete before Milestone 1 through Milestone 6 implementation starts.
 - [x] The design-freeze docs exist before implementation starts.
-- [ ] The three honeypot services each have their own Docker image, build context, healthcheck, and runtime config contract.
+- [x] The three honeypot services each have their own Docker image, build context, healthcheck, and runtime config contract.
 - [x] Current and previous image digests are pinned for `control-plane`, `proxy`, and `frontend`, and rollback does not require rebuilding.
 - [x] `honeypot/docker/images.lock` has a documented schema for `control-plane`, `proxy`, and `frontend`, and release or test paths reject floating tags.
 - [ ] Mixed-version `current` or `previous` service combinations are documented and validated before rollback is considered safe.

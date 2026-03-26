@@ -6771,6 +6771,7 @@ dependencies = [
  "fastrand",
  "honeypot-contracts",
  "honeypot-control-plane",
+ "honeypot-frontend",
  "libsql",
  "mcp-proxy",
  "proxy-socks",
@@ -6786,6 +6787,7 @@ dependencies = [
  "tokio 1.49.0",
  "tokio-rustls",
  "tokio-tungstenite 0.26.2",
+ "toml 0.8.23",
  "typed-builder",
  "uuid",
 ]
