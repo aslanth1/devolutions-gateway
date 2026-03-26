@@ -467,7 +467,7 @@ Pass when: the operator can revoke one session or all active sessions and the pr
 - [x] Add partition and timeout handling between proxy and control plane.
 Pass when: no-lease, boot-timeout, recycle-failure, and control-plane-unavailable states are visible and recoverable.
 
-- [ ] Add proxy container health and readiness checks.
+- [x] Add proxy container health and readiness checks.
 Pass when: compose and Rust tests can distinguish healthy listener startup from dependency failures in the control plane or stream path.
 
 ## Milestone 3: Frontend MVP

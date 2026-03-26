@@ -111,6 +111,8 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 - `control-plane` health is checked through `GET /api/v1/health` and must report `ready`, `degraded`, or `unsafe` according to [contracts.md](contracts.md).
 - `proxy` exposes its public listener on `honeypot-edge` and its internal API surfaces on `honeypot-control`.
 - `proxy` health is checked through `GET /jet/health`.
+- `proxy` keeps the legacy plaintext `/jet/health` body for non-JSON callers, but `Accept: application/json` must return honeypot-aware readiness data whenever honeypot mode is enabled.
+- `proxy` JSON health returns `200` only when the listener is up and the honeypot control-plane dependency reports `ready`, and it returns `503` when honeypot mode is enabled but the control plane is degraded, unsafe, unreachable, or not configured.
 - `frontend` exposes its operator HTTP endpoint only on loopback during local compose bring-up.
 - `frontend` health is checked through `GET /health` and must surface proxy bootstrap reachability plus the current live-session and ready-tile counts.
 - A service is considered ready for downstream startup only after its healthcheck is passing.

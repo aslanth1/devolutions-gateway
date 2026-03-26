@@ -7,8 +7,8 @@ use anyhow::Context as _;
 use camino::Utf8PathBuf;
 use honeypot_contracts::control_plane::{
     AcquireVmRequest, AcquireVmResponse, AttackerProtocol, HealthRequest, HealthResponse, RecycleVmRequest,
-    RecycleVmResponse, ReleaseVmRequest, ReleaseVmResponse, ResetVmRequest, ResetVmResponse, StreamEndpointRequest,
-    StreamEndpointResponse, StreamPolicy,
+    RecycleVmResponse, ReleaseVmRequest, ReleaseVmResponse, ResetVmRequest, ResetVmResponse,
+    ServiceState as ControlPlaneServiceState, StreamEndpointRequest, StreamEndpointResponse, StreamPolicy,
 };
 use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use honeypot_contracts::events::{EventEnvelope, EventPayload, SessionState, StreamState, TerminalOutcome};
@@ -127,6 +127,45 @@ impl HoneypotMode {
         self.runtime()
             .and_then(|runtime| runtime.session_metadata_patch(session_id))
     }
+
+    pub async fn health_snapshot(&self) -> Option<HoneypotProxyHealthSnapshot> {
+        match self {
+            Self::Disabled => None,
+            Self::Enabled(runtime) => Some(runtime.health_snapshot().await),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoneypotProxyServiceState {
+    Ready,
+    Degraded,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoneypotDependencyServiceState {
+    Ready,
+    Degraded,
+    Unsafe,
+}
+
+impl From<ControlPlaneServiceState> for HoneypotDependencyServiceState {
+    fn from(value: ControlPlaneServiceState) -> Self {
+        match value {
+            ControlPlaneServiceState::Ready => Self::Ready,
+            ControlPlaneServiceState::Degraded => Self::Degraded,
+            ControlPlaneServiceState::Unsafe => Self::Unsafe,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoneypotProxyHealthSnapshot {
+    pub service_state: HoneypotProxyServiceState,
+    pub control_plane_reachable: bool,
+    pub control_plane_service_state: Option<HoneypotDependencyServiceState>,
+    pub degraded_reasons: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -169,6 +208,62 @@ impl HoneypotRuntime {
 
     pub fn control_plane(&self) -> Option<&HoneypotControlPlaneClient> {
         self.control_plane.as_ref()
+    }
+
+    pub async fn health_snapshot(&self) -> HoneypotProxyHealthSnapshot {
+        let Some(client) = self.control_plane.as_ref() else {
+            return HoneypotProxyHealthSnapshot {
+                service_state: HoneypotProxyServiceState::Unavailable,
+                control_plane_reachable: false,
+                control_plane_service_state: None,
+                degraded_reasons: vec!["control_plane_not_configured".to_owned()],
+            };
+        };
+
+        let request = HealthRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: format!("honeypot-health-{}", uuid::Uuid::new_v4()),
+        };
+
+        match client.health(&request).await {
+            Ok(response) => {
+                let dependency_state = HoneypotDependencyServiceState::from(response.service_state);
+                let mut degraded_reasons = response.degraded_reasons;
+                if degraded_reasons.is_empty() {
+                    match dependency_state {
+                        HoneypotDependencyServiceState::Ready => {}
+                        HoneypotDependencyServiceState::Degraded => {
+                            degraded_reasons.push("control_plane_degraded".to_owned());
+                        }
+                        HoneypotDependencyServiceState::Unsafe => {
+                            degraded_reasons.push("control_plane_unsafe".to_owned());
+                        }
+                    }
+                }
+
+                let service_state = match dependency_state {
+                    HoneypotDependencyServiceState::Ready => HoneypotProxyServiceState::Ready,
+                    HoneypotDependencyServiceState::Degraded => HoneypotProxyServiceState::Degraded,
+                    HoneypotDependencyServiceState::Unsafe => HoneypotProxyServiceState::Unavailable,
+                };
+
+                HoneypotProxyHealthSnapshot {
+                    service_state,
+                    control_plane_reachable: true,
+                    control_plane_service_state: Some(dependency_state),
+                    degraded_reasons,
+                }
+            }
+            Err(error) => {
+                let (reason_code, reachable) = health_failure(&error);
+                HoneypotProxyHealthSnapshot {
+                    service_state: HoneypotProxyServiceState::Unavailable,
+                    control_plane_reachable: reachable,
+                    control_plane_service_state: None,
+                    degraded_reasons: vec![reason_code.to_owned()],
+                }
+            }
+        }
     }
 
     pub fn activate_system_kill(&self) {
@@ -1604,6 +1699,20 @@ fn stream_failure(reason: &HoneypotControlPlaneRequestError) -> (&'static str, E
         HoneypotControlPlaneRequestError::Transport(_) => {
             ("control_plane_stream_endpoint_failed", ErrorCode::HostUnavailable, true)
         }
+    }
+}
+
+fn health_failure(reason: &HoneypotControlPlaneRequestError) -> (&'static str, bool) {
+    match reason {
+        HoneypotControlPlaneRequestError::Api(error) => match error.error_code {
+            ErrorCode::AuthFailed | ErrorCode::Unauthorized | ErrorCode::Forbidden => {
+                ("control_plane_auth_failed", true)
+            }
+            ErrorCode::HostUnavailable => ("control_plane_host_unavailable", true),
+            ErrorCode::InvalidRequest => ("control_plane_health_invalid_request", true),
+            _ => ("control_plane_health_failed", true),
+        },
+        HoneypotControlPlaneRequestError::Transport(_) => ("control_plane_unavailable", false),
     }
 }
 

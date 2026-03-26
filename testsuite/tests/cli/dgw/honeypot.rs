@@ -1,5 +1,10 @@
 use anyhow::Context as _;
+use axum::extract::State;
+use axum::http::HeaderMap;
+use axum::http::header::AUTHORIZATION;
+use axum::{Json, Router, routing::get};
 use base64::prelude::*;
+use honeypot_contracts::control_plane::{HealthResponse as ControlPlaneHealthResponse, ServiceState};
 use honeypot_contracts::frontend::BootstrapResponse;
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{DgwConfig, HoneypotConfig};
@@ -7,6 +12,68 @@ use uuid::Uuid;
 
 const HONEYPOT_WATCH_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDMiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Qud2F0Y2gifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 const HONEYPOT_WILDCARD_SCOPE_TOKEN: &str = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IlNDT1BFIn0.eyJqdGkiOiI5YTdkZWRhOC1jNmM2LTQ1YzAtODZlYi01MGJiMzI4YWFjMjMiLCJleHAiOjAsInNjb3BlIjoiKiJ9.dTazZemDS08Fy13Hx7wxDoOxQ2oNFaaEYMSFDQHCWiUdlYv4NMQh6N_GQok3wdiSJf384fvLKccYe1fipRepLlinUAqcEum68ngvGuUVP78xYb_vC3ZDqFi6nvd1BLp621XgzsCbOyBZHhLXHgzwVNTpnbt9laTTaHh8_rSYLaujBOpidWS6vKIZqOE66beqygSprPt3y0LYFTQWGYq21jJ73uW6htdWrmXbDUUjdvG7ymnKb-7Scs5y03jjSTr4QB1rH_3Z8DsfuuxFCIBd8V2yu192PrWooAdMKboLSjvmdFiD509lljoaNoGLBv9hmmQyiLQr-rsUllXBD6UpTQ";
+const TEST_CONTROL_PLANE_SERVICE_TOKEN: &str = "proxy-health-test-token";
+
+#[derive(Clone)]
+struct TestControlPlaneHealthState {
+    response: ControlPlaneHealthResponse,
+}
+
+struct TestControlPlaneHealthServer {
+    endpoint: String,
+    server: tokio::task::JoinHandle<()>,
+}
+
+impl TestControlPlaneHealthServer {
+    async fn spawn(service_state: ServiceState, degraded_reasons: Vec<String>) -> anyhow::Result<Self> {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .context("bind fake control-plane health listener")?;
+        let addr = listener.local_addr().context("read fake control-plane address")?;
+        let state = TestControlPlaneHealthState {
+            response: ControlPlaneHealthResponse {
+                schema_version: honeypot_contracts::SCHEMA_VERSION,
+                correlation_id: "corr-health".to_owned(),
+                service_state,
+                kvm_available: true,
+                trusted_image_count: 1,
+                active_lease_count: 0,
+                quarantined_lease_count: 0,
+                degraded_reasons,
+            },
+        };
+        let router = Router::new()
+            .route("/api/v1/health", get(fake_control_plane_health_handler))
+            .with_state(state);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("serve fake control-plane health endpoint");
+        });
+
+        Ok(Self {
+            endpoint: format!("http://{addr}/"),
+            server,
+        })
+    }
+
+    async fn shutdown(self) {
+        self.server.abort();
+        let _ = self.server.await;
+    }
+}
+
+async fn fake_control_plane_health_handler(
+    State(state): State<TestControlPlaneHealthState>,
+    headers: HeaderMap,
+) -> Json<ControlPlaneHealthResponse> {
+    assert_eq!(
+        headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()),
+        Some("Bearer proxy-health-test-token")
+    );
+
+    Json(state.response)
+}
 
 #[tokio::test]
 async fn honeypot_bootstrap_route_is_disabled_by_default() -> anyhow::Result<()> {
@@ -37,6 +104,212 @@ async fn honeypot_bootstrap_route_is_disabled_by_default() -> anyhow::Result<()>
 
     let _ = process.start_kill();
     let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn proxy_health_legacy_plaintext_stays_unchanged_when_honeypot_is_disabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let (status_line, body) = send_http_request(
+        config_handle.http_port(),
+        "GET",
+        "/jet/health",
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+        None,
+        &[],
+    )
+    .await?;
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(
+        std::str::from_utf8(&body)
+            .context("decode plaintext health body")?
+            .contains("is alive and healthy"),
+        "unexpected body: {}",
+        std::str::from_utf8(&body).unwrap_or("<non-utf8>")
+    );
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn proxy_health_reports_ready_when_honeypot_control_plane_is_ready() -> anyhow::Result<()> {
+    let control_plane = TestControlPlaneHealthServer::spawn(ServiceState::Ready, Vec::new()).await?;
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(
+            HoneypotConfig::builder()
+                .enabled(true)
+                .control_plane_endpoint(Some(control_plane.endpoint.clone()))
+                .control_plane_service_bearer_token(Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()))
+                .control_plane_request_timeout_secs(1)
+                .control_plane_connect_timeout_secs(1)
+                .build(),
+        )
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let (status_line, body) = send_http_request_with_headers(
+        config_handle.http_port(),
+        "GET",
+        "/jet/health",
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+        None,
+        &[("Accept", "application/json")],
+        &[],
+    )
+    .await?;
+    let payload: serde_json::Value = serde_json::from_slice(&body).context("parse ready health payload")?;
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(payload["honeypot"]["honeypot_enabled"], true);
+    assert_eq!(payload["honeypot"]["service_state"], "ready");
+    assert_eq!(payload["honeypot"]["control_plane_reachable"], true);
+    assert_eq!(payload["honeypot"]["control_plane_service_state"], "ready");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+    control_plane.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn proxy_health_reports_unavailable_when_honeypot_control_plane_is_unreachable() -> anyhow::Result<()> {
+    let unreachable_endpoint = {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).context("bind temp port")?;
+        let addr = listener.local_addr().context("read temp port")?;
+        format!("http://{addr}/")
+    };
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(
+            HoneypotConfig::builder()
+                .enabled(true)
+                .control_plane_endpoint(Some(unreachable_endpoint))
+                .control_plane_service_bearer_token(Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()))
+                .control_plane_request_timeout_secs(1)
+                .control_plane_connect_timeout_secs(1)
+                .build(),
+        )
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let (status_line, body) = send_http_request_with_headers(
+        config_handle.http_port(),
+        "GET",
+        "/jet/health",
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+        None,
+        &[("Accept", "application/json")],
+        &[],
+    )
+    .await?;
+    let payload: serde_json::Value = serde_json::from_slice(&body).context("parse unavailable health payload")?;
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(payload["honeypot"]["service_state"], "unavailable");
+    assert_eq!(payload["honeypot"]["control_plane_reachable"], false);
+    assert!(payload["honeypot"]["control_plane_service_state"].is_null());
+    assert_eq!(payload["honeypot"]["degraded_reasons"][0], "control_plane_unavailable");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn proxy_health_reports_degraded_when_honeypot_control_plane_is_degraded() -> anyhow::Result<()> {
+    let control_plane =
+        TestControlPlaneHealthServer::spawn(ServiceState::Degraded, vec!["control_plane_degraded".to_owned()]).await?;
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(
+            HoneypotConfig::builder()
+                .enabled(true)
+                .control_plane_endpoint(Some(control_plane.endpoint.clone()))
+                .control_plane_service_bearer_token(Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()))
+                .control_plane_request_timeout_secs(1)
+                .control_plane_connect_timeout_secs(1)
+                .build(),
+        )
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let (status_line, body) = send_http_request_with_headers(
+        config_handle.http_port(),
+        "GET",
+        "/jet/health",
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+        None,
+        &[("Accept", "application/json")],
+        &[],
+    )
+    .await?;
+    let payload: serde_json::Value = serde_json::from_slice(&body).context("parse degraded health payload")?;
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(payload["honeypot"]["service_state"], "degraded");
+    assert_eq!(payload["honeypot"]["control_plane_reachable"], true);
+    assert_eq!(payload["honeypot"]["control_plane_service_state"], "degraded");
+    assert_eq!(payload["honeypot"]["degraded_reasons"][0], "control_plane_degraded");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+    control_plane.shutdown().await;
 
     Ok(())
 }
@@ -649,6 +922,18 @@ async fn send_http_request(
     content_type: Option<&str>,
     body: &[u8],
 ) -> anyhow::Result<(String, Vec<u8>)> {
+    send_http_request_with_headers(http_port, method, path, token, content_type, &[], body).await
+}
+
+async fn send_http_request_with_headers(
+    http_port: u16,
+    method: &str,
+    path: &str,
+    token: &str,
+    content_type: Option<&str>,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> anyhow::Result<(String, Vec<u8>)> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut request = format!(
@@ -657,6 +942,10 @@ async fn send_http_request(
          Authorization: Bearer {token}\r\n\
          Connection: close\r\n"
     );
+
+    for (name, value) in headers {
+        request.push_str(format!("{name}: {value}\r\n").as_str());
+    }
 
     if let Some(content_type) = content_type {
         request.push_str(format!("Content-Type: {content_type}\r\n").as_str());
