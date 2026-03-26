@@ -51,6 +51,9 @@ impl LeaseRegistry {
         request
             .ensure_supported_schema()
             .map_err(|error| LeaseError::invalid_request(error.to_string()))?;
+        if request.requested_pool.trim().is_empty() {
+            return Err(LeaseError::invalid_request("requested_pool must not be empty"));
+        }
 
         if self.leases.values().any(|lease| lease.session_id == request.session_id) {
             return Err(LeaseError::lease_conflict(format!(
@@ -60,8 +63,15 @@ impl LeaseRegistry {
         }
 
         let trusted_images = trusted_images(&config.paths).map_err(LeaseError::host_unavailable)?;
+        let trusted_images = trusted_images
+            .into_iter()
+            .filter(|trusted_image| trusted_image.pool_name == request.requested_pool)
+            .collect::<Vec<_>>();
         if trusted_images.is_empty() {
-            return Err(LeaseError::no_capacity("no trusted image manifests are available"));
+            return Err(LeaseError::no_capacity(format!(
+                "requested pool {} has no trusted images available",
+                request.requested_pool
+            )));
         }
 
         let busy_vm_names = self
@@ -102,12 +112,16 @@ impl LeaseRegistry {
                     return Err(LeaseError::host_unavailable(error));
                 }
 
-                return Err(LeaseError::no_capacity("all trusted images are currently assigned"));
+                return Err(LeaseError::no_capacity(format!(
+                    "all trusted images in pool {} are currently assigned",
+                    request.requested_pool
+                )));
             }
         };
 
         let snapshot = LeaseSnapshot {
             vm_lease_id: vm_lease_id.clone(),
+            pool_name: trusted_image.pool_name.clone(),
             vm_name: trusted_image.vm_name.clone(),
             session_id: request.session_id.clone(),
             guest_rdp_addr: DEFAULT_GUEST_RDP_ADDR.to_owned(),
@@ -253,6 +267,7 @@ impl LeaseRegistry {
 
         if validate_trusted_image_identity(
             &config.paths,
+            &snapshot.pool_name,
             &snapshot.vm_name,
             &snapshot.attestation_ref,
             &snapshot.launch_plan.base_image_path,
@@ -390,6 +405,8 @@ impl LeaseRegistry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct LeaseSnapshot {
     vm_lease_id: String,
+    #[serde(default = "default_pool_name")]
+    pool_name: String,
     vm_name: String,
     session_id: String,
     guest_rdp_addr: String,
@@ -446,6 +463,10 @@ pub(crate) struct LeaseError {
     pub code: ErrorCode,
     pub message: String,
     pub retryable: bool,
+}
+
+fn default_pool_name() -> String {
+    "default".to_owned()
 }
 
 impl LeaseError {

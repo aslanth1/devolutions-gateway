@@ -543,6 +543,10 @@ async fn control_plane_persists_qemu_launch_plan_metadata_on_acquire() {
         .expect("launch_plan should be present");
 
     assert_eq!(
+        snapshot.get("pool_name").and_then(serde_json::Value::as_str),
+        Some("default")
+    );
+    assert_eq!(
         launch_plan.get("qemu_binary_path").and_then(serde_json::Value::as_str),
         fixture.qemu_binary_path.to_str()
     );
@@ -647,6 +651,175 @@ async fn control_plane_reports_no_capacity_when_the_pool_is_exhausted() {
     assert!(status_line.contains("503"), "{status_line}");
     assert_eq!(error.error_code, ErrorCode::NoCapacity);
     assert!(error.retryable);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_keeps_pool_capacity_isolated_by_requested_pool() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 2);
+    write_attested_manifest_with_pool(
+        &fixture.manifest_paths[1],
+        &fixture.base_image_paths[1],
+        1,
+        base_image_contents(1).as_bytes(),
+        "canary",
+    );
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, default_acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        port,
+        "/api/v1/vm/acquire",
+        &acquire_request_for_pool("session-default-1", "default"),
+    )
+    .await
+    .expect("acquire default pool lease");
+    assert_eq!(default_acquire.vm_name, "honeypot-image-0");
+
+    let default_request_body = serde_json::to_vec(&acquire_request_for_pool("session-default-2", "default"))
+        .expect("serialize default pool request");
+    let (status_line, body) = send_http_request(
+        port,
+        "POST",
+        "/api/v1/vm/acquire",
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        Some(&default_request_body),
+    )
+    .await
+    .expect("send second default-pool acquire request");
+    let error: ErrorResponse = serde_json::from_slice(&body).expect("parse no capacity error");
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(error.error_code, ErrorCode::NoCapacity);
+    assert!(error.message.contains("pool default"), "{}", error.message);
+
+    let (_, canary_acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        port,
+        "/api/v1/vm/acquire",
+        &acquire_request_for_pool("session-canary-1", "canary"),
+    )
+    .await
+    .expect("acquire canary pool lease");
+    assert_eq!(canary_acquire.vm_name, "honeypot-image-1");
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_recycle_returns_capacity_to_the_same_pool() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 2);
+    write_attested_manifest_with_pool(
+        &fixture.manifest_paths[1],
+        &fixture.base_image_paths[1],
+        1,
+        base_image_contents(1).as_bytes(),
+        "canary",
+    );
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, first_acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        port,
+        "/api/v1/vm/acquire",
+        &acquire_request_for_pool("session-default-1", "default"),
+    )
+    .await
+    .expect("acquire default pool lease");
+    assert_eq!(first_acquire.vm_name, "honeypot-image-0");
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", first_acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-default-1".to_owned(),
+            session_id: "session-default-1".to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .expect("release default pool lease");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let (_, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", first_acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-default-1".to_owned(),
+            session_id: "session-default-1".to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+        },
+    )
+    .await
+    .expect("recycle default pool lease");
+    assert_eq!(recycle.pool_state, PoolState::Ready);
+
+    let (_, second_acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        port,
+        "/api/v1/vm/acquire",
+        &acquire_request_for_pool("session-default-2", "default"),
+    )
+    .await
+    .expect("reacquire default pool lease");
+    assert_eq!(second_acquire.vm_name, "honeypot-image-0");
+
+    let (_, canary_acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        port,
+        "/api/v1/vm/acquire",
+        &acquire_request_for_pool("session-canary-1", "canary"),
+    )
+    .await
+    .expect("acquire canary pool lease");
+    assert_eq!(canary_acquire.vm_name, "honeypot-image-1");
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -1149,11 +1322,15 @@ async fn control_plane_process_driver_reports_stop_timeout_and_preserves_the_lea
 }
 
 fn acquire_request(session_id: &str) -> AcquireVmRequest {
+    acquire_request_for_pool(session_id, "default")
+}
+
+fn acquire_request_for_pool(session_id: &str, requested_pool: &str) -> AcquireVmRequest {
     AcquireVmRequest {
         schema_version: honeypot_contracts::SCHEMA_VERSION,
         request_id: format!("acquire-{session_id}"),
         session_id: session_id.to_owned(),
-        requested_pool: "default".to_owned(),
+        requested_pool: requested_pool.to_owned(),
         requested_ready_timeout_secs: 30,
         stream_policy: StreamPolicy::GatewayRecording,
         backend_credential_ref: format!("cred-ref-{session_id}"),
@@ -1205,7 +1382,7 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     for index in 0..manifest_count {
         let manifest_path = manifest_dir.join(format!("image-{index}.json"));
         let base_image_path = image_store.join(format!("image-{index}.qcow2"));
-        let base_image_contents = format!("fake-base-image-{index}");
+        let base_image_contents = base_image_contents(index);
         fs::write(&base_image_path, base_image_contents.as_bytes()).expect("write fake base image");
         write_attested_manifest(&manifest_path, &base_image_path, index, base_image_contents.as_bytes());
         manifest_paths.push(manifest_path);
@@ -1234,7 +1411,18 @@ fn write_attested_manifest(
     index: usize,
     base_image_contents: &[u8],
 ) {
+    write_attested_manifest_with_pool(manifest_path, base_image_path, index, base_image_contents, "default");
+}
+
+fn write_attested_manifest_with_pool(
+    manifest_path: &std::path::Path,
+    base_image_path: &std::path::Path,
+    index: usize,
+    base_image_contents: &[u8],
+    pool_name: &str,
+) {
     let manifest = serde_json::json!({
+        "pool_name": pool_name,
         "vm_name": format!("honeypot-image-{index}"),
         "attestation_ref": format!("attestation://gold-image-{index}"),
         "guest_rdp_port": 3389u16.saturating_add(u16::try_from(index).unwrap_or(0)),
@@ -1274,6 +1462,10 @@ fn write_attested_manifest(
         serde_json::to_vec_pretty(&manifest).expect("serialize attested manifest"),
     )
     .expect("write attested manifest");
+}
+
+fn base_image_contents(index: usize) -> String {
+    format!("fake-base-image-{index}")
 }
 
 fn sha256_hex(data: &[u8]) -> String {

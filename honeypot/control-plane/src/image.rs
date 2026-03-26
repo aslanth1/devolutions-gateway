@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -13,6 +14,7 @@ const REQUIRED_WINDOWS_EDITION: &str = "Windows 11 Pro x64";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrustedImage {
+    pub(crate) pool_name: String,
     pub(crate) vm_name: String,
     pub(crate) attestation_ref: String,
     pub(crate) guest_rdp_port: u16,
@@ -22,6 +24,7 @@ pub(crate) struct TrustedImage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TrustedImageManifestDocument {
+    pool_name: String,
     vm_name: String,
     attestation_ref: String,
     #[serde(default)]
@@ -75,7 +78,7 @@ pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedIm
     let mut manifests = json_files(&paths.manifest_dir())?;
     manifests.sort();
 
-    manifests
+    let trusted_images = manifests
         .into_iter()
         .enumerate()
         .map(|(index, manifest_path)| {
@@ -102,6 +105,7 @@ pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedIm
             );
 
             Ok(TrustedImage {
+                pool_name: manifest.pool_name,
                 vm_name: manifest.vm_name,
                 attestation_ref: manifest.attestation_ref,
                 guest_rdp_port: manifest
@@ -110,11 +114,16 @@ pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedIm
                 base_image_path,
             })
         })
-        .collect()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    validate_unique_vm_names(&trusted_images)?;
+
+    Ok(trusted_images)
 }
 
 pub(crate) fn validate_trusted_image_identity(
     paths: &PathConfig,
+    pool_name: &str,
     vm_name: &str,
     attestation_ref: &str,
     base_image_path: &Path,
@@ -122,11 +131,12 @@ pub(crate) fn validate_trusted_image_identity(
     let trusted_images = trusted_images(paths)?;
     anyhow::ensure!(
         trusted_images.iter().any(|trusted_image| {
-            trusted_image.vm_name == vm_name
+            trusted_image.pool_name == pool_name
+                && trusted_image.vm_name == vm_name
                 && trusted_image.attestation_ref == attestation_ref
                 && trusted_image.base_image_path == base_image_path
         }),
-        "trusted image identity for vm_name {vm_name}, attestation_ref {attestation_ref}, and base image {} is no longer valid",
+        "trusted image identity for pool_name {pool_name}, vm_name {vm_name}, attestation_ref {attestation_ref}, and base image {} is no longer valid",
         base_image_path.display(),
     );
     Ok(())
@@ -138,6 +148,7 @@ fn read_trusted_image_manifest(path: &Path) -> anyhow::Result<TrustedImageManife
 }
 
 fn validate_manifest(manifest: &TrustedImageManifestDocument, manifest_path: &Path) -> anyhow::Result<()> {
+    ensure_non_empty("pool_name", &manifest.pool_name)?;
     ensure_non_empty("vm_name", &manifest.vm_name)?;
     ensure_non_empty("attestation_ref", &manifest.attestation_ref)?;
     if let Some(guest_rdp_port) = manifest.guest_rdp_port {
@@ -181,6 +192,20 @@ fn validate_manifest(manifest: &TrustedImageManifestDocument, manifest_path: &Pa
 
     let _ = normalize_sha256("base_image.sha256", &manifest.base_image.sha256)?;
     ensure_non_empty("approval.approved_by", &manifest.approval.approved_by)?;
+
+    Ok(())
+}
+
+fn validate_unique_vm_names(trusted_images: &[TrustedImage]) -> anyhow::Result<()> {
+    let mut vm_names = HashSet::new();
+
+    for trusted_image in trusted_images {
+        anyhow::ensure!(
+            vm_names.insert(trusted_image.vm_name.clone()),
+            "trusted vm_name {} must be unique across all pools",
+            trusted_image.vm_name,
+        );
+    }
 
     Ok(())
 }
@@ -272,6 +297,7 @@ mod tests {
     use std::path::Path;
 
     use serde_json::json;
+    use sha2::{Digest as _, Sha256};
 
     use super::trusted_images;
     use crate::config::PathConfig;
@@ -284,7 +310,10 @@ mod tests {
         fs::write(&manifest_path, "{}").expect("write incomplete manifest");
 
         let error = trusted_images(&paths).expect_err("incomplete manifest should fail");
-        assert!(format!("{error:#}").contains("vm_name"), "{error:#}");
+        assert!(
+            format!("{error:#}").contains("missing field `pool_name`") || format!("{error:#}").contains("vm_name"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -298,6 +327,7 @@ mod tests {
         fs::write(
             &manifest_path,
             serde_json::to_vec_pretty(&json!({
+                "pool_name": "default",
                 "vm_name": "honeypot-image-0",
                 "attestation_ref": "attestation://image-0",
                 "guest_rdp_port": 3389,
@@ -331,6 +361,96 @@ mod tests {
 
         let error = trusted_images(&paths).expect_err("digest mismatch should fail");
         assert!(format!("{error:#}").contains("base_image.sha256 mismatch"), "{error:#}");
+    }
+
+    #[test]
+    fn trusted_images_reject_duplicate_vm_names_across_pools() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let first_manifest_path = paths.manifest_dir().join("image-0.json");
+        let second_manifest_path = paths.manifest_dir().join("image-1.json");
+        let first_base_image_path = paths.image_store.join("image-0.qcow2");
+        let second_base_image_path = paths.image_store.join("image-1.qcow2");
+        let first_base_image = b"fake-base-image-0";
+        let second_base_image = b"fake-base-image-1";
+        let first_digest = format!("{:x}", Sha256::digest(first_base_image));
+        let second_digest = format!("{:x}", Sha256::digest(second_base_image));
+
+        fs::write(&first_base_image_path, first_base_image).expect("write first base image");
+        fs::write(&second_base_image_path, second_base_image).expect("write second base image");
+
+        fs::write(
+            &first_manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "pool_name": "default",
+                "vm_name": "honeypot-image-0",
+                "attestation_ref": "attestation://image-0",
+                "guest_rdp_port": 3389,
+                "base_image_path": "image-0.qcow2",
+                "source_iso": {
+                    "acquisition_channel": "msdn",
+                    "acquisition_date": "2026-03-25",
+                    "filename": "windows11-pro-x64.iso",
+                    "size_bytes": 1024,
+                    "edition": "Windows 11 Pro x64",
+                    "language": "en-US",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "transformation": {
+                    "timestamp": "2026-03-25T12:00:00Z",
+                    "inputs": [{
+                        "reference": "tiny11-builder.ps1",
+                        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                    }]
+                },
+                "base_image": {
+                    "sha256": first_digest
+                },
+                "approval": {
+                    "approved_by": "operator@example.test"
+                }
+            }))
+            .expect("serialize first manifest"),
+        )
+        .expect("write first manifest");
+
+        fs::write(
+            &second_manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "pool_name": "canary",
+                "vm_name": "honeypot-image-0",
+                "attestation_ref": "attestation://image-1",
+                "guest_rdp_port": 3390,
+                "base_image_path": "image-1.qcow2",
+                "source_iso": {
+                    "acquisition_channel": "msdn",
+                    "acquisition_date": "2026-03-25",
+                    "filename": "windows11-pro-x64.iso",
+                    "size_bytes": 1024,
+                    "edition": "Windows 11 Pro x64",
+                    "language": "en-US",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "transformation": {
+                    "timestamp": "2026-03-25T12:00:00Z",
+                    "inputs": [{
+                        "reference": "tiny11-builder.ps1",
+                        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                    }]
+                },
+                "base_image": {
+                    "sha256": second_digest
+                },
+                "approval": {
+                    "approved_by": "operator@example.test"
+                }
+            }))
+            .expect("serialize second manifest"),
+        )
+        .expect("write second manifest");
+
+        let error = trusted_images(&paths).expect_err("duplicate vm_name should fail");
+        assert!(format!("{error:#}").contains("must be unique"), "{error:#}");
     }
 
     fn test_paths(root: &Path) -> PathConfig {

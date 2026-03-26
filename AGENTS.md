@@ -399,7 +399,7 @@ Pass when: a fresh VM from the gold image reaches a known-ready signal and accep
 - [x] Add image integrity checks before lease.
 Pass when: the control plane verifies qcow2 chain health and refuses to lease dirty or corrupt images.
 
-- [ ] Implement a VM pool with deterministic naming, lease tracking, and recycle-on-release behavior.
+- [x] Implement a VM pool with deterministic naming, lease tracking, and recycle-on-release behavior.
 Pass when: one session maps to one VM lease and a released VM returns to the chosen clean state.
 
 - [ ] Add orphaned QEMU, socket, overlay, and lease cleanup.
