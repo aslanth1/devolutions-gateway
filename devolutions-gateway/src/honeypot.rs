@@ -728,7 +728,7 @@ impl HoneypotEventJournal {
             state: Some(if binding.is_some() {
                 SessionState::Assigned
             } else {
-                SessionState::WaitingForLease
+                SessionState::Connected
             }),
             ..Default::default()
         };
@@ -769,7 +769,7 @@ impl HoneypotEventJournal {
                     stream_state,
                     ..
                 } => {
-                    patch.state = Some(SessionState::StreamReady);
+                    patch.state = Some(SessionState::Ready);
                     patch.stream = Some(HoneypotStreamMetadata {
                         state: *stream_state,
                         stream_id: event.stream_id.clone(),
@@ -783,7 +783,7 @@ impl HoneypotEventJournal {
                     disconnect_reason,
                     ..
                 } => {
-                    patch.state = Some(SessionState::Ended);
+                    patch.state = Some(SessionState::Disconnected);
                     patch.terminal = Some(HoneypotTerminalMetadata {
                         outcome: *terminal_outcome,
                         disconnect_reason: Some(disconnect_reason.clone()),
@@ -810,6 +810,9 @@ impl HoneypotEventJournal {
                 EventPayload::SessionRecycleRequested { .. } => {
                     patch.state = Some(SessionState::RecycleRequested);
                 }
+                EventPayload::HostRecycled { .. } => {
+                    patch.state = Some(SessionState::Recycled);
+                }
                 EventPayload::SessionStreamFailed { stream_state, .. } => {
                     let mut stream = patch.stream.take().unwrap_or(HoneypotStreamMetadata {
                         state: *stream_state,
@@ -821,7 +824,7 @@ impl HoneypotEventJournal {
                     stream.state = *stream_state;
                     patch.stream = Some(stream);
                 }
-                EventPayload::HostRecycled { .. } | EventPayload::ProxyStatusDegraded { .. } => {}
+                EventPayload::ProxyStatusDegraded { .. } => {}
             }
         }
 
@@ -874,7 +877,7 @@ impl HoneypotEventJournal {
             if vm_lease_id.is_some() {
                 SessionState::Assigned
             } else {
-                SessionState::WaitingForLease
+                SessionState::Connected
             }
         });
         let mut last_event_id = format!("bootstrap:{}", session.id);
@@ -914,7 +917,7 @@ impl HoneypotEventJournal {
                     ..
                 } => {
                     if metadata.is_none() {
-                        state = SessionState::StreamReady;
+                        state = SessionState::Ready;
                     }
                     stream_state = metadata
                         .and_then(|metadata| metadata.stream.as_ref().map(|stream| stream.state))
@@ -930,11 +933,12 @@ impl HoneypotEventJournal {
                         });
                     }
                 }
-                EventPayload::SessionEnded { .. } if metadata.is_none() => state = SessionState::Ended,
+                EventPayload::SessionEnded { .. } if metadata.is_none() => state = SessionState::Disconnected,
                 EventPayload::SessionKilled { .. } if metadata.is_none() => state = SessionState::Killed,
                 EventPayload::SessionRecycleRequested { .. } if metadata.is_none() => {
                     state = SessionState::RecycleRequested
                 }
+                EventPayload::HostRecycled { .. } if metadata.is_none() => state = SessionState::Recycled,
                 EventPayload::SessionStreamFailed {
                     stream_state: failed_state,
                     ..
@@ -943,12 +947,13 @@ impl HoneypotEventJournal {
                         .and_then(|metadata| metadata.stream.as_ref().map(|stream| stream.state))
                         .unwrap_or(*failed_state);
                 }
-                EventPayload::HostRecycled { .. } | EventPayload::ProxyStatusDegraded { .. } => {}
+                EventPayload::ProxyStatusDegraded { .. } => {}
                 EventPayload::SessionStarted { .. }
                 | EventPayload::SessionAssigned { .. }
                 | EventPayload::SessionEnded { .. }
                 | EventPayload::SessionKilled { .. }
-                | EventPayload::SessionRecycleRequested { .. } => {}
+                | EventPayload::SessionRecycleRequested { .. }
+                | EventPayload::HostRecycled { .. } => {}
             }
         }
 
@@ -972,7 +977,7 @@ impl HoneypotEventJournal {
                 attacker_addr: attacker_addr.to_owned(),
                 listener_id: "gateway".to_owned(),
                 started_at: format_rfc3339(session.start_timestamp),
-                session_state: SessionState::WaitingForLease,
+                session_state: SessionState::Connected,
             },
         );
     }
@@ -1014,7 +1019,7 @@ impl HoneypotEventJournal {
                 attacker_addr: attacker_addr.to_string(),
                 listener_id: "gateway".to_owned(),
                 started_at: now_rfc3339(),
-                session_state: SessionState::WaitingForLease,
+                session_state: SessionState::Connected,
             },
         );
         self.push_event(
@@ -1497,7 +1502,7 @@ mod tests {
         RecycleState, RecycleVmRequest, RecycleVmResponse, ReleaseState, ReleaseVmRequest, ReleaseVmResponse,
         ServiceState, StreamEndpointRequest, StreamEndpointResponse,
     };
-    use honeypot_contracts::events::{EventPayload, SessionState, StreamState};
+    use honeypot_contracts::events::{EventPayload, SessionState, StreamState, TerminalOutcome};
     use honeypot_contracts::stream::StreamTransport;
     use parking_lot::Mutex;
     use tokio::net::TcpListener;
@@ -1691,7 +1696,7 @@ mod tests {
             bootstrap.sessions[0].vm_lease_id.as_deref(),
             Some(token.vm_lease_id.as_str())
         );
-        assert_eq!(bootstrap.sessions[0].state, SessionState::StreamReady);
+        assert_eq!(bootstrap.sessions[0].state, SessionState::Ready);
         assert_eq!(bootstrap.sessions[0].stream_state, StreamState::Ready);
         assert_eq!(
             bootstrap.sessions[0]
@@ -1702,6 +1707,27 @@ mod tests {
         );
 
         harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn session_metadata_patch_reflects_connected_state_before_assignment() {
+        let runtime = test_runtime_without_control_plane();
+        let session = test_session();
+
+        runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+
+        let patch = runtime
+            .session_metadata_patch(session.id)
+            .expect("connected session metadata patch");
+
+        assert_eq!(patch.state, Some(SessionState::Connected));
+        assert_eq!(
+            patch.attacker_source.as_ref().map(|source| source.listener_id.as_str()),
+            Some("gateway")
+        );
     }
 
     #[tokio::test]
@@ -1745,7 +1771,7 @@ mod tests {
             .runtime
             .session_metadata_patch(session.id)
             .expect("stream-ready session metadata patch");
-        assert_eq!(streamed.state, Some(SessionState::StreamReady));
+        assert_eq!(streamed.state, Some(SessionState::Ready));
         assert_eq!(
             streamed.stream.as_ref().map(|stream| stream.state),
             Some(StreamState::Ready)
@@ -1767,7 +1793,7 @@ mod tests {
             .recording_policy(RecordingPolicy::None)
             .time_to_live(SessionTtl::Unlimited)
             .honeypot(HoneypotSessionMetadata {
-                state: SessionState::StreamReady,
+                state: SessionState::Ready,
                 attacker_source: None,
                 assignment: Some(HoneypotVmAssignment {
                     vm_lease_id: "lease-bootstrap".to_owned(),
@@ -1794,7 +1820,7 @@ mod tests {
         let bootstrap = runtime.bootstrap_response(sessions);
 
         assert_eq!(bootstrap.sessions.len(), 1);
-        assert_eq!(bootstrap.sessions[0].state, SessionState::StreamReady);
+        assert_eq!(bootstrap.sessions[0].state, SessionState::Ready);
         assert_eq!(bootstrap.sessions[0].vm_lease_id.as_deref(), Some("lease-bootstrap"));
         assert_eq!(bootstrap.sessions[0].stream_state, StreamState::Ready);
         assert_eq!(
@@ -1874,6 +1900,16 @@ mod tests {
             EventPayload::SessionRecycleRequested { .. }
         ));
         assert!(matches!(replay[4].payload, EventPayload::HostRecycled { .. }));
+
+        let recycled = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("recycled session metadata patch");
+        assert_eq!(recycled.state, Some(SessionState::Recycled));
+        assert_eq!(
+            recycled.terminal.as_ref().map(|terminal| terminal.outcome),
+            Some(TerminalOutcome::Disconnected)
+        );
 
         harness.shutdown().await;
     }

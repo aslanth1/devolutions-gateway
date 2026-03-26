@@ -49,7 +49,7 @@ async fn frontend_dashboard_renders_bootstrap_sessions() {
                 sessions: vec![BootstrapSession {
                     session_id: session_id.clone(),
                     vm_lease_id: Some("lease-1".to_owned()),
-                    state: SessionState::StreamReady,
+                    state: SessionState::Ready,
                     last_event_id: "event-1".to_owned(),
                     last_session_seq: 2,
                     stream_state: StreamState::Ready,

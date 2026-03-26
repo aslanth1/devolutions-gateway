@@ -521,7 +521,7 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
       transform: translateY(-2px);
       box-shadow: 0 1rem 2rem rgba(31, 27, 22, 0.1);
     }}
-    .session-tile.state-ended, .session-tile.state-killed {{
+    .session-tile.state-disconnected, .session-tile.state-killed, .session-tile.state-recycled {{
       opacity: 0.64;
       border-color: rgba(140, 133, 120, 0.4);
     }}
@@ -960,7 +960,7 @@ fn render_focus_kill_button(session: &BootstrapSession, access: &OperatorAccess)
 fn session_can_be_killed(state: SessionState) -> bool {
     matches!(
         state,
-        SessionState::WaitingForLease | SessionState::Assigned | SessionState::StreamReady
+        SessionState::Connected | SessionState::Assigned | SessionState::Ready
     )
 }
 
@@ -978,12 +978,13 @@ fn render_error_fragment(message: &str) -> String {
 
 fn session_state_label(state: SessionState) -> &'static str {
     match state {
-        SessionState::WaitingForLease => "waiting for lease",
+        SessionState::Connected => "connected",
         SessionState::Assigned => "assigned",
-        SessionState::StreamReady => "stream ready",
-        SessionState::Ended => "ended",
+        SessionState::Ready => "ready",
+        SessionState::Disconnected => "disconnected",
         SessionState::Killed => "killed",
         SessionState::RecycleRequested => "recycle requested",
+        SessionState::Recycled => "recycled",
     }
 }
 
@@ -1054,7 +1055,7 @@ mod tests {
         let session = BootstrapSession {
             session_id: "session-1".to_owned(),
             vm_lease_id: Some("lease-1".to_owned()),
-            state: SessionState::StreamReady,
+            state: SessionState::Ready,
             last_event_id: "event-1".to_owned(),
             last_session_seq: 2,
             stream_state: StreamState::Ready,

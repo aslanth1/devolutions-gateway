@@ -443,7 +443,7 @@ Pass when: `/jet/preflight` mappings are removed deterministically before the pe
 - [x] Extend `devolutions-gateway/src/session.rs` with honeypot metadata for attacker source, assigned VM, stream metadata, and terminal outcome.
 Pass when: the proxy-visible session model can distinguish disconnect, kill, recycle, assignment, and stream readiness without scraping logs.
 
-- [ ] Extend the session state machine to include honeypot-specific lifecycle states.
+- [x] Extend the session state machine to include honeypot-specific lifecycle states.
 Pass when: the proxy can emit connected, assigned, ready, disconnected, killed, recycle requested, and recycled outcomes.
 
 - [ ] Extend subscriber and traffic signals so the frontend can track tiles without scraping logs.

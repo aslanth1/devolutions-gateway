@@ -8,12 +8,13 @@ use crate::stream::StreamTransport;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
-    WaitingForLease,
+    Connected,
     Assigned,
-    StreamReady,
-    Ended,
+    Ready,
+    Disconnected,
     Killed,
     RecycleRequested,
+    Recycled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -92,7 +92,7 @@ pub struct HoneypotSessionMetadata {
 impl Default for HoneypotSessionMetadata {
     fn default() -> Self {
         Self {
-            state: SessionState::WaitingForLease,
+            state: SessionState::Connected,
             attacker_source: None,
             assignment: None,
             stream: None,
@@ -220,7 +220,7 @@ pub async fn remove_session_in_progress(
         state: Some(if kill.is_some() {
             SessionState::Killed
         } else {
-            SessionState::Ended
+            SessionState::Disconnected
         }),
         terminal: Some(HoneypotTerminalMetadata {
             outcome: if kill.is_some() {

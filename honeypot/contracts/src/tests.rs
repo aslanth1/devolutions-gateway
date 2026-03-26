@@ -73,7 +73,7 @@ fn event_envelope_serializes_event_kind_and_ordering_fields() {
             attacker_addr: "203.0.113.10:54422".to_owned(),
             listener_id: "listener-1".to_owned(),
             started_at: "2026-03-26T00:00:00Z".to_owned(),
-            session_state: SessionState::WaitingForLease,
+            session_state: SessionState::Connected,
         },
     };
 
