@@ -20,7 +20,7 @@ use crate::config::{
     Conf, HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotStreamConf,
     HoneypotStreamSourceKind,
 };
-use crate::session::{RunningSessions, SessionInfo};
+use crate::session::{RunningSessions, SessionInfo, SessionKillMetadata};
 use crate::token::{ApplicationProtocol, Protocol};
 
 const HONEYPOT_EVENT_BUFFER_CAPACITY: usize = 256;
@@ -60,9 +60,13 @@ impl HoneypotMode {
         Ok(())
     }
 
-    pub async fn record_session_ended(&self, session: &SessionInfo, was_killed: bool) -> anyhow::Result<()> {
+    pub async fn record_session_ended(
+        &self,
+        session: &SessionInfo,
+        kill: Option<SessionKillMetadata>,
+    ) -> anyhow::Result<()> {
         if let Some(runtime) = self.runtime() {
-            runtime.record_session_ended(session, was_killed).await?;
+            runtime.record_session_ended(session, kill).await?;
         }
 
         Ok(())
@@ -169,13 +173,23 @@ impl HoneypotRuntime {
         }
     }
 
-    pub async fn record_session_ended(&self, session: &SessionInfo, was_killed: bool) -> anyhow::Result<()> {
+    pub async fn record_session_ended(
+        &self,
+        session: &SessionInfo,
+        kill: Option<SessionKillMetadata>,
+    ) -> anyhow::Result<()> {
         let session_id = session.id.to_string();
         let binding = self.events.lock().take_session_binding(&session_id);
         let recycle_expected = binding.is_some();
-        self.events
-            .lock()
-            .push_session_ended(session, was_killed, recycle_expected);
+        let was_killed = kill.is_some();
+        {
+            let mut events = self.events.lock();
+            if let Some(kill) = kill {
+                events.push_session_killed(session, kill);
+            } else {
+                events.push_session_ended(session, recycle_expected);
+            }
+        }
 
         let Some(binding) = binding else {
             return Ok(());
@@ -523,24 +537,33 @@ impl HoneypotEventJournal {
         );
     }
 
-    fn push_session_ended(&mut self, session: &SessionInfo, was_killed: bool, recycle_expected: bool) {
+    fn push_session_ended(&mut self, session: &SessionInfo, recycle_expected: bool) {
         self.push_event(
             Some(session.id.to_string()),
             None,
             None,
             EventPayload::SessionEnded {
                 ended_at: now_rfc3339(),
-                terminal_outcome: if was_killed {
-                    TerminalOutcome::Killed
-                } else {
-                    TerminalOutcome::Disconnected
-                },
-                disconnect_reason: if was_killed {
-                    "session_killed".to_owned()
-                } else {
-                    "proxy_forwarding_ended".to_owned()
-                },
+                terminal_outcome: TerminalOutcome::Disconnected,
+                disconnect_reason: "proxy_forwarding_ended".to_owned(),
                 recycle_expected,
+            },
+        );
+    }
+
+    fn push_session_killed(&mut self, session: &SessionInfo, kill: SessionKillMetadata) {
+        self.push_event(
+            Some(session.id.to_string()),
+            None,
+            None,
+            EventPayload::SessionKilled {
+                killed_at: now_rfc3339(),
+                kill_scope: kill.scope,
+                killed_by_operator_id: kill
+                    .operator_id
+                    .map(|operator_id| operator_id.to_string())
+                    .unwrap_or_else(|| "gateway".to_owned()),
+                kill_reason: kill.reason.as_reason_code().to_owned(),
             },
         );
     }
@@ -938,7 +961,7 @@ mod tests {
         HoneypotStreamRuntime,
     };
     use crate::config::{HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotStreamConf};
-    use crate::session::{ConnectionModeDetails, SessionInfo};
+    use crate::session::{ConnectionModeDetails, SessionInfo, SessionKillMetadata, SessionKillReason};
     use crate::token::{ApplicationProtocol, Protocol, RecordingPolicy, SessionTtl};
 
     const TEST_CONTROL_PLANE_SERVICE_TOKEN: &str = "test-control-plane-service-token";
@@ -1082,7 +1105,7 @@ mod tests {
             .expect("record started session");
         harness
             .runtime
-            .record_session_ended(&session, false)
+            .record_session_ended(&session, None)
             .await
             .expect("record ended session");
 
@@ -1111,6 +1134,36 @@ mod tests {
             EventPayload::SessionRecycleRequested { .. }
         ));
         assert!(matches!(replay[4].payload, EventPayload::HostRecycled { .. }));
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn session_kill_emits_session_killed_before_recycle() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+        harness
+            .runtime
+            .record_session_ended(
+                &session,
+                Some(SessionKillMetadata {
+                    scope: honeypot_contracts::events::KillScope::Session,
+                    operator_id: Some(Uuid::nil()),
+                    reason: SessionKillReason::OperatorRequested,
+                }),
+            )
+            .await
+            .expect("record killed session");
+
+        let (replay, _receiver) = harness.runtime.stream_from_cursor("0").expect("valid cursor");
+        assert_eq!(replay.len(), 5);
+        assert!(matches!(replay[2].payload, EventPayload::SessionKilled { .. }));
 
         harness.shutdown().await;
     }

@@ -1,4 +1,5 @@
 use anyhow::Context as _;
+use base64::prelude::*;
 use honeypot_contracts::frontend::BootstrapResponse;
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{DgwConfig, HoneypotConfig};
@@ -375,6 +376,109 @@ async fn honeypot_stream_token_route_rejects_mismatched_session_id() -> anyhow::
     Ok(())
 }
 
+#[tokio::test]
+async fn honeypot_session_terminate_route_accepts_honeypot_kill_scope_when_enabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let kill_scope_token = honeypot_scope_token("gateway.honeypot.session.kill");
+    let session_id = Uuid::new_v4();
+    let path = format!("/jet/session/{session_id}/terminate");
+    let (status_line, _body) =
+        send_http_request_with_retry(config_handle.http_port(), "POST", &path, &kill_scope_token, None, &[]).await?;
+
+    assert!(status_line.contains("404"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_session_terminate_route_rejects_honeypot_kill_scope_when_disabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let kill_scope_token = honeypot_scope_token("gateway.honeypot.session.kill");
+    let session_id = Uuid::new_v4();
+    let path = format!("/jet/session/{session_id}/terminate");
+    let (status_line, _body) =
+        send_http_request_with_retry(config_handle.http_port(), "POST", &path, &kill_scope_token, None, &[]).await?;
+
+    assert!(status_line.contains("403"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_session_terminate_route_respects_kill_switch() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(
+            HoneypotConfig::builder()
+                .enabled(true)
+                .enable_session_kill(false)
+                .build(),
+        )
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let kill_scope_token = honeypot_scope_token("gateway.honeypot.session.kill");
+    let session_id = Uuid::new_v4();
+    let path = format!("/jet/session/{session_id}/terminate");
+    let (status_line, _body) =
+        send_http_request_with_retry(config_handle.http_port(), "POST", &path, &kill_scope_token, None, &[]).await?;
+
+    assert!(status_line.contains("409"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
 async fn get_json_response(http_port: u16, path: &str, token: &str) -> anyhow::Result<(String, Vec<u8>)> {
     send_http_request(http_port, "GET", path, token, None, &[]).await
 }
@@ -437,4 +541,37 @@ async fn send_http_request(
         .to_owned();
 
     Ok((status_line, body))
+}
+
+async fn send_http_request_with_retry(
+    http_port: u16,
+    method: &str,
+    path: &str,
+    token: &str,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> anyhow::Result<(String, Vec<u8>)> {
+    let mut last_error = None;
+
+    for attempt in 0..3 {
+        match send_http_request(http_port, method, path, token, content_type, body).await {
+            Ok(response) => return Ok(response),
+            Err(error) if error.to_string().contains("split response headers and body") && attempt < 2 => {
+                last_error = Some(error);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("request retry unexpectedly exhausted")))
+}
+
+fn honeypot_scope_token(scope: &str) -> String {
+    let header = BASE64_URL_SAFE_NO_PAD.encode(r#"{"typ":"JWT","alg":"RS256"}"#);
+    let payload = BASE64_URL_SAFE_NO_PAD.encode(format!(
+        r#"{{"type":"scope","jti":"00000000-0000-0000-0000-000000000003","iat":1733669999,"exp":3331553599,"nbf":1733669999,"scope":"{scope}"}}"#
+    ));
+
+    format!("{header}.{payload}.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ")
 }

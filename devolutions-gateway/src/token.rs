@@ -491,6 +491,12 @@ pub struct ScopeTokenClaims {
     jti: Uuid,
 }
 
+impl ScopeTokenClaims {
+    pub fn token_id(&self) -> Uuid {
+        self.jti
+    }
+}
+
 // ----- bridge claims ----- //
 
 #[derive(Clone)]
@@ -1051,7 +1057,7 @@ fn validate_token_impl(
                             // - The number of connections during the reconnection window does not
                             //   exceed 10 (hardcoded value).
 
-                            if info.was_killed {
+                            if info.kill.is_some() {
                                 return Err(TokenError::UnexpectedReplay {
                                     reason: "session was killed",
                                 });

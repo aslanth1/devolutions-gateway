@@ -9,7 +9,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::StreamExt as _;
 use honeypot_contracts::events::{SessionState, StreamState};
@@ -17,7 +17,7 @@ use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
 use honeypot_contracts::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
 use tokio::net::TcpListener;
 
-use self::auth::{AuthError, FrontendAuth, RequiredScope};
+use self::auth::{AuthError, FrontendAuth, OperatorAccess, RequiredScope};
 use self::config::FrontendConfig;
 
 #[derive(Clone)]
@@ -98,6 +98,31 @@ impl FrontendRuntime {
             .context("proxy events request failed")
     }
 
+    async fn kill_session(&self, session_id: &str) -> Result<(), FrontendKillError> {
+        use reqwest::StatusCode as ReqwestStatusCode;
+
+        let terminate_url = self
+            .config
+            .proxy
+            .terminate_url(session_id)
+            .map_err(FrontendKillError::Proxy)?;
+        let response = self
+            .authorized(self.client.post(terminate_url))
+            .send()
+            .await
+            .with_context(|| format!("request proxy session terminate for {session_id}"))
+            .map_err(FrontendKillError::Proxy)?;
+
+        match response.status() {
+            ReqwestStatusCode::OK | ReqwestStatusCode::NO_CONTENT => Ok(()),
+            ReqwestStatusCode::NOT_FOUND => Err(FrontendKillError::NotFound),
+            ReqwestStatusCode::CONFLICT => Err(FrontendKillError::Conflict),
+            status => Err(FrontendKillError::Proxy(anyhow::anyhow!(
+                "proxy session terminate failed with {status}"
+            ))),
+        }
+    }
+
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(token) = &self.config.auth.proxy_bearer_token {
             request.bearer_auth(token)
@@ -111,7 +136,7 @@ impl FrontendRuntime {
         headers: &HeaderMap,
         query_token: Option<&str>,
         required_scope: RequiredScope,
-    ) -> Result<auth::OperatorAccess, AuthError> {
+    ) -> Result<OperatorAccess, AuthError> {
         self.auth.authorize(headers, query_token, required_scope)
     }
 }
@@ -119,6 +144,13 @@ impl FrontendRuntime {
 #[derive(Clone)]
 struct AppState {
     runtime: Arc<FrontendRuntime>,
+}
+
+#[derive(Debug)]
+enum FrontendKillError {
+    NotFound,
+    Conflict,
+    Proxy(anyhow::Error),
 }
 
 pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
@@ -134,6 +166,7 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
         .route("/events", get(events_handler))
         .route("/tile/{id}", get(tile_handler))
         .route("/session/{id}", get(session_handler))
+        .route("/session/{id}/kill", post(kill_handler))
         .with_state(state);
 
     let listener = TcpListener::bind(bind_addr)
@@ -168,12 +201,7 @@ async fn index_handler(
     };
 
     match state.runtime.fetch_bootstrap().await {
-        Ok(bootstrap) => Html(render_dashboard_page(
-            &state.runtime.config,
-            &bootstrap,
-            access.raw_token(),
-        ))
-        .into_response(),
+        Ok(bootstrap) => Html(render_dashboard_page(&state.runtime.config, &bootstrap, &access)).into_response(),
         Err(error) => frontend_error(StatusCode::BAD_GATEWAY, &format!("bootstrap unavailable: {error:#}")),
     }
 }
@@ -227,7 +255,7 @@ async fn tile_handler(
     };
 
     match state.runtime.fetch_session(&session_id).await {
-        Ok(Some(session)) => Html(render_session_tile(&session, access.raw_token())).into_response(),
+        Ok(Some(session)) => Html(render_session_tile(&session, &access)).into_response(),
         Ok(None) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
         Err(error) => frontend_error(StatusCode::BAD_GATEWAY, &format!("session lookup failed: {error:#}")),
     }
@@ -239,12 +267,13 @@ async fn session_handler(
     Path(session_id): Path<String>,
     Query(query): Query<OperatorTokenQuery>,
 ) -> Response {
-    if let Err(error) = state
+    let access = match state
         .runtime
         .authorize_operator(&headers, query.token.as_deref(), RequiredScope::StreamRead)
     {
-        return auth_error(error);
-    }
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
 
     let session = match state.runtime.fetch_session(&session_id).await {
         Ok(Some(session)) => session,
@@ -271,7 +300,34 @@ async fn session_handler(
         }
     };
 
-    Html(render_focus_panel(&session, stream_preview.as_ref())).into_response()
+    Html(render_focus_panel(&session, stream_preview.as_ref(), &access)).into_response()
+}
+
+async fn kill_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<OperatorTokenQuery>,
+) -> Response {
+    let access = match state
+        .runtime
+        .authorize_operator(&headers, query.token.as_deref(), RequiredScope::SessionKill)
+    {
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
+
+    match state.runtime.kill_session(&session_id).await {
+        Ok(()) => Html(render_kill_notice(&session_id, access.raw_token())).into_response(),
+        Err(FrontendKillError::NotFound) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
+        Err(FrontendKillError::Conflict) => frontend_error(
+            StatusCode::CONFLICT,
+            "session kill is unavailable for this honeypot session",
+        ),
+        Err(FrontendKillError::Proxy(error)) => {
+            frontend_error(StatusCode::BAD_GATEWAY, &format!("kill request failed: {error:#}"))
+        }
+    }
 }
 
 fn frontend_error(status: StatusCode, message: &str) -> Response {
@@ -295,14 +351,15 @@ fn auth_error(error: AuthError) -> Response {
     }
 }
 
-fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse, operator_token: &str) -> String {
+fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse, access: &OperatorAccess) -> String {
+    let operator_token = access.raw_token();
     let tiles = if bootstrap.sessions.is_empty() {
         "<div class=\"empty-state\">No live sessions are visible yet.</div>".to_owned()
     } else {
         bootstrap
             .sessions
             .iter()
-            .map(|session| render_session_tile(session, operator_token))
+            .map(|session| render_session_tile(session, access))
             .collect::<Vec<_>>()
             .join("\n")
     };
@@ -445,6 +502,26 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
       font-size: 0.92rem;
       color: rgba(31, 27, 22, 0.74);
     }}
+    .tile-actions, .focus-actions {{
+      display: flex;
+      justify-content: end;
+      gap: 0.75rem;
+    }}
+    .kill-button {{
+      border: 0;
+      border-radius: 999px;
+      padding: 0.6rem 0.9rem;
+      font: inherit;
+      font-size: 0.9rem;
+      letter-spacing: 0.03em;
+      background: linear-gradient(135deg, #9f2f13, #c54d20);
+      color: #fff7f2;
+      cursor: pointer;
+      box-shadow: 0 0.7rem 1.4rem rgba(159, 47, 19, 0.18);
+    }}
+    .kill-button:hover {{
+      filter: brightness(1.05);
+    }}
     .focus-panel {{
       min-height: 22rem;
     }}
@@ -493,7 +570,7 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
   <div class="shell">
     <header class="masthead">
       <div>
-        <p class="kicker">Read-only operator surface</p>
+        <p class="kicker">Watch and kill operator surface</p>
         <h1>{title}</h1>
       </div>
       <section class="status-bar">
@@ -558,11 +635,11 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         }}
       }}
 
-      function dropTile(sessionId) {{
+      function dropTile(sessionId, message) {{
         document.getElementById(`session-tile-${{sessionId}}`)?.remove();
         const focused = focusPanel.querySelector("[data-focused-session-id]");
         if (focused && focused.getAttribute("data-focused-session-id") === sessionId) {{
-          focusPanel.innerHTML = '<div class="focus-empty">This session has ended.</div>';
+          focusPanel.innerHTML = `<div class="focus-empty">${{message}}</div>`;
         }}
       }}
 
@@ -597,8 +674,10 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
 
           switch (payload.event_kind) {{
             case "session.ended":
+              dropTile(sessionId, "This session has ended.");
+              break;
             case "session.killed":
-              dropTile(sessionId);
+              dropTile(sessionId, "This session was killed.");
               break;
             default:
               try {{
@@ -627,13 +706,15 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
     )
 }
 
-fn render_session_tile(session: &BootstrapSession, operator_token: &str) -> String {
+fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> String {
+    let operator_token = access.raw_token();
     let session_id = escape_html(&session.session_id);
     let vm_lease_id = session.vm_lease_id.as_deref().unwrap_or("pending-lease");
     let last_event_id = escape_html(&session.last_event_id);
     let state_label = session_state_label(session.state);
     let stream_label = stream_state_label(session.stream_state);
     let auth_query = operator_token_query(operator_token);
+    let kill_button = render_kill_button(session, operator_token, access.can_kill_sessions());
     let preview_label = session
         .stream_preview
         .as_ref()
@@ -662,6 +743,7 @@ fn render_session_tile(session: &BootstrapSession, operator_token: &str) -> Stri
     <div class="tile-meta"><strong>Last event</strong><code>{last_event_id}</code></div>
     {preview_label}
   </a>
+  {kill_button}
 </article>"##,
         state_class = state_label.replace(' ', "-").to_ascii_lowercase(),
         state_label = escape_html(state_label),
@@ -669,13 +751,19 @@ fn render_session_tile(session: &BootstrapSession, operator_token: &str) -> Stri
         vm_lease_id = escape_html(vm_lease_id),
         preview_label = preview_label,
         auth_query = auth_query,
+        kill_button = kill_button,
     )
 }
 
-fn render_focus_panel(session: &BootstrapSession, stream_preview: Option<&StreamPreview>) -> String {
+fn render_focus_panel(
+    session: &BootstrapSession,
+    stream_preview: Option<&StreamPreview>,
+    access: &OperatorAccess,
+) -> String {
     let session_id = escape_html(&session.session_id);
     let state_label = escape_html(session_state_label(session.state));
     let stream_label = escape_html(stream_state_label(session.stream_state));
+    let focus_actions = render_focus_kill_button(session, access);
     let body = if let Some(preview) = stream_preview {
         format!(
             r#"<div class="stream-stage">
@@ -708,8 +796,79 @@ fn render_focus_panel(session: &BootstrapSession, stream_preview: Option<&Stream
   <div class="tile-meta"><strong>Session</strong><code>{session_id}</code></div>
   <div class="tile-meta"><strong>State</strong><span>{state_label}</span></div>
   <div class="tile-meta"><strong>Stream state</strong><span>{stream_label}</span></div>
+  {focus_actions}
   {body}
 </div>"#
+    )
+}
+
+fn render_kill_notice(session_id: &str, operator_token: &str) -> String {
+    let auth_query = operator_token_query(operator_token);
+    let session_id = escape_html(session_id);
+
+    format!(
+        r#"<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>Kill requested</strong>
+      <p>Session <code>{session_id}</code> is waiting for the proxy to emit <code>session.killed</code>.</p>
+      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>"#
+    )
+}
+
+fn render_kill_button(session: &BootstrapSession, operator_token: &str, can_kill_sessions: bool) -> String {
+    if !can_kill_sessions || !session_can_be_killed(session.state) {
+        return String::new();
+    }
+
+    let session_id = escape_html(&session.session_id);
+    let auth_query = operator_token_query(operator_token);
+
+    format!(
+        r##"<div class="tile-actions">
+  <button
+    class="kill-button"
+    type="button"
+    hx-post="/session/{session_id}/kill?{auth_query}"
+    hx-target="#focus-panel"
+    hx-swap="innerHTML"
+    hx-confirm="Kill session {session_id}?">
+    Kill session
+  </button>
+</div>"##
+    )
+}
+
+fn render_focus_kill_button(session: &BootstrapSession, access: &OperatorAccess) -> String {
+    if !access.can_kill_sessions() || !session_can_be_killed(session.state) {
+        return String::new();
+    }
+
+    let session_id = escape_html(&session.session_id);
+    let auth_query = operator_token_query(access.raw_token());
+
+    format!(
+        r##"<div class="focus-actions">
+  <button
+    class="kill-button"
+    type="button"
+    hx-post="/session/{session_id}/kill?{auth_query}"
+    hx-target="#focus-panel"
+    hx-swap="innerHTML"
+    hx-confirm="Kill session {session_id}?">
+    Kill session
+  </button>
+</div>"##
+    )
+}
+
+fn session_can_be_killed(state: SessionState) -> bool {
+    matches!(
+        state,
+        SessionState::WaitingForLease | SessionState::Assigned | SessionState::StreamReady
     )
 }
 
@@ -768,9 +927,14 @@ fn operator_token_query(operator_token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use devolutions_gateway::token::AccessScope;
     use honeypot_contracts::frontend::BootstrapSession;
 
     use super::*;
+
+    fn test_access(raw_token: &str, scope: AccessScope) -> OperatorAccess {
+        OperatorAccess::test_only(raw_token, scope)
+    }
 
     #[test]
     fn tile_render_escapes_untrusted_fields() {
@@ -784,12 +948,13 @@ mod tests {
             stream_preview: None,
         };
 
-        let html = render_session_tile(&session, "operator-token");
+        let html = render_session_tile(&session, &test_access("operator-token", AccessScope::Wildcard));
 
         assert!(html.contains("&lt;session&gt;"));
         assert!(html.contains("lease&amp;1"));
         assert!(html.contains("&quot;event&quot;"));
         assert!(html.contains("token=operator-token"));
+        assert!(html.contains("Kill session"));
     }
 
     #[test]
@@ -810,10 +975,15 @@ mod tests {
             token_expires_at: "2026-03-26T12:00:00Z".to_owned(),
         };
 
-        let html = render_focus_panel(&session, Some(&preview));
+        let html = render_focus_panel(
+            &session,
+            Some(&preview),
+            &test_access("operator-token", AccessScope::Wildcard),
+        );
 
         assert!(html.contains("stream-1"));
         assert!(html.contains("https://streams.example/session-1"));
         assert!(html.contains("Player shell only"));
+        assert!(html.contains("Kill session"));
     }
 }

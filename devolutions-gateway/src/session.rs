@@ -9,6 +9,7 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use devolutions_gateway_task::{ShutdownSignal, Task};
 use futures::future::Either;
+use honeypot_contracts::events::KillScope;
 use tap::prelude::*;
 use time::OffsetDateTime;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -101,13 +102,12 @@ pub async fn remove_session_in_progress(
         .context("couldn't remove running session")?;
 
     if let Some(session) = removed_session {
-        let was_killed = sessions
+        let kill = sessions
             .get_disconnected_info(id)
             .await
             .ok()
             .flatten()
-            .map(|info| info.was_killed)
-            .unwrap_or(false);
+            .and_then(|info| info.kill);
 
         let message = subscriber::Message::session_ended(subscriber::SubscriberSessionInfo {
             association_id: id,
@@ -118,7 +118,7 @@ pub async fn remove_session_in_progress(
             warn!(%error, "Failed to send subscriber message");
         }
 
-        if let Err(error) = sessions.honeypot().record_session_ended(&session, was_killed).await {
+        if let Err(error) = sessions.honeypot().record_session_ended(&session, kill).await {
             warn!(
                 error = format!("{error:#}"),
                 "Failed to finalize honeypot session state"
@@ -135,6 +135,50 @@ pub type RunningSessions = HashMap<Uuid, SessionInfo>;
 pub enum KillResult {
     Success,
     NotFound,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKillReason {
+    OperatorRequested,
+    SessionTtlExpired,
+    RecordingPolicyViolated,
+    GatewayRequested,
+}
+
+impl SessionKillReason {
+    pub fn as_reason_code(self) -> &'static str {
+        match self {
+            Self::OperatorRequested => "operator_requested",
+            Self::SessionTtlExpired => "session_ttl_expired",
+            Self::RecordingPolicyViolated => "recording_policy_violated",
+            Self::GatewayRequested => "gateway_requested",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionKillMetadata {
+    pub scope: KillScope,
+    pub operator_id: Option<Uuid>,
+    pub reason: SessionKillReason,
+}
+
+impl SessionKillMetadata {
+    pub fn operator(operator_id: Uuid) -> Self {
+        Self {
+            scope: KillScope::Session,
+            operator_id: Some(operator_id),
+            reason: SessionKillReason::OperatorRequested,
+        }
+    }
+
+    pub fn gateway(reason: SessionKillReason) -> Self {
+        Self {
+            scope: KillScope::Session,
+            operator_id: None,
+            reason,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -156,7 +200,7 @@ impl DisconnectInterest {
 #[derive(Clone, Copy)]
 pub struct DisconnectedInfo {
     pub id: Uuid,
-    pub was_killed: bool,
+    pub kill: Option<SessionKillMetadata>,
     pub date: OffsetDateTime,
     pub interest: DisconnectInterest,
     pub count: u8,
@@ -178,6 +222,7 @@ enum SessionManagerMessage {
     },
     Kill {
         id: Uuid,
+        kill: SessionKillMetadata,
         channel: oneshot::Sender<KillResult>,
     },
     GetDisconnectedInfo {
@@ -210,9 +255,11 @@ impl fmt::Debug for SessionManagerMessage {
             SessionManagerMessage::Remove { id, channel: _ } => {
                 f.debug_struct("Remove").field("id", id).finish_non_exhaustive()
             }
-            SessionManagerMessage::Kill { id, channel: _ } => {
-                f.debug_struct("Kill").field("id", id).finish_non_exhaustive()
-            }
+            SessionManagerMessage::Kill {
+                id,
+                kill: _,
+                channel: _,
+            } => f.debug_struct("Kill").field("id", id).finish_non_exhaustive(),
             SessionManagerMessage::GetDisconnectedInfo { id, channel: _ } => f
                 .debug_struct("GetDisconnectedInfo")
                 .field("id", id)
@@ -272,9 +319,14 @@ impl SessionMessageSender {
     }
 
     pub async fn kill_session(&self, id: Uuid) -> anyhow::Result<KillResult> {
+        self.kill_session_with_metadata(id, SessionKillMetadata::gateway(SessionKillReason::GatewayRequested))
+            .await
+    }
+
+    pub async fn kill_session_with_metadata(&self, id: Uuid, kill: SessionKillMetadata) -> anyhow::Result<KillResult> {
         let (tx, rx) = oneshot::channel();
         self.tx
-            .send(SessionManagerMessage::Kill { id, channel: tx })
+            .send(SessionManagerMessage::Kill { id, kill, channel: tx })
             .await
             .ok()
             .context("couldn't send Kill message")?;
@@ -412,15 +464,15 @@ impl SessionManagerTask {
         let _ = self.all_notify_kill.remove(&id);
 
         if let Some(interest) = self.disconnect_interest.remove(&id) {
-            self.update_disconnected_info(id, interest, false);
+            self.update_disconnected_info(id, interest, None);
         }
 
         removed_session
     }
 
-    fn handle_kill(&mut self, id: Uuid) -> KillResult {
+    fn handle_kill(&mut self, id: Uuid, kill: SessionKillMetadata) -> KillResult {
         if let Some(interest) = self.disconnect_interest.get(&id).copied() {
-            self.update_disconnected_info(id, interest, true);
+            self.update_disconnected_info(id, interest, Some(kill));
         }
 
         match self.all_notify_kill.get(&id) {
@@ -437,14 +489,15 @@ impl SessionManagerTask {
     }
 
     /// Try to insert disconnected info. Nothing will happen in the info are already inserted.
-    fn update_disconnected_info(&mut self, id: Uuid, interest: DisconnectInterest, was_killed: bool) {
+    fn update_disconnected_info(&mut self, id: Uuid, interest: DisconnectInterest, kill: Option<SessionKillMetadata>) {
         self.disconnected_info
             .entry(id)
             .and_modify(|info| {
-                // Never unset the was_killed flag.
-                info.was_killed |= was_killed;
+                if let Some(kill) = kill {
+                    info.kill.get_or_insert(kill);
+                }
 
-                if !was_killed {
+                if kill.is_none() {
                     info.date = OffsetDateTime::now_utc();
                     info.interest = interest;
                     info.count += 1;
@@ -452,10 +505,10 @@ impl SessionManagerTask {
             })
             .or_insert_with(|| DisconnectedInfo {
                 id,
-                was_killed,
+                kill,
                 date: OffsetDateTime::now_utc(),
                 interest,
-                count: if was_killed { 0 } else { 1 },
+                count: if kill.is_some() { 0 } else { 1 },
             });
     }
 }
@@ -492,7 +545,10 @@ async fn session_manager_task(
             () = &mut auto_kill_sleep, if !with_ttl.is_empty() => {
                 let to_kill = with_ttl.pop().expect("we check for non-emptiness before entering this block");
 
-                match manager.handle_kill(to_kill.session_id) {
+                match manager.handle_kill(
+                    to_kill.session_id,
+                    SessionKillMetadata::gateway(SessionKillReason::SessionTtlExpired),
+                ) {
                     KillResult::Success => {
                         info!(session.id = %to_kill.session_id, "Session killed because it reached its max duration");
                     }
@@ -556,8 +612,8 @@ async fn session_manager_task(
                         let removed_session = manager.handle_remove(id);
                         let _ = channel.send(removed_session);
                     }
-                    SessionManagerMessage::Kill { id, channel } => {
-                        let kill_result = manager.handle_kill(id);
+                    SessionManagerMessage::Kill { id, kill, channel } => {
+                        let kill_result = manager.handle_kill(id, kill);
                         let _ = channel.send(kill_result);
                     }
                     SessionManagerMessage::GetDisconnectedInfo { id, channel } => {
@@ -662,7 +718,14 @@ impl Task for EnsureRecordingPolicyTask {
                 .update_recording_policy(self.session_id, true)
                 .await;
         } else {
-            match self.session_manager_handle.kill_session(self.session_id).await {
+            match self
+                .session_manager_handle
+                .kill_session_with_metadata(
+                    self.session_id,
+                    SessionKillMetadata::gateway(SessionKillReason::RecordingPolicyViolated),
+                )
+                .await
+            {
                 Ok(KillResult::Success) => {
                     warn!(
                         session.id = %self.session_id,

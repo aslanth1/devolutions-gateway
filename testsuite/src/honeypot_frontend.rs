@@ -29,6 +29,8 @@ pub struct HoneypotFrontendTestConfig {
     pub proxy_events_path: String,
     #[builder(default = "/jet/honeypot/session/{session_id}/stream-token".to_owned(), setter(into))]
     pub proxy_stream_token_path_template: String,
+    #[builder(default = "/jet/session/{session_id}/terminate".to_owned(), setter(into))]
+    pub proxy_terminate_path_template: String,
     #[builder(default, setter(into))]
     pub proxy_bearer_token: Option<String>,
     #[builder(default = true)]
@@ -62,6 +64,7 @@ pub fn write_honeypot_frontend_config(path: &Path, config: &HoneypotFrontendTest
          bootstrap_path = \"{}\"\n\
          events_path = \"{}\"\n\
          stream_token_path_template = \"{}\"\n\n\
+         terminate_path_template = \"{}\"\n\n\
          [ui]\n\
          title = \"{}\"\n",
         config.bind_addr,
@@ -69,6 +72,7 @@ pub fn write_honeypot_frontend_config(path: &Path, config: &HoneypotFrontendTest
         config.proxy_bootstrap_path,
         config.proxy_events_path,
         config.proxy_stream_token_path_template,
+        config.proxy_terminate_path_template,
         config.title,
     );
 
@@ -91,23 +95,43 @@ pub fn write_honeypot_frontend_config(path: &Path, config: &HoneypotFrontendTest
 }
 
 pub async fn read_http_response(port: u16, path: &str) -> anyhow::Result<(String, String, Vec<u8>)> {
+    send_http_request(port, "GET", path, None, &[]).await
+}
+
+pub async fn send_http_request(
+    port: u16,
+    method: &str,
+    path: &str,
+    content_type: Option<&str>,
+    body: &[u8],
+) -> anyhow::Result<(String, String, Vec<u8>)> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let mut stream = tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .with_context(|| format!("connect to honeypot frontend on port {port}"))?;
 
-    let request = format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
+    if let Some(content_type) = content_type {
+        request.push_str(&format!("Content-Type: {content_type}\r\n"));
+    }
+    request.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
     stream
         .write_all(request.as_bytes())
         .await
-        .with_context(|| format!("send frontend request to {path}"))?;
+        .with_context(|| format!("send {method} frontend request to {path}"))?;
+    if !body.is_empty() {
+        stream
+            .write_all(body)
+            .await
+            .with_context(|| format!("send {method} frontend request body to {path}"))?;
+    }
 
     let mut response = Vec::new();
     stream
         .read_to_end(&mut response)
         .await
-        .with_context(|| format!("read frontend response from {path}"))?;
+        .with_context(|| format!("read {method} frontend response from {path}"))?;
 
     let header_end = response
         .windows(4)

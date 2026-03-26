@@ -29,6 +29,7 @@ enum ValidationMode {
 pub(super) enum RequiredScope {
     Watch,
     StreamRead,
+    SessionKill,
 }
 
 impl RequiredScope {
@@ -36,6 +37,7 @@ impl RequiredScope {
         match self {
             Self::Watch => "gateway.honeypot.watch",
             Self::StreamRead => "gateway.honeypot.stream.read",
+            Self::SessionKill => "gateway.honeypot.session.kill",
         }
     }
 }
@@ -43,11 +45,27 @@ impl RequiredScope {
 #[derive(Debug, Clone)]
 pub(super) struct OperatorAccess {
     raw_token: String,
+    scope: AccessScope,
 }
 
 impl OperatorAccess {
     pub(super) fn raw_token(&self) -> &str {
         &self.raw_token
+    }
+
+    pub(super) fn can_kill_sessions(&self) -> bool {
+        matches!(
+            self.scope,
+            AccessScope::Wildcard | AccessScope::HoneypotSessionKill | AccessScope::HoneypotSystemKill
+        )
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_only(raw_token: &str, scope: AccessScope) -> Self {
+        Self {
+            raw_token: raw_token.to_owned(),
+            scope,
+        }
     }
 }
 
@@ -96,6 +114,7 @@ impl FrontendAuth {
         if scope_allows(required, &scope) {
             Ok(OperatorAccess {
                 raw_token: raw_token.to_owned(),
+                scope,
             })
         } else {
             Err(AuthError::Forbidden {
@@ -221,6 +240,10 @@ fn scope_allows(required: RequiredScope, actual: &AccessScope) -> bool {
         (_, AccessScope::Wildcard)
             | (RequiredScope::Watch, AccessScope::HoneypotWatch)
             | (RequiredScope::Watch, AccessScope::HoneypotStreamRead)
+            | (RequiredScope::Watch, AccessScope::HoneypotSessionKill)
+            | (RequiredScope::Watch, AccessScope::HoneypotSystemKill)
             | (RequiredScope::StreamRead, AccessScope::HoneypotStreamRead)
+            | (RequiredScope::SessionKill, AccessScope::HoneypotSessionKill)
+            | (RequiredScope::SessionKill, AccessScope::HoneypotSystemKill)
     )
 }

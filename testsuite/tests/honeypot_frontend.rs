@@ -9,12 +9,13 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router, response::Response};
+use base64::prelude::*;
 use honeypot_contracts::events::{SessionState, StreamState};
 use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
 use honeypot_contracts::stream::{StreamPreview, StreamTokenResponse, StreamTransport};
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_frontend::{
-    HoneypotFrontendTestConfig, find_unused_port, honeypot_frontend_tokio_cmd, read_http_response,
+    HoneypotFrontendTestConfig, find_unused_port, honeypot_frontend_tokio_cmd, read_http_response, send_http_request,
     write_honeypot_frontend_config,
 };
 use tokio::net::TcpListener;
@@ -31,12 +32,13 @@ struct MockProxyState {
     events_body: String,
     stream_tokens: HashMap<String, StreamTokenResponse>,
     observed_tokens: Arc<Mutex<Vec<String>>>,
+    terminated_sessions: Arc<Mutex<Vec<String>>>,
 }
 
 #[tokio::test]
 async fn frontend_dashboard_renders_bootstrap_sessions() {
     let session_id = Uuid::new_v4().to_string();
-    let (proxy_addr, proxy_handle, observed_tokens) = start_mock_proxy(mock_state(
+    let (proxy_addr, proxy_handle, observed_tokens, _terminated_sessions) = start_mock_proxy(mock_state(
         BootstrapResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: "bootstrap-1".to_owned(),
@@ -109,7 +111,7 @@ async fn frontend_dashboard_renders_bootstrap_sessions() {
 
 #[tokio::test]
 async fn frontend_events_route_proxies_proxy_sse() {
-    let (proxy_addr, proxy_handle, _observed_tokens) = start_mock_proxy(mock_state(
+    let (proxy_addr, proxy_handle, _observed_tokens, _terminated_sessions) = start_mock_proxy(mock_state(
         BootstrapResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: "bootstrap-2".to_owned(),
@@ -177,7 +179,7 @@ async fn frontend_focus_fragment_uses_stream_token_when_preview_is_missing() {
         },
     );
 
-    let (proxy_addr, proxy_handle, _observed_tokens) = start_mock_proxy(mock_state(
+    let (proxy_addr, proxy_handle, _observed_tokens, _terminated_sessions) = start_mock_proxy(mock_state(
         BootstrapResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: "bootstrap-3".to_owned(),
@@ -236,7 +238,7 @@ async fn frontend_focus_fragment_uses_stream_token_when_preview_is_missing() {
 
 #[tokio::test]
 async fn frontend_dashboard_requires_operator_token() {
-    let (proxy_addr, proxy_handle, _observed_tokens) = start_mock_proxy(mock_state(
+    let (proxy_addr, proxy_handle, _observed_tokens, _terminated_sessions) = start_mock_proxy(mock_state(
         BootstrapResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: "bootstrap-auth-1".to_owned(),
@@ -282,7 +284,7 @@ async fn frontend_dashboard_requires_operator_token() {
 #[tokio::test]
 async fn frontend_focus_fragment_requires_stream_read_scope() {
     let session_id = Uuid::new_v4().to_string();
-    let (proxy_addr, proxy_handle, _observed_tokens) = start_mock_proxy(mock_state(
+    let (proxy_addr, proxy_handle, _observed_tokens, _terminated_sessions) = start_mock_proxy(mock_state(
         BootstrapResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: "bootstrap-auth-2".to_owned(),
@@ -334,14 +336,155 @@ async fn frontend_focus_fragment_requires_stream_read_scope() {
     let _ = proxy_handle.await;
 }
 
+#[tokio::test]
+async fn frontend_dashboard_shows_kill_button_and_forwards_kill_requests() {
+    let session_id = Uuid::new_v4().to_string();
+    let session_kill_token = honeypot_scope_token("gateway.honeypot.session.kill");
+    let (proxy_addr, proxy_handle, observed_tokens, terminated_sessions) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-kill-1".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "13".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: session_id.clone(),
+                vm_lease_id: Some("lease-kill".to_owned()),
+                state: SessionState::Assigned,
+                last_event_id: "event-kill".to_owned(),
+                last_session_seq: 1,
+                stream_state: StreamState::Pending,
+                stream_preview: None,
+            }],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .proxy_bearer_token(Some(FRONTEND_PROXY_TOKEN.to_owned()))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let dashboard_path = authed_path("/", &session_kill_token);
+    let (status_line, _headers, body) = read_http_response(port, &dashboard_path).await.expect("read dashboard");
+    let body = String::from_utf8(body).expect("decode dashboard html");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("Kill session"));
+    assert!(body.contains(&format!("/session/{session_id}/kill?token=")));
+
+    let kill_path = authed_path(format!("/session/{session_id}/kill").as_str(), &session_kill_token);
+    let (status_line, _headers, body) = send_http_request(port, "POST", &kill_path, None, &[])
+        .await
+        .expect("post kill route");
+    let body = String::from_utf8(body).expect("decode kill response");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("Kill requested"));
+    assert_eq!(
+        terminated_sessions.lock().await.as_slice(),
+        std::slice::from_ref(&session_id)
+    );
+
+    let tokens = observed_tokens.lock().await.clone();
+    assert!(
+        tokens
+            .iter()
+            .any(|token| token == &format!("Bearer {FRONTEND_PROXY_TOKEN}"))
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_kill_route_requires_session_kill_scope() {
+    let session_id = Uuid::new_v4().to_string();
+    let (proxy_addr, proxy_handle, _observed_tokens, terminated_sessions) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-kill-2".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "0".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: session_id.clone(),
+                vm_lease_id: Some("lease-kill-2".to_owned()),
+                state: SessionState::Assigned,
+                last_event_id: "event-kill-2".to_owned(),
+                last_session_seq: 1,
+                stream_state: StreamState::Pending,
+                stream_preview: None,
+            }],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let kill_path = authed_path(
+        format!("/session/{session_id}/kill").as_str(),
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+    );
+    let (status_line, _headers, body) = send_http_request(port, "POST", &kill_path, None, &[])
+        .await
+        .expect("post forbidden kill route");
+    let body = String::from_utf8(body).expect("decode forbidden kill response");
+
+    assert!(status_line.contains("403"), "{status_line}");
+    assert!(body.contains("gateway.honeypot.session.kill"));
+    assert!(terminated_sessions.lock().await.is_empty());
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
 async fn start_mock_proxy(
     state: MockProxyState,
 ) -> (
     std::net::SocketAddr,
     tokio::task::JoinHandle<()>,
     Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<Vec<String>>>,
 ) {
     let observed_tokens = Arc::clone(&state.observed_tokens);
+    let terminated_sessions = Arc::clone(&state.terminated_sessions);
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("bind mock proxy listener");
@@ -351,13 +494,14 @@ async fn start_mock_proxy(
         .route("/jet/honeypot/bootstrap", get(mock_bootstrap))
         .route("/jet/honeypot/events", get(mock_events))
         .route("/jet/honeypot/session/{id}/stream-token", post(mock_stream_token))
+        .route("/jet/session/{id}/terminate", post(mock_terminate))
         .with_state(state);
 
     let handle = tokio::spawn(async move {
         axum::serve(listener, router).await.expect("serve mock proxy");
     });
 
-    (addr, handle, observed_tokens)
+    (addr, handle, observed_tokens, terminated_sessions)
 }
 
 fn mock_state(
@@ -370,6 +514,7 @@ fn mock_state(
         events_body,
         stream_tokens,
         observed_tokens: Arc::new(Mutex::new(Vec::new())),
+        terminated_sessions: Arc::new(Mutex::new(Vec::new())),
     }
 }
 
@@ -407,8 +552,27 @@ async fn mock_stream_token(
     }
 }
 
+async fn mock_terminate(
+    State(state): State<MockProxyState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    record_token(&state, &headers).await;
+    state.terminated_sessions.lock().await.push(session_id);
+    StatusCode::OK
+}
+
 async fn record_token(state: &MockProxyState, headers: &HeaderMap) {
     if let Some(value) = headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()) {
         state.observed_tokens.lock().await.push(value.to_owned());
     }
+}
+
+fn honeypot_scope_token(scope: &str) -> String {
+    let header = BASE64_URL_SAFE_NO_PAD.encode(r#"{"typ":"JWT","alg":"RS256"}"#);
+    let payload = BASE64_URL_SAFE_NO_PAD.encode(format!(
+        r#"{{"type":"scope","jti":"00000000-0000-0000-0000-000000000099","iat":1733669999,"exp":3331553599,"nbf":1733669999,"scope":"{scope}"}}"#
+    ));
+
+    format!("{header}.{payload}.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ")
 }
