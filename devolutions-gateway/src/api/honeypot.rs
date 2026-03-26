@@ -106,11 +106,16 @@ pub(crate) async fn post_stream_token(
         .map_err(HttpError::internal().err())?
         .ok_or_else(|| HttpError::not_found().msg("session not found"))?;
 
-    runtime
-        .issue_stream_token(&session)
-        .await
-        .map(Json)
-        .map_err(map_stream_error)
+    match runtime.issue_stream_token(&session).await {
+        Ok(response) => {
+            let _ = state.sessions.sync_honeypot_metadata(session_id).await;
+            Ok(Json(response))
+        }
+        Err(error) => {
+            let _ = state.sessions.sync_honeypot_metadata(session_id).await;
+            Err(map_stream_error(error))
+        }
+    }
 }
 
 fn map_cursor_error(_: HoneypotCursorError) -> HttpError {

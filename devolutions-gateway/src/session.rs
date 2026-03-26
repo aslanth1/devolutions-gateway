@@ -9,7 +9,8 @@ use anyhow::Context as _;
 use async_trait::async_trait;
 use devolutions_gateway_task::{ShutdownSignal, Task};
 use futures::future::Either;
-use honeypot_contracts::events::KillScope;
+use honeypot_contracts::events::{KillScope, SessionState, StreamState, TerminalOutcome};
+use honeypot_contracts::stream::StreamTransport;
 use tap::prelude::*;
 use time::OffsetDateTime;
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -42,8 +43,112 @@ pub struct SessionInfo {
     #[serde(with = "time::serde::rfc3339")]
     pub start_timestamp: OffsetDateTime,
     pub time_to_live: SessionTtl,
+    #[builder(default, setter(strip_option))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub honeypot: Option<HoneypotSessionMetadata>,
     #[serde(flatten)]
     pub details: ConnectionModeDetails,
+}
+
+impl SessionInfo {
+    fn apply_honeypot_patch(&mut self, patch: HoneypotSessionMetadataPatch) {
+        let honeypot = self.honeypot.get_or_insert_with(HoneypotSessionMetadata::default);
+
+        if let Some(state) = patch.state {
+            honeypot.state = state;
+        }
+
+        if let Some(attacker_source) = patch.attacker_source {
+            honeypot.attacker_source = Some(attacker_source);
+        }
+
+        if let Some(assignment) = patch.assignment {
+            honeypot.assignment = Some(assignment);
+        }
+
+        if let Some(stream) = patch.stream {
+            honeypot.stream = Some(stream);
+        }
+
+        if let Some(terminal) = patch.terminal {
+            honeypot.terminal = Some(terminal);
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct HoneypotSessionMetadata {
+    pub state: SessionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attacker_source: Option<HoneypotAttackerSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assignment: Option<HoneypotVmAssignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream: Option<HoneypotStreamMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<HoneypotTerminalMetadata>,
+}
+
+impl Default for HoneypotSessionMetadata {
+    fn default() -> Self {
+        Self {
+            state: SessionState::WaitingForLease,
+            attacker_source: None,
+            assignment: None,
+            stream: None,
+            terminal: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct HoneypotAttackerSource {
+    pub attacker_addr: String,
+    pub listener_id: String,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct HoneypotVmAssignment {
+    pub vm_lease_id: String,
+    pub vm_name: String,
+    pub guest_rdp_addr: String,
+    pub attestation_ref: String,
+    pub backend_credential_ref: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct HoneypotStreamMetadata {
+    pub state: StreamState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transport: Option<StreamTransport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_endpoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_expires_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+pub struct HoneypotTerminalMetadata {
+    pub outcome: TerminalOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disconnect_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kill_scope: Option<KillScope>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub killed_by_operator_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kill_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HoneypotSessionMetadataPatch {
+    pub state: Option<SessionState>,
+    pub attacker_source: Option<HoneypotAttackerSource>,
+    pub assignment: Option<HoneypotVmAssignment>,
+    pub stream: Option<HoneypotStreamMetadata>,
+    pub terminal: Option<HoneypotTerminalMetadata>,
 }
 
 #[instrument(skip_all)]
@@ -78,6 +183,7 @@ pub async fn add_session_in_progress(
     }
 
     if let Err(error) = sessions.honeypot().record_session_started(&honeypot_session).await {
+        let _ = sessions.sync_honeypot_metadata(association_id).await;
         let _ = sessions.remove_session(association_id).await;
 
         let message = subscriber::Message::session_ended(subscriber::SubscriberSessionInfo {
@@ -92,6 +198,8 @@ pub async fn add_session_in_progress(
         return Err(error).context("couldn't initialize honeypot session state");
     }
 
+    let _ = sessions.sync_honeypot_metadata(association_id).await;
+
     Ok(())
 }
 
@@ -101,19 +209,42 @@ pub async fn remove_session_in_progress(
     subscriber_tx: &subscriber::SubscriberSender,
     id: Uuid,
 ) -> anyhow::Result<()> {
+    let kill = sessions
+        .get_disconnected_info(id)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|info| info.kill);
+
+    let terminal_patch = HoneypotSessionMetadataPatch {
+        state: Some(if kill.is_some() {
+            SessionState::Killed
+        } else {
+            SessionState::Ended
+        }),
+        terminal: Some(HoneypotTerminalMetadata {
+            outcome: if kill.is_some() {
+                TerminalOutcome::Killed
+            } else {
+                TerminalOutcome::Disconnected
+            },
+            disconnect_reason: Some("proxy_forwarding_ended".to_owned()),
+            kill_scope: kill.map(|kill| kill.scope),
+            killed_by_operator_id: kill
+                .and_then(|kill| kill.operator_id)
+                .map(|operator_id| operator_id.to_string()),
+            kill_reason: kill.map(|kill| kill.reason.as_reason_code().to_owned()),
+        }),
+        ..Default::default()
+    };
+    let _ = sessions.update_honeypot_metadata(id, terminal_patch).await;
+
     let removed_session = sessions
         .remove_session(id)
         .await
         .context("couldn't remove running session")?;
 
     if let Some(session) = removed_session {
-        let kill = sessions
-            .get_disconnected_info(id)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|info| info.kill);
-
         let message = subscriber::Message::session_ended(subscriber::SubscriberSessionInfo {
             association_id: id,
             start_timestamp: session.start_timestamp,
@@ -252,6 +383,11 @@ enum SessionManagerMessage {
         id: Uuid,
         channel: oneshot::Sender<Option<DisconnectedInfo>>,
     },
+    UpdateHoneypot {
+        id: Uuid,
+        patch: HoneypotSessionMetadataPatch,
+        channel: oneshot::Sender<bool>,
+    },
     GetRunning {
         channel: oneshot::Sender<RunningSessions>,
     },
@@ -287,6 +423,11 @@ impl fmt::Debug for SessionManagerMessage {
             SessionManagerMessage::GetDisconnectedInfo { id, channel: _ } => f
                 .debug_struct("GetDisconnectedInfo")
                 .field("id", id)
+                .finish_non_exhaustive(),
+            SessionManagerMessage::UpdateHoneypot { id, patch, channel: _ } => f
+                .debug_struct("UpdateHoneypot")
+                .field("id", id)
+                .field("patch", patch)
                 .finish_non_exhaustive(),
             SessionManagerMessage::GetRunning { channel: _ } => f.debug_struct("GetRunning").finish_non_exhaustive(),
             SessionManagerMessage::GetCount { channel: _ } => f.debug_struct("GetCount").finish_non_exhaustive(),
@@ -375,6 +516,28 @@ impl SessionMessageSender {
             .ok()
             .context("couldn't send GetDisconnectedInfo message")?;
         rx.await.context("couldn't receive disconnected info for session")
+    }
+
+    pub async fn update_honeypot_metadata(
+        &self,
+        id: Uuid,
+        patch: HoneypotSessionMetadataPatch,
+    ) -> anyhow::Result<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.tx
+            .send(SessionManagerMessage::UpdateHoneypot { id, patch, channel: tx })
+            .await
+            .ok()
+            .context("couldn't send UpdateHoneypot message")?;
+        rx.await.context("couldn't receive honeypot session update result")
+    }
+
+    pub async fn sync_honeypot_metadata(&self, id: Uuid) -> anyhow::Result<bool> {
+        let Some(patch) = self.honeypot.session_metadata_patch(id) else {
+            return Ok(false);
+        };
+
+        self.update_honeypot_metadata(id, patch).await
     }
 
     pub async fn get_running_sessions(&self) -> anyhow::Result<RunningSessions> {
@@ -534,6 +697,15 @@ impl SessionManagerTask {
         self.disconnected_info.get(&id).copied()
     }
 
+    fn handle_update_honeypot(&mut self, id: Uuid, patch: HoneypotSessionMetadataPatch) -> bool {
+        let Some(session) = self.all_running.get_mut(&id) else {
+            return false;
+        };
+
+        session.apply_honeypot_patch(patch);
+        true
+    }
+
     /// Try to insert disconnected info. Nothing will happen in the info are already inserted.
     fn update_disconnected_info(&mut self, id: Uuid, interest: DisconnectInterest, kill: Option<SessionKillMetadata>) {
         self.disconnected_info
@@ -670,6 +842,10 @@ async fn session_manager_task(
                         let disconnected_info = manager.handle_get_disconnected_info(id);
                         let _ = channel.send(disconnected_info);
                     }
+                    SessionManagerMessage::UpdateHoneypot { id, patch, channel } => {
+                        let updated = manager.handle_update_honeypot(id, patch);
+                        let _ = channel.send(updated);
+                    }
                     SessionManagerMessage::GetRunning { channel } => {
                         let _ = channel.send(manager.all_running.clone());
                     }
@@ -794,5 +970,113 @@ impl Task for EnsureRecordingPolicyTask {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recording::recording_message_channel;
+    use crate::token::{ApplicationProtocol, Protocol, RecordingPolicy};
+
+    fn test_session() -> SessionInfo {
+        SessionInfo::builder()
+            .id(Uuid::new_v4())
+            .application_protocol(ApplicationProtocol::Known(Protocol::Rdp))
+            .recording_policy(RecordingPolicy::None)
+            .time_to_live(SessionTtl::Unlimited)
+            .details(ConnectionModeDetails::Rdv)
+            .build()
+    }
+
+    fn test_manager() -> SessionManagerTask {
+        let (recording_manager_handle, _recording_manager_rx) = recording_message_channel();
+        let (tx, rx) = session_manager_channel(crate::honeypot::HoneypotMode::Disabled);
+        SessionManagerTask::new(tx, rx, recording_manager_handle)
+    }
+
+    #[test]
+    fn session_manager_updates_running_honeypot_metadata() {
+        let mut manager = test_manager();
+        let session = test_session();
+
+        manager.handle_new(session.clone(), Arc::new(Notify::new()), None);
+
+        let updated = manager.handle_update_honeypot(
+            session.id,
+            HoneypotSessionMetadataPatch {
+                state: Some(SessionState::Assigned),
+                attacker_source: Some(HoneypotAttackerSource {
+                    attacker_addr: "127.0.0.1:3389".to_owned(),
+                    listener_id: "gateway".to_owned(),
+                }),
+                assignment: Some(HoneypotVmAssignment {
+                    vm_lease_id: "lease-1".to_owned(),
+                    vm_name: "honeypot-1".to_owned(),
+                    guest_rdp_addr: "10.0.0.10:3389".to_owned(),
+                    attestation_ref: "attestation:test".to_owned(),
+                    backend_credential_ref: Some("backend-ref".to_owned()),
+                }),
+                ..Default::default()
+            },
+        );
+
+        assert!(updated);
+
+        let info = manager
+            .handle_get_info(session.id)
+            .expect("running session should exist");
+        let honeypot = info.honeypot.expect("honeypot metadata should be set");
+
+        assert_eq!(honeypot.state, SessionState::Assigned);
+        assert_eq!(
+            honeypot
+                .attacker_source
+                .as_ref()
+                .map(|source| source.attacker_addr.as_str()),
+            Some("127.0.0.1:3389")
+        );
+        assert_eq!(
+            honeypot
+                .assignment
+                .as_ref()
+                .map(|assignment| assignment.vm_lease_id.as_str()),
+            Some("lease-1")
+        );
+    }
+
+    #[test]
+    fn session_manager_remove_returns_terminal_honeypot_metadata() {
+        let mut manager = test_manager();
+        let session = test_session();
+
+        manager.handle_new(session.clone(), Arc::new(Notify::new()), None);
+        assert!(manager.handle_update_honeypot(
+            session.id,
+            HoneypotSessionMetadataPatch {
+                state: Some(SessionState::Killed),
+                terminal: Some(HoneypotTerminalMetadata {
+                    outcome: TerminalOutcome::Killed,
+                    disconnect_reason: None,
+                    kill_scope: Some(KillScope::System),
+                    killed_by_operator_id: Some(Uuid::nil().to_string()),
+                    kill_reason: Some("operator_requested".to_owned()),
+                }),
+                ..Default::default()
+            },
+        ));
+
+        let removed = manager.handle_remove(session.id).expect("removed session should exist");
+        let honeypot = removed.honeypot.expect("honeypot metadata should survive removal");
+
+        assert_eq!(honeypot.state, SessionState::Killed);
+        assert_eq!(
+            honeypot.terminal.as_ref().map(|terminal| terminal.outcome),
+            Some(TerminalOutcome::Killed)
+        );
+        assert_eq!(
+            honeypot.terminal.as_ref().and_then(|terminal| terminal.kill_scope),
+            Some(KillScope::System)
+        );
     }
 }

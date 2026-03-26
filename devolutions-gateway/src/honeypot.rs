@@ -24,7 +24,10 @@ use crate::config::{
     HoneypotStreamConf, HoneypotStreamSourceKind,
 };
 use crate::credential::{AppCredentialMapping, CredentialBinding, CredentialProvisionRequest, CredentialStoreHandle};
-use crate::session::{RunningSessions, SessionInfo, SessionKillMetadata};
+use crate::session::{
+    HoneypotAttackerSource, HoneypotSessionMetadataPatch, HoneypotStreamMetadata, HoneypotTerminalMetadata,
+    HoneypotVmAssignment, RunningSessions, SessionInfo, SessionKillMetadata,
+};
 use crate::token::{ApplicationProtocol, Protocol, SessionTtl};
 
 const HONEYPOT_EVENT_BUFFER_CAPACITY: usize = 256;
@@ -119,6 +122,11 @@ impl HoneypotMode {
             runtime.activate_system_kill();
         }
     }
+
+    pub fn session_metadata_patch(&self, session_id: uuid::Uuid) -> Option<HoneypotSessionMetadataPatch> {
+        self.runtime()
+            .and_then(|runtime| runtime.session_metadata_patch(session_id))
+    }
 }
 
 #[derive(Clone)]
@@ -204,6 +212,10 @@ impl HoneypotRuntime {
         cursor: &str,
     ) -> Result<(Vec<EventEnvelope>, broadcast::Receiver<EventEnvelope>), HoneypotCursorError> {
         self.events.lock().subscribe_from_cursor(cursor)
+    }
+
+    pub fn session_metadata_patch(&self, session_id: uuid::Uuid) -> Option<HoneypotSessionMetadataPatch> {
+        self.events.lock().session_metadata_patch(&session_id.to_string())
     }
 
     pub async fn prepare_rdp_session(
@@ -700,24 +712,191 @@ impl HoneypotEventJournal {
             .unwrap_or_else(|| "0".to_owned())
     }
 
+    fn session_metadata_patch(&self, session_id: &str) -> Option<HoneypotSessionMetadataPatch> {
+        let binding = self.session_bindings.get(session_id);
+        let session_events = self
+            .events
+            .iter()
+            .filter(|event| event.session_id.as_deref() == Some(session_id))
+            .collect::<Vec<_>>();
+
+        if binding.is_none() && session_events.is_empty() {
+            return None;
+        }
+
+        let mut patch = HoneypotSessionMetadataPatch {
+            state: Some(if binding.is_some() {
+                SessionState::Assigned
+            } else {
+                SessionState::WaitingForLease
+            }),
+            ..Default::default()
+        };
+
+        for event in session_events {
+            match &event.payload {
+                EventPayload::SessionStarted {
+                    attacker_addr,
+                    listener_id,
+                    session_state,
+                    ..
+                } => {
+                    patch.state = Some(*session_state);
+                    patch.attacker_source = Some(HoneypotAttackerSource {
+                        attacker_addr: attacker_addr.clone(),
+                        listener_id: listener_id.clone(),
+                    });
+                }
+                EventPayload::SessionAssigned {
+                    vm_name,
+                    guest_rdp_addr,
+                    attestation_ref,
+                    ..
+                } => {
+                    patch.state = Some(SessionState::Assigned);
+                    patch.assignment = event.vm_lease_id.clone().map(|vm_lease_id| HoneypotVmAssignment {
+                        vm_lease_id,
+                        vm_name: vm_name.clone(),
+                        guest_rdp_addr: guest_rdp_addr.clone(),
+                        attestation_ref: attestation_ref.clone(),
+                        backend_credential_ref: None,
+                    });
+                }
+                EventPayload::SessionStreamReady {
+                    transport,
+                    stream_endpoint,
+                    token_expires_at,
+                    stream_state,
+                    ..
+                } => {
+                    patch.state = Some(SessionState::StreamReady);
+                    patch.stream = Some(HoneypotStreamMetadata {
+                        state: *stream_state,
+                        stream_id: event.stream_id.clone(),
+                        transport: Some(*transport),
+                        stream_endpoint: Some(stream_endpoint.clone()),
+                        token_expires_at: Some(token_expires_at.clone()),
+                    });
+                }
+                EventPayload::SessionEnded {
+                    terminal_outcome,
+                    disconnect_reason,
+                    ..
+                } => {
+                    patch.state = Some(SessionState::Ended);
+                    patch.terminal = Some(HoneypotTerminalMetadata {
+                        outcome: *terminal_outcome,
+                        disconnect_reason: Some(disconnect_reason.clone()),
+                        kill_scope: None,
+                        killed_by_operator_id: None,
+                        kill_reason: None,
+                    });
+                }
+                EventPayload::SessionKilled {
+                    kill_scope,
+                    killed_by_operator_id,
+                    kill_reason,
+                    ..
+                } => {
+                    patch.state = Some(SessionState::Killed);
+                    patch.terminal = Some(HoneypotTerminalMetadata {
+                        outcome: TerminalOutcome::Killed,
+                        disconnect_reason: None,
+                        kill_scope: Some(*kill_scope),
+                        killed_by_operator_id: Some(killed_by_operator_id.clone()),
+                        kill_reason: Some(kill_reason.clone()),
+                    });
+                }
+                EventPayload::SessionRecycleRequested { .. } => {
+                    patch.state = Some(SessionState::RecycleRequested);
+                }
+                EventPayload::SessionStreamFailed { stream_state, .. } => {
+                    let mut stream = patch.stream.take().unwrap_or(HoneypotStreamMetadata {
+                        state: *stream_state,
+                        stream_id: None,
+                        transport: None,
+                        stream_endpoint: None,
+                        token_expires_at: None,
+                    });
+                    stream.state = *stream_state;
+                    patch.stream = Some(stream);
+                }
+                EventPayload::HostRecycled { .. } | EventPayload::ProxyStatusDegraded { .. } => {}
+            }
+        }
+
+        if let Some(binding) = binding {
+            patch.attacker_source = Some(HoneypotAttackerSource {
+                attacker_addr: binding.attacker_addr.clone(),
+                listener_id: "gateway".to_owned(),
+            });
+            patch.assignment = Some(HoneypotVmAssignment {
+                vm_lease_id: binding.vm_lease_id.clone(),
+                vm_name: binding.vm_name.clone(),
+                guest_rdp_addr: format!("{}:{}", binding.guest_rdp_addr, binding.guest_rdp_port),
+                attestation_ref: binding.attestation_ref.clone(),
+                backend_credential_ref: Some(binding.backend_credential_ref.clone()),
+            });
+
+            if let Some(stream) = &binding.stream {
+                let mut metadata = patch.stream.take().unwrap_or(HoneypotStreamMetadata {
+                    state: StreamState::Ready,
+                    stream_id: None,
+                    transport: None,
+                    stream_endpoint: None,
+                    token_expires_at: None,
+                });
+                metadata.stream_id = Some(stream.stream_id.clone());
+                metadata.stream_endpoint = Some(stream.stream_endpoint.clone());
+                metadata.token_expires_at = Some(stream.token_expires_at.clone());
+                patch.stream = Some(metadata);
+            }
+        }
+
+        Some(patch)
+    }
+
     fn bootstrap_session(&self, session: &SessionInfo) -> BootstrapSession {
         let session_id = session.id.to_string();
         let latest = self.latest_event_for_session(&session_id);
         let binding = self.session_bindings.get(&session_id);
+        let metadata = session.honeypot.as_ref();
 
-        let mut vm_lease_id = binding.map(|binding| binding.vm_lease_id.clone());
-        let mut state = if vm_lease_id.is_some() {
-            SessionState::Assigned
-        } else {
-            SessionState::WaitingForLease
-        };
+        let mut vm_lease_id = metadata
+            .and_then(|metadata| {
+                metadata
+                    .assignment
+                    .as_ref()
+                    .map(|assignment| assignment.vm_lease_id.clone())
+            })
+            .or_else(|| binding.map(|binding| binding.vm_lease_id.clone()));
+        let mut state = metadata.map(|metadata| metadata.state).unwrap_or_else(|| {
+            if vm_lease_id.is_some() {
+                SessionState::Assigned
+            } else {
+                SessionState::WaitingForLease
+            }
+        });
         let mut last_event_id = format!("bootstrap:{}", session.id);
         let mut last_session_seq = 0;
-        let mut stream_state = StreamState::Pending;
-        let mut stream_preview = None;
+        let mut stream_state = metadata
+            .and_then(|metadata| metadata.stream.as_ref().map(|stream| stream.state))
+            .unwrap_or(StreamState::Pending);
+        let mut stream_preview = metadata
+            .and_then(|metadata| metadata.stream.as_ref())
+            .and_then(|stream| {
+                Some(StreamPreview {
+                    stream_id: stream.stream_id.clone()?,
+                    transport: stream.transport?,
+                    stream_endpoint: stream.stream_endpoint.clone()?,
+                    token_expires_at: stream.token_expires_at.clone()?,
+                })
+            });
 
         if let Some(event) = latest {
-            vm_lease_id = event.vm_lease_id.clone();
+            if vm_lease_id.is_none() {
+                vm_lease_id = event.vm_lease_id.clone();
+            }
             last_event_id = event.event_id.clone();
             last_session_seq = event.session_seq;
 
@@ -725,8 +904,8 @@ impl HoneypotEventJournal {
                 EventPayload::SessionStarted {
                     session_state: event_state,
                     ..
-                } => state = *event_state,
-                EventPayload::SessionAssigned { .. } => state = SessionState::Assigned,
+                } if metadata.is_none() => state = *event_state,
+                EventPayload::SessionAssigned { .. } if metadata.is_none() => state = SessionState::Assigned,
                 EventPayload::SessionStreamReady {
                     transport,
                     stream_endpoint,
@@ -734,9 +913,15 @@ impl HoneypotEventJournal {
                     stream_state: ready_state,
                     ..
                 } => {
-                    state = SessionState::StreamReady;
-                    stream_state = *ready_state;
-                    if let Some(stream_id) = event.stream_id.clone() {
+                    if metadata.is_none() {
+                        state = SessionState::StreamReady;
+                    }
+                    stream_state = metadata
+                        .and_then(|metadata| metadata.stream.as_ref().map(|stream| stream.state))
+                        .unwrap_or(*ready_state);
+                    if stream_preview.is_none()
+                        && let Some(stream_id) = event.stream_id.clone()
+                    {
                         stream_preview = Some(StreamPreview {
                             stream_id,
                             transport: *transport,
@@ -745,16 +930,25 @@ impl HoneypotEventJournal {
                         });
                     }
                 }
-                EventPayload::SessionEnded { .. } => state = SessionState::Ended,
-                EventPayload::SessionKilled { .. } => state = SessionState::Killed,
-                EventPayload::SessionRecycleRequested { .. } => state = SessionState::RecycleRequested,
+                EventPayload::SessionEnded { .. } if metadata.is_none() => state = SessionState::Ended,
+                EventPayload::SessionKilled { .. } if metadata.is_none() => state = SessionState::Killed,
+                EventPayload::SessionRecycleRequested { .. } if metadata.is_none() => {
+                    state = SessionState::RecycleRequested
+                }
                 EventPayload::SessionStreamFailed {
                     stream_state: failed_state,
                     ..
                 } => {
-                    stream_state = *failed_state;
+                    stream_state = metadata
+                        .and_then(|metadata| metadata.stream.as_ref().map(|stream| stream.state))
+                        .unwrap_or(*failed_state);
                 }
                 EventPayload::HostRecycled { .. } | EventPayload::ProxyStatusDegraded { .. } => {}
+                EventPayload::SessionStarted { .. }
+                | EventPayload::SessionAssigned { .. }
+                | EventPayload::SessionEnded { .. }
+                | EventPayload::SessionKilled { .. }
+                | EventPayload::SessionRecycleRequested { .. } => {}
             }
         }
 
@@ -1304,6 +1498,7 @@ mod tests {
         ServiceState, StreamEndpointRequest, StreamEndpointResponse,
     };
     use honeypot_contracts::events::{EventPayload, SessionState, StreamState};
+    use honeypot_contracts::stream::StreamTransport;
     use parking_lot::Mutex;
     use tokio::net::TcpListener;
     use tokio::sync::broadcast;
@@ -1318,7 +1513,10 @@ mod tests {
         HoneypotStreamConf,
     };
     use crate::credential::{AppCredential, AppCredentialMapping, CredentialStoreHandle, Password};
-    use crate::session::{ConnectionModeDetails, SessionInfo, SessionKillMetadata, SessionKillReason};
+    use crate::session::{
+        ConnectionModeDetails, HoneypotSessionMetadata, HoneypotStreamMetadata, HoneypotVmAssignment, SessionInfo,
+        SessionKillMetadata, SessionKillReason,
+    };
     use crate::token::{ApplicationProtocol, Protocol, RecordingPolicy, SessionTtl};
 
     const TEST_CONTROL_PLANE_SERVICE_TOKEN: &str = "test-control-plane-service-token";
@@ -1465,14 +1663,30 @@ mod tests {
             .await
             .expect("issue stream token");
 
+        let session = SessionInfo {
+            honeypot: harness.runtime.session_metadata_patch(session.id).map(|patch| {
+                let mut metadata = HoneypotSessionMetadata::default();
+                if let Some(state) = patch.state {
+                    metadata.state = state;
+                }
+                metadata.attacker_source = patch.attacker_source;
+                metadata.assignment = patch.assignment;
+                metadata.stream = patch.stream;
+                metadata.terminal = patch.terminal;
+                metadata
+            }),
+            ..session
+        };
+
+        let session_id = session.id;
         let mut sessions = HashMap::new();
-        sessions.insert(session.id, session.clone());
+        sessions.insert(session_id, session);
 
         let bootstrap = harness.runtime.bootstrap_response(sessions);
 
         assert_eq!(bootstrap.replay_cursor, "3");
         assert_eq!(bootstrap.sessions.len(), 1);
-        assert_eq!(bootstrap.sessions[0].session_id, session.id.to_string());
+        assert_eq!(bootstrap.sessions[0].session_id, session_id.to_string());
         assert_eq!(
             bootstrap.sessions[0].vm_lease_id.as_deref(),
             Some(token.vm_lease_id.as_str())
@@ -1488,6 +1702,108 @@ mod tests {
         );
 
         harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn session_metadata_patch_reflects_assignment_and_stream_state() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+
+        let assigned = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("assigned session metadata patch");
+        assert_eq!(assigned.state, Some(SessionState::Assigned));
+        assert_eq!(
+            assigned
+                .assignment
+                .as_ref()
+                .map(|assignment| assignment.vm_lease_id.as_str()),
+            Some(format!("lease-{}", session.id).as_str())
+        );
+        assert_eq!(
+            assigned
+                .attacker_source
+                .as_ref()
+                .map(|source| source.listener_id.as_str()),
+            Some("gateway")
+        );
+
+        let token = harness
+            .runtime
+            .issue_stream_token(&session)
+            .await
+            .expect("issue stream token");
+
+        let streamed = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("stream-ready session metadata patch");
+        assert_eq!(streamed.state, Some(SessionState::StreamReady));
+        assert_eq!(
+            streamed.stream.as_ref().map(|stream| stream.state),
+            Some(StreamState::Ready)
+        );
+        assert_eq!(
+            streamed.stream.as_ref().and_then(|stream| stream.stream_id.as_deref()),
+            Some(token.stream_id.as_str())
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[test]
+    fn bootstrap_response_uses_canonical_session_metadata() {
+        let runtime = test_runtime_without_control_plane();
+        let session = SessionInfo::builder()
+            .id(Uuid::new_v4())
+            .application_protocol(ApplicationProtocol::Known(Protocol::Rdp))
+            .recording_policy(RecordingPolicy::None)
+            .time_to_live(SessionTtl::Unlimited)
+            .honeypot(HoneypotSessionMetadata {
+                state: SessionState::StreamReady,
+                attacker_source: None,
+                assignment: Some(HoneypotVmAssignment {
+                    vm_lease_id: "lease-bootstrap".to_owned(),
+                    vm_name: "honeypot-bootstrap".to_owned(),
+                    guest_rdp_addr: "127.0.0.1:3389".to_owned(),
+                    attestation_ref: "attestation:bootstrap".to_owned(),
+                    backend_credential_ref: Some("backend-ref".to_owned()),
+                }),
+                stream: Some(HoneypotStreamMetadata {
+                    state: StreamState::Ready,
+                    stream_id: Some("stream-bootstrap".to_owned()),
+                    transport: Some(StreamTransport::Sse),
+                    stream_endpoint: Some("https://streams.example/bootstrap".to_owned()),
+                    token_expires_at: Some("2030-01-01T00:00:00Z".to_owned()),
+                }),
+                terminal: None,
+            })
+            .details(ConnectionModeDetails::Rdv)
+            .build();
+
+        let mut sessions = HashMap::new();
+        sessions.insert(session.id, session);
+
+        let bootstrap = runtime.bootstrap_response(sessions);
+
+        assert_eq!(bootstrap.sessions.len(), 1);
+        assert_eq!(bootstrap.sessions[0].state, SessionState::StreamReady);
+        assert_eq!(bootstrap.sessions[0].vm_lease_id.as_deref(), Some("lease-bootstrap"));
+        assert_eq!(bootstrap.sessions[0].stream_state, StreamState::Ready);
+        assert_eq!(
+            bootstrap.sessions[0]
+                .stream_preview
+                .as_ref()
+                .map(|preview| preview.stream_id.as_str()),
+            Some("stream-bootstrap")
+        );
     }
 
     #[tokio::test]

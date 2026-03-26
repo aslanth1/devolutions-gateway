@@ -440,7 +440,7 @@ Pass when: the attacker can authenticate through the proxy while the VM only rec
 - [x] Add immediate session-bound credential revocation on disconnect, kill, and recycle in addition to TTL cleanup.
 Pass when: `/jet/preflight` mappings are removed deterministically before the periodic credential-store cleanup window.
 
-- [ ] Extend `devolutions-gateway/src/session.rs` with honeypot metadata for attacker source, assigned VM, stream metadata, and terminal outcome.
+- [x] Extend `devolutions-gateway/src/session.rs` with honeypot metadata for attacker source, assigned VM, stream metadata, and terminal outcome.
 Pass when: the proxy-visible session model can distinguish disconnect, kill, recycle, assignment, and stream readiness without scraping logs.
 
 - [ ] Extend the session state machine to include honeypot-specific lifecycle states.

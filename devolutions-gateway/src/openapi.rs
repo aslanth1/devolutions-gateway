@@ -5,6 +5,8 @@ use uuid::Uuid;
 
 use crate::api::preflight::PreflightAlertStatus;
 use crate::config::dto::{DataEncoding, PubKeyFormat, Subscriber};
+use honeypot_contracts::events::{KillScope, SessionState, StreamState, TerminalOutcome};
+use honeypot_contracts::stream::StreamTransport;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -98,10 +100,59 @@ struct SessionInfo {
     /// Maximum session duration in minutes (0 is used for the infinite duration)
     // NOTE: Optional purely for client code generation (this field didn't always exist)
     time_to_live: Option<u64>,
+    /// Honeypot-only metadata for the current session state.
+    honeypot: Option<HoneypotSessionInfo>,
     /// Jet Connection Mode
     connection_mode: ConnectionMode,
     /// Destination Host
     destination_host: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+struct HoneypotSessionInfo {
+    state: SessionState,
+    attacker_source: Option<HoneypotAttackerSource>,
+    assignment: Option<HoneypotAssignment>,
+    stream: Option<HoneypotStream>,
+    terminal: Option<HoneypotTerminal>,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+struct HoneypotAttackerSource {
+    attacker_addr: String,
+    listener_id: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+struct HoneypotAssignment {
+    vm_lease_id: String,
+    vm_name: String,
+    guest_rdp_addr: String,
+    attestation_ref: String,
+    backend_credential_ref: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+struct HoneypotStream {
+    state: StreamState,
+    stream_id: Option<String>,
+    transport: Option<StreamTransport>,
+    stream_endpoint: Option<String>,
+    token_expires_at: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+struct HoneypotTerminal {
+    outcome: TerminalOutcome,
+    disconnect_reason: Option<String>,
+    kill_scope: Option<KillScope>,
+    killed_by_operator_id: Option<String>,
+    kill_reason: Option<String>,
 }
 
 #[allow(unused)]
