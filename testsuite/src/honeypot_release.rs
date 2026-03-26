@@ -33,6 +33,7 @@ const CONTROL_PLANE_QUARANTINE_STORE: &str = "/var/lib/honeypot/quarantine";
 const CONTROL_PLANE_QMP_DIR: &str = "/run/honeypot/qmp";
 const CONTROL_PLANE_QGA_DIR: &str = "/run/honeypot/qga";
 const CONTROL_PLANE_SECRET_DIR: &str = "/run/secrets/honeypot/control-plane";
+const CONTROL_PLANE_BACKEND_CREDENTIALS_FILE: &str = "/run/secrets/honeypot/control-plane/backend-credentials.json";
 const CONTROL_PLANE_PROXY_VERIFIER_PUBLIC_KEY_FILE: &str =
     "/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem";
 const CONTROL_PLANE_KVM_PATH: &str = "/dev/kvm";
@@ -585,6 +586,17 @@ fn validate_honeypot_control_plane_config(config: &ControlPlaneConfig) -> anyhow
         config.auth.proxy_verifier_public_key_pem_file.as_deref()
             == Some(Path::new(CONTROL_PLANE_PROXY_VERIFIER_PUBLIC_KEY_FILE)),
         "control-plane proxy verifier public key file must be {CONTROL_PLANE_PROXY_VERIFIER_PUBLIC_KEY_FILE}",
+    );
+    anyhow::ensure!(
+        matches!(
+            config.backend_credentials.adapter,
+            honeypot_control_plane::config::BackendCredentialStoreAdapter::File
+        ),
+        "control-plane backend credential adapter must stay on file",
+    );
+    anyhow::ensure!(
+        config.backend_credentials.file_path(&config.paths) == Path::new(CONTROL_PLANE_BACKEND_CREDENTIALS_FILE),
+        "control-plane backend credential file must be {CONTROL_PLANE_BACKEND_CREDENTIALS_FILE}",
     );
 
     Ok(())

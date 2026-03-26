@@ -12,6 +12,7 @@ use honeypot_contracts::control_plane::{
 use honeypot_contracts::error::ErrorCode;
 use serde::{Deserialize, Serialize};
 
+use crate::backend_credentials::{BackendCredentialResolveError, BackendCredentialStore};
 use crate::config::{ControlPlaneConfig, PathConfig};
 use crate::image::{trusted_images, validate_trusted_image_identity};
 use crate::qemu::QemuLaunchPlan;
@@ -29,7 +30,10 @@ pub(crate) struct LeaseRegistry {
 }
 
 impl LeaseRegistry {
-    pub(crate) fn load(config: &ControlPlaneConfig) -> anyhow::Result<Self> {
+    pub(crate) fn load(
+        config: &ControlPlaneConfig,
+        backend_credentials: &dyn BackendCredentialStore,
+    ) -> anyhow::Result<Self> {
         let mut leases = HashMap::new();
         let mut next_lease_sequence = 1;
 
@@ -37,7 +41,7 @@ impl LeaseRegistry {
             let snapshot = read_snapshot(&snapshot_path)?;
             next_lease_sequence = next_lease_sequence.max(parse_lease_sequence(&snapshot.vm_lease_id) + 1);
 
-            if let Some(snapshot) = reconcile_loaded_snapshot(config, snapshot)? {
+            if let Some(snapshot) = reconcile_loaded_snapshot(config, backend_credentials, snapshot)? {
                 leases.insert(snapshot.vm_lease_id.clone(), snapshot);
             }
         }
@@ -53,6 +57,7 @@ impl LeaseRegistry {
     pub(crate) fn acquire(
         &mut self,
         config: &ControlPlaneConfig,
+        backend_credentials: &dyn BackendCredentialStore,
         request: &AcquireVmRequest,
     ) -> Result<AcquireVmResponse, LeaseError> {
         request
@@ -61,6 +66,9 @@ impl LeaseRegistry {
         if request.requested_pool.trim().is_empty() {
             return Err(LeaseError::invalid_request("requested_pool must not be empty"));
         }
+        let _backend_credential = backend_credentials
+            .resolve(&request.backend_credential_ref)
+            .map_err(LeaseError::from_backend_credential_resolve)?;
 
         if self.leases.values().any(|lease| lease.session_id == request.session_id) {
             return Err(LeaseError::lease_conflict(format!(
@@ -191,6 +199,7 @@ impl LeaseRegistry {
     pub(crate) fn reset(
         &mut self,
         config: &ControlPlaneConfig,
+        backend_credentials: &dyn BackendCredentialStore,
         vm_lease_id: &str,
         request: &ResetVmRequest,
     ) -> Result<ResetVmResponse, LeaseError> {
@@ -206,6 +215,9 @@ impl LeaseRegistry {
             snapshot.lease_state = LeaseState::Quarantined;
             let _ = stop_vm(config, &snapshot.launch_plan);
             snapshot.runtime_state = LeaseRuntimeState::Stopped;
+            backend_credentials
+                .revoke(&snapshot.backend_credential_ref)
+                .map_err(LeaseError::host_unavailable)?;
             move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
 
             return Ok(ResetVmResponse {
@@ -234,6 +246,7 @@ impl LeaseRegistry {
     pub(crate) fn recycle(
         &mut self,
         config: &ControlPlaneConfig,
+        backend_credentials: &dyn BackendCredentialStore,
         vm_lease_id: &str,
         request: &RecycleVmRequest,
     ) -> Result<RecycleVmResponse, LeaseError> {
@@ -249,6 +262,9 @@ impl LeaseRegistry {
             snapshot.lease_state = LeaseState::Quarantined;
             let _ = stop_vm(config, &snapshot.launch_plan);
             snapshot.runtime_state = LeaseRuntimeState::Stopped;
+            backend_credentials
+                .revoke(&snapshot.backend_credential_ref)
+                .map_err(LeaseError::host_unavailable)?;
             move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
 
             return Ok(RecycleVmResponse {
@@ -286,6 +302,9 @@ impl LeaseRegistry {
             let mut snapshot = snapshot;
             snapshot.lease_state = LeaseState::Quarantined;
             snapshot.runtime_state = LeaseRuntimeState::Stopped;
+            backend_credentials
+                .revoke(&snapshot.backend_credential_ref)
+                .map_err(LeaseError::host_unavailable)?;
             move_snapshot_to_quarantine(&config.paths, &snapshot).map_err(LeaseError::host_unavailable)?;
 
             return Ok(RecycleVmResponse {
@@ -298,6 +317,9 @@ impl LeaseRegistry {
             });
         }
 
+        backend_credentials
+            .revoke(&snapshot.backend_credential_ref)
+            .map_err(LeaseError::host_unavailable)?;
         remove_active_snapshot(&config.paths, &snapshot.vm_lease_id).map_err(LeaseError::host_unavailable)?;
 
         Ok(RecycleVmResponse {
@@ -479,6 +501,17 @@ fn default_pool_name() -> String {
 }
 
 impl LeaseError {
+    fn from_backend_credential_resolve(error: BackendCredentialResolveError) -> Self {
+        match error {
+            BackendCredentialResolveError::MissingReference { backend_credential_ref } => {
+                Self::invalid_request(format!(
+                    "backend credential ref {backend_credential_ref} was not found in the configured backend credential store"
+                ))
+            }
+            BackendCredentialResolveError::Unavailable(error) => Self::host_unavailable(error),
+        }
+    }
+
     fn invalid_request(message: impl Into<String>) -> Self {
         Self {
             code: ErrorCode::InvalidRequest,
@@ -554,18 +587,22 @@ fn read_snapshot(path: &Path) -> anyhow::Result<LeaseSnapshot> {
 
 fn reconcile_loaded_snapshot(
     config: &ControlPlaneConfig,
+    backend_credentials: &dyn BackendCredentialStore,
     snapshot: LeaseSnapshot,
 ) -> anyhow::Result<Option<LeaseSnapshot>> {
     match runtime_looks_active(&snapshot.launch_plan) {
         Ok(true) => Ok(Some(snapshot)),
         Ok(false) => {
-            quarantine_orphaned_snapshot(config, snapshot)?;
+            quarantine_orphaned_snapshot(config, backend_credentials, snapshot)?;
             Ok(None)
         }
         Err(error) => {
             let mut snapshot = snapshot;
             snapshot.lease_state = LeaseState::Quarantined;
             snapshot.runtime_state = LeaseRuntimeState::Stopped;
+            backend_credentials
+                .revoke(&snapshot.backend_credential_ref)
+                .context("revoke backend credential ref for orphaned lease")?;
             cleanup_orphaned_vm(config, &snapshot.launch_plan).with_context(|| {
                 format!(
                     "reclaim runtime artifacts for orphaned lease {} after runtime inspection failure: {error:#}",
@@ -578,10 +615,17 @@ fn reconcile_loaded_snapshot(
     }
 }
 
-fn quarantine_orphaned_snapshot(config: &ControlPlaneConfig, snapshot: LeaseSnapshot) -> anyhow::Result<()> {
+fn quarantine_orphaned_snapshot(
+    config: &ControlPlaneConfig,
+    backend_credentials: &dyn BackendCredentialStore,
+    snapshot: LeaseSnapshot,
+) -> anyhow::Result<()> {
     let mut snapshot = snapshot;
     snapshot.lease_state = LeaseState::Quarantined;
     snapshot.runtime_state = LeaseRuntimeState::Stopped;
+    backend_credentials
+        .revoke(&snapshot.backend_credential_ref)
+        .context("revoke backend credential ref for orphaned lease")?;
     cleanup_orphaned_vm(config, &snapshot.launch_plan)
         .with_context(|| format!("reclaim runtime artifacts for orphaned lease {}", snapshot.vm_lease_id))?;
     move_snapshot_to_quarantine(&config.paths, &snapshot)

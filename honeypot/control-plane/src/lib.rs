@@ -1,4 +1,5 @@
 mod auth;
+mod backend_credentials;
 pub mod config;
 pub mod health;
 mod image;
@@ -30,6 +31,7 @@ use serde::Deserialize;
 use tokio::net::TcpListener;
 
 use self::auth::{AuthError, ControlPlaneAuth};
+use self::backend_credentials::{BackendCredentialStore, build_backend_credential_store};
 use self::config::ControlPlaneConfig;
 use self::health::ServiceState;
 use self::image::trusted_images;
@@ -40,23 +42,28 @@ use self::qemu::validate_qemu_runtime_contract;
 pub struct ControlPlaneRuntime {
     config: ControlPlaneConfig,
     auth: ControlPlaneAuth,
+    backend_credentials: Arc<dyn BackendCredentialStore>,
     leases: Mutex<LeaseRegistry>,
 }
 
 impl ControlPlaneRuntime {
     pub fn new(config: ControlPlaneConfig) -> anyhow::Result<Self> {
-        validate_startup_contract(&config).context("validate control-plane startup contract")?;
+        let backend_credentials = build_backend_credential_store(&config).context("build backend credential store")?;
+        validate_startup_contract(&config, backend_credentials.as_ref())
+            .context("validate control-plane startup contract")?;
         let auth = ControlPlaneAuth::from_config(&config.auth).context("build control-plane auth gate")?;
-        let leases = LeaseRegistry::load(&config).context("load control-plane lease registry")?;
+        let leases =
+            LeaseRegistry::load(&config, backend_credentials.as_ref()).context("load control-plane lease registry")?;
         Ok(Self {
             config,
             auth,
+            backend_credentials,
             leases: Mutex::new(leases),
         })
     }
 
     pub fn health_response(&self) -> HealthResponse {
-        let inspection = inspect_runtime(&self.config);
+        let inspection = inspect_runtime(&self.config, self.backend_credentials.as_ref());
 
         let service_state = if !inspection.unsafe_reasons.is_empty() {
             ServiceState::Unsafe
@@ -158,7 +165,7 @@ async fn acquire_vm_handler(
 
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .acquire(&runtime.config, &request)
+        .acquire(&runtime.config, runtime.backend_credentials.as_ref(), &request)
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -188,7 +195,12 @@ async fn reset_vm_handler(
 
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .reset(&runtime.config, &vm_lease_id, &request)
+        .reset(
+            &runtime.config,
+            runtime.backend_credentials.as_ref(),
+            &vm_lease_id,
+            &request,
+        )
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -203,7 +215,12 @@ async fn recycle_vm_handler(
 
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .recycle(&runtime.config, &vm_lease_id, &request)
+        .recycle(
+            &runtime.config,
+            runtime.backend_credentials.as_ref(),
+            &vm_lease_id,
+            &request,
+        )
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -223,7 +240,10 @@ async fn stream_endpoint_handler(
     Ok(Json(response))
 }
 
-fn validate_startup_contract(config: &ControlPlaneConfig) -> anyhow::Result<()> {
+fn validate_startup_contract(
+    config: &ControlPlaneConfig,
+    backend_credentials: &dyn BackendCredentialStore,
+) -> anyhow::Result<()> {
     ensure_dir("data_dir", &config.paths.data_dir)?;
     ensure_dir("image_store", &config.paths.image_store)?;
     ensure_dir("manifest_dir", &config.paths.manifest_dir())?;
@@ -233,6 +253,9 @@ fn validate_startup_contract(config: &ControlPlaneConfig) -> anyhow::Result<()> 
     ensure_dir("secret_dir", &config.paths.secret_dir)?;
     ensure_exists("kvm_path", &config.paths.kvm_path)?;
     validate_qemu_runtime_contract(config)?;
+    backend_credentials
+        .validate_startup_contract()
+        .context("validate backend credential store contract")?;
     trusted_images(&config.paths).context("validate trusted image attestation manifests")?;
 
     if config.runtime.enable_guest_agent {
@@ -243,7 +266,7 @@ fn validate_startup_contract(config: &ControlPlaneConfig) -> anyhow::Result<()> 
     Ok(())
 }
 
-fn inspect_runtime(config: &ControlPlaneConfig) -> RuntimeInspection {
+fn inspect_runtime(config: &ControlPlaneConfig, backend_credentials: &dyn BackendCredentialStore) -> RuntimeInspection {
     let mut inspection = RuntimeInspection {
         kvm_available: config.paths.kvm_path.exists(),
         ..RuntimeInspection::default()
@@ -261,6 +284,11 @@ fn inspect_runtime(config: &ControlPlaneConfig) -> RuntimeInspection {
     inspect_dir("qmp_dir", &config.paths.qmp_dir, &mut inspection);
     inspect_dir("secret_dir", &config.paths.secret_dir, &mut inspection);
     inspect_file("qemu_binary_path", &config.runtime.qemu.binary_path, &mut inspection);
+    if let Err(error) = backend_credentials.validate_startup_contract() {
+        inspection
+            .unsafe_reasons
+            .push(format!("invalid_backend_credentials:{error:#}"));
+    }
 
     let manifest_dir = config.paths.manifest_dir();
     inspect_dir("manifest_dir", &manifest_dir, &mut inspection);

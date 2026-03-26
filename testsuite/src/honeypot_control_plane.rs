@@ -43,6 +43,8 @@ pub struct HoneypotControlPlaneTestConfig {
     pub proxy_verifier_public_key_pem: Option<String>,
     #[builder(default, setter(into, strip_option))]
     pub proxy_verifier_public_key_pem_file: Option<PathBuf>,
+    #[builder(default, setter(into, strip_option))]
+    pub backend_credentials_file_path: Option<PathBuf>,
     #[builder(setter(into))]
     pub data_dir: PathBuf,
     #[builder(setter(into))]
@@ -100,11 +102,18 @@ pub fn fake_qemu_bin_path() -> PathBuf {
 }
 
 pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControlPlaneTestConfig) -> anyhow::Result<()> {
+    let backend_credentials_file_path = config
+        .backend_credentials_file_path
+        .clone()
+        .unwrap_or_else(|| config.secret_dir.join("backend-credentials.json"));
     let mut document = format!(
         "[http]\n\
          bind_addr = \"{}\"\n\n\
          [auth]\n\
          service_token_validation_disabled = {}\n\n\
+         [backend_credentials]\n\
+         adapter = \"file\"\n\
+         file_path = \"{}\"\n\n\
          [runtime]\n\
          enable_guest_agent = {}\n\n\
          lifecycle_driver = \"{}\"\n\
@@ -127,6 +136,7 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
          kvm_path = \"{}\"\n",
         config.bind_addr,
         config.service_token_validation_disabled,
+        backend_credentials_file_path.display(),
         config.enable_guest_agent,
         config.lifecycle_driver,
         config.stop_timeout_secs,

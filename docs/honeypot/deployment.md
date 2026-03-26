@@ -42,7 +42,7 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 
 ## Runtime Config Mounts
 
-- `control-plane` mounts `honeypot/docker/config/control-plane/config.toml` at `/etc/honeypot/control-plane/config.toml` as read-only and resolves `auth.proxy_verifier_public_key_pem_file` from the control-plane secret mount rather than from checked-in PEM content.
+- `control-plane` mounts `honeypot/docker/config/control-plane/config.toml` at `/etc/honeypot/control-plane/config.toml` as read-only, resolves `auth.proxy_verifier_public_key_pem_file` from the control-plane secret mount rather than from checked-in PEM content, and pins `backend_credentials.file_path` to the mounted backend credential store.
 - The checked-in `control-plane` runtime config also pins `runtime.qemu.binary_path`, `machine_type`, `cpu_model`, `vcpu_count`, `memory_mib`, and the user-mode network id so the launch plan is derived from mounted config rather than hidden defaults.
 - `proxy` mounts `honeypot/docker/config/proxy/gateway.json` at `/etc/honeypot/proxy/gateway.json` as read-only, uses `DGATEWAY_CONFIG_PATH=/etc/honeypot/proxy` from its env file so the existing Gateway loader reads the mounted `gateway.json`, and resolves `Honeypot.ControlPlane.ServiceBearerTokenFile` from the proxy secret mount rather than from checked-in config content.
 - `frontend` mounts `honeypot/docker/config/frontend/config.toml` at `/etc/honeypot/frontend/config.toml` as read-only and uses `HONEYPOT_FRONTEND_CONFIG_PATH=/etc/honeypot/frontend/config.toml` from its env file so the frontend binary reads the mounted config explicitly.
@@ -50,7 +50,7 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 
 ## Secret Mounts
 
-- `control-plane` mounts `honeypot/docker/secrets/control-plane/` at `/run/secrets/honeypot/control-plane/` as read-only, and the proxy verifier public key must arrive at `/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem`.
+- `control-plane` mounts `honeypot/docker/secrets/control-plane/` at `/run/secrets/honeypot/control-plane/` as read-only, the proxy verifier public key must arrive at `/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem`, and backend credential mappings must arrive at `/run/secrets/honeypot/control-plane/backend-credentials.json`.
 - `proxy` mounts `honeypot/docker/secrets/proxy/` at `/run/secrets/honeypot/proxy/` as read-only, and the MVP proxy-to-control-plane bearer token must arrive at `/run/secrets/honeypot/proxy/control-plane-service-token`.
 - `frontend` mounts `honeypot/docker/secrets/frontend/` at `/run/secrets/honeypot/frontend/` as read-only.
 - Private signing keys, verification key sets, backend credential references, and similar sensitive inputs must enter the containers only through these secret mount paths.

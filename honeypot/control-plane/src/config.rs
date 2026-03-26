@@ -12,6 +12,7 @@ pub const DEFAULT_CONTROL_PLANE_CONFIG_PATH: &str = "/etc/honeypot/control-plane
 pub struct ControlPlaneConfig {
     pub http: HttpConfig,
     pub auth: AuthConfig,
+    pub backend_credentials: BackendCredentialStoreConfig,
     pub runtime: RuntimeConfig,
     pub paths: PathConfig,
 }
@@ -52,6 +53,36 @@ pub struct AuthConfig {
     pub service_token_validation_disabled: bool,
     pub proxy_verifier_public_key_pem: Option<String>,
     pub proxy_verifier_public_key_pem_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct BackendCredentialStoreConfig {
+    pub adapter: BackendCredentialStoreAdapter,
+    pub file_path: Option<PathBuf>,
+}
+
+impl BackendCredentialStoreConfig {
+    pub fn file_path(&self, paths: &PathConfig) -> PathBuf {
+        self.file_path
+            .clone()
+            .unwrap_or_else(|| paths.secret_dir.join("backend-credentials.json"))
+    }
+}
+
+impl Default for BackendCredentialStoreConfig {
+    fn default() -> Self {
+        Self {
+            adapter: BackendCredentialStoreAdapter::File,
+            file_path: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendCredentialStoreAdapter {
+    File,
 }
 
 #[derive(Debug, Clone, Deserialize)]

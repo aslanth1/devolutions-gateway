@@ -17,6 +17,7 @@ use testsuite::honeypot_control_plane::{
 const CONTROL_PLANE_CONFIG_ENV: &str = "HONEYPOT_CONTROL_PLANE_CONFIG";
 const CONTROL_PLANE_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAxMDEiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3QuY29udHJvbC1wbGFuZSJ9.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 const HONEYPOT_WATCH_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDMiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Qud2F0Y2gifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
+const DEFAULT_BACKEND_CREDENTIAL_REF: &str = "backend-credential-default";
 
 async fn read_authed_health_response(port: u16) -> anyhow::Result<honeypot_contracts::control_plane::HealthResponse> {
     read_health_response_with_bearer_token(port, Some(CONTROL_PLANE_SCOPE_TOKEN)).await
@@ -325,6 +326,39 @@ fn control_plane_fails_closed_when_proxy_verifier_key_file_is_missing() {
 }
 
 #[test]
+fn control_plane_fails_closed_when_backend_credential_file_is_missing() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tempdir.path().join("control-plane.toml");
+    let bind_addr = format!("127.0.0.1:{}", find_unused_port());
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    fs::remove_file(fixture.secret_dir.join("backend-credentials.json")).expect("remove backend credential file");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(bind_addr)
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let output = honeypot_control_plane_assert_cmd()
+        .env(CONTROL_PLANE_CONFIG_ENV, &config_path)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("validate control-plane startup contract"), "{stderr}");
+    assert!(stderr.contains("backend credential store"), "{stderr}");
+}
+
+#[test]
 fn control_plane_fails_closed_when_attestation_manifest_is_incomplete() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let config_path = tempdir.path().join("control-plane.toml");
@@ -397,7 +431,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
         acquire.lease_state,
         honeypot_contracts::control_plane::LeaseState::Assigned
     );
-    assert_eq!(acquire.backend_credential_ref, "cred-ref-session-1");
+    assert_eq!(acquire.backend_credential_ref, DEFAULT_BACKEND_CREDENTIAL_REF);
     assert!(acquire.vm_name.starts_with("honeypot-"));
 
     let (status_line, reset): (String, ResetVmResponse) = post_authed_json_response(
@@ -497,6 +531,58 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     let health = read_authed_health_response(port).await.expect("read health response");
     assert_eq!(health.active_lease_count, 0);
     assert_eq!(health.quarantined_lease_count, 0);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_rejects_unknown_backend_credential_refs() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (status_line, response): (String, ErrorResponse) = post_json_response_with_bearer_token(
+        port,
+        "/api/v1/vm/acquire",
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        &AcquireVmRequest {
+            backend_credential_ref: "missing-backend-credential".to_owned(),
+            ..acquire_request("session-missing-backend-credential")
+        },
+    )
+    .await
+    .expect("read missing backend credential response");
+
+    assert!(status_line.contains("400"), "{status_line}");
+    assert_eq!(response.error_code, ErrorCode::InvalidRequest);
+    assert!(
+        response.message.contains("backend credential ref"),
+        "{}",
+        response.message
+    );
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -1562,7 +1648,7 @@ fn acquire_request_for_pool(session_id: &str, requested_pool: &str) -> AcquireVm
         requested_pool: requested_pool.to_owned(),
         requested_ready_timeout_secs: 30,
         stream_policy: StreamPolicy::GatewayRecording,
-        backend_credential_ref: format!("cred-ref-{session_id}"),
+        backend_credential_ref: DEFAULT_BACKEND_CREDENTIAL_REF.to_owned(),
         attacker_protocol: AttackerProtocol::Rdp,
     }
 }
@@ -1605,6 +1691,25 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     fs::create_dir_all(&secret_dir).expect("create secret dir");
     fs::write(&kvm_path, []).expect("create fake kvm device");
     fs::write(&qemu_binary_path, []).expect("create fake qemu binary");
+    fs::write(
+        secret_dir.join("backend-credentials.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            DEFAULT_BACKEND_CREDENTIAL_REF: {
+                "proxy_credential": {
+                    "kind": "username-password",
+                    "username": "operator",
+                    "password": "attacker-password"
+                },
+                "target_credential": {
+                    "kind": "username-password",
+                    "username": "backend-user",
+                    "password": "backend-password"
+                }
+            }
+        }))
+        .expect("serialize backend credentials"),
+    )
+    .expect("write backend credential store");
 
     let mut manifest_paths = Vec::new();
     let mut base_image_paths = Vec::new();

@@ -408,7 +408,7 @@ Pass when: stale QEMU processes, QMP or QGA sockets, overlays, tempdirs, and lea
 - [ ] Add host-side resource and network controls.
 Pass when: CPU, memory, disk, outbound routing, control sockets, and emergency stop limits are enforced per VM.
 
-- [ ] Add secret storage for backend credentials with a replaceable adapter.
+- [x] Add secret storage for backend credentials with a replaceable adapter.
 Pass when: credentials are never printed to logs and the adapter boundary is testable.
 
 - [ ] Add a gold-image acceptance test.

@@ -86,6 +86,7 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Request fields: `schema_version`, `request_id`, `session_id`, `requested_pool`, `requested_ready_timeout_secs`, `stream_policy`, `backend_credential_ref`, and `attacker_protocol`.
 - Success fields: `schema_version`, `correlation_id`, `vm_lease_id`, `vm_name`, `guest_rdp_addr`, `guest_rdp_port`, `lease_state`, `lease_expires_at`, `backend_credential_ref`, and `attestation_ref`.
 - Failure codes: `auth_failed`, `invalid_request`, `no_capacity`, `image_untrusted`, `host_unavailable`, `boot_timeout`, and `lease_conflict`.
+- `backend_credential_ref` must resolve through the control-plane backend credential store rooted in the documented secret mount before a lease is assigned.
 - `boot_timeout` means the lease was reserved but the guest did not reach ready state before the requested timeout.
 - `no_capacity` is retryable only after the proxy has emitted the matching frontend-visible terminal state.
 

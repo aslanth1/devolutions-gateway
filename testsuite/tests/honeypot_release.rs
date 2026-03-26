@@ -292,6 +292,10 @@ bind_addr = "127.0.0.1:8080"
 service_token_validation_disabled = true
 proxy_verifier_public_key_pem_file = "/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem"
 
+[backend_credentials]
+adapter = "file"
+file_path = "/run/secrets/honeypot/control-plane/backend-credentials.json"
+
 [runtime]
 enable_guest_agent = true
 
@@ -342,6 +346,10 @@ inline-regression
 -----END PUBLIC KEY-----
 '''
 
+[backend_credentials]
+adapter = "file"
+file_path = "/run/secrets/honeypot/control-plane/backend-credentials.json"
+
 [runtime]
 enable_guest_agent = true
 
@@ -368,6 +376,56 @@ kvm_path = "/dev/kvm"
         format!("{error:#}").contains("must not check in an inline proxy verifier public key"),
         "{error:#}"
     );
+}
+
+#[test]
+fn control_plane_runtime_contract_rejects_backend_credential_file_drift() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let compose_path = tempdir.path().join("compose.yaml");
+    let env_path = tempdir.path().join("control-plane.env");
+    let config_path = tempdir.path().join("config.toml");
+
+    let compose = std::fs::read_to_string(repo_relative_path(HONEYPOT_COMPOSE_PATH)).expect("read on-disk compose");
+    let env = std::fs::read_to_string(repo_relative_path(HONEYPOT_CONTROL_PLANE_ENV_PATH))
+        .expect("read on-disk control-plane env");
+    std::fs::write(&compose_path, compose).expect("write temp compose");
+    std::fs::write(&env_path, env).expect("write temp env");
+    std::fs::write(
+        &config_path,
+        r#"[http]
+bind_addr = "0.0.0.0:8080"
+
+[auth]
+service_token_validation_disabled = true
+proxy_verifier_public_key_pem_file = "/run/secrets/honeypot/control-plane/proxy-verifier-public-key.pem"
+
+[backend_credentials]
+adapter = "file"
+file_path = "/run/secrets/honeypot/control-plane/other-backend-credentials.json"
+
+[runtime]
+enable_guest_agent = true
+
+[runtime.qemu]
+binary_path = "/usr/bin/qemu-system-x86_64"
+
+[paths]
+data_dir = "/var/lib/honeypot/control-plane"
+image_store = "/var/lib/honeypot/images"
+lease_store = "/var/lib/honeypot/leases"
+quarantine_store = "/var/lib/honeypot/quarantine"
+qmp_dir = "/run/honeypot/qmp"
+qga_dir = "/run/honeypot/qga"
+secret_dir = "/run/secrets/honeypot/control-plane"
+kvm_path = "/dev/kvm"
+"#,
+    )
+    .expect("write temp config");
+
+    let error = validate_honeypot_control_plane_runtime_contract(&compose_path, &env_path, &config_path)
+        .expect_err("runtime contract should reject backend credential file drift");
+
+    assert!(format!("{error:#}").contains("backend credential file"), "{error:#}");
 }
 
 #[test]
