@@ -6764,6 +6764,7 @@ dependencies = [
  "assert_cmd",
  "axum 0.8.8",
  "base64 0.22.1",
+ "devolutions-gateway",
  "dynosaur",
  "escargot",
  "expect-test",

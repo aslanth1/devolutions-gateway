@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
+use devolutions_gateway::config::{Conf as GatewayConf, dto as gateway_dto};
 use honeypot_control_plane::config::{CONTROL_PLANE_CONFIG_ENV, ControlPlaneConfig, DEFAULT_CONTROL_PLANE_CONFIG_PATH};
 use serde::Deserialize;
 
@@ -10,6 +11,8 @@ pub const HONEYPOT_IMAGES_LOCK_PATH: &str = "honeypot/docker/images.lock";
 pub const HONEYPOT_COMPOSE_PATH: &str = "honeypot/docker/compose.yaml";
 pub const HONEYPOT_CONTROL_PLANE_ENV_PATH: &str = "honeypot/docker/env/control-plane.env";
 pub const HONEYPOT_CONTROL_PLANE_CONFIG_PATH: &str = "honeypot/docker/config/control-plane/config.toml";
+pub const HONEYPOT_PROXY_ENV_PATH: &str = "honeypot/docker/env/proxy.env";
+pub const HONEYPOT_PROXY_CONFIG_PATH: &str = "honeypot/docker/config/proxy/gateway.json";
 
 const CANONICAL_REGISTRY: &str = "ghcr.io/fork-owner";
 const CANONICAL_IMAGE_ROOT: &str = "devolutions-gateway-honeypot";
@@ -28,6 +31,15 @@ const CONTROL_PLANE_QMP_DIR: &str = "/run/honeypot/qmp";
 const CONTROL_PLANE_QGA_DIR: &str = "/run/honeypot/qga";
 const CONTROL_PLANE_SECRET_DIR: &str = "/run/secrets/honeypot/control-plane";
 const CONTROL_PLANE_KVM_PATH: &str = "/dev/kvm";
+const PROXY_ENV_FILE_REF: &str = "./env/proxy.env";
+const PROXY_CONFIG_MOUNT: &str = "./config/proxy/gateway.json:/etc/honeypot/proxy/gateway.json:ro";
+const PROXY_SECRET_MOUNT: &str = "./secrets/proxy:/run/secrets/honeypot/proxy:ro";
+const PROXY_CONFIG_DIR: &str = "/etc/honeypot/proxy";
+const PROXY_CONTROL_PLANE_ENDPOINT: &str = "http://control-plane:8080/";
+const PROXY_FRONTEND_PUBLIC_URL: &str = "http://frontend:8080/";
+const PROXY_HTTP_LISTENER: &str = "http://0.0.0.0:8080";
+const PROXY_TCP_LISTENER: &str = "tcp://0.0.0.0:8443";
+const PROXY_PLACEHOLDER_CONTROL_PLANE_TOKEN: &str = "proxy-control-plane-placeholder";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HoneypotImagesLock {
@@ -207,6 +219,24 @@ pub fn validate_honeypot_control_plane_runtime_contract(
     validate_honeypot_control_plane_config(&config)
 }
 
+pub fn validate_honeypot_proxy_runtime_contract(
+    compose_path: &Path,
+    env_path: &Path,
+    config_path: &Path,
+) -> anyhow::Result<()> {
+    let compose_data = std::fs::read_to_string(compose_path)
+        .with_context(|| format!("read compose file at {}", compose_path.display()))?;
+    validate_honeypot_proxy_compose_runtime_document(&compose_data)?;
+
+    let env_data =
+        std::fs::read_to_string(env_path).with_context(|| format!("read env file at {}", env_path.display()))?;
+    validate_honeypot_proxy_env_document(&env_data)?;
+
+    let config_data = std::fs::read_to_string(config_path)
+        .with_context(|| format!("read config file at {}", config_path.display()))?;
+    validate_honeypot_proxy_config_document(&config_data)
+}
+
 pub fn validate_honeypot_control_plane_compose_runtime_document(data: &str) -> anyhow::Result<()> {
     let compose: HoneypotComposeFile = serde_yaml::from_str(data).context("deserialize honeypot compose file")?;
     let service = compose
@@ -249,6 +279,44 @@ pub fn validate_honeypot_control_plane_env_document(data: &str) -> anyhow::Resul
     anyhow::ensure!(
         config_path == DEFAULT_CONTROL_PLANE_CONFIG_PATH,
         "{CONTROL_PLANE_CONFIG_ENV} must be {DEFAULT_CONTROL_PLANE_CONFIG_PATH}",
+    );
+
+    Ok(())
+}
+
+pub fn validate_honeypot_proxy_compose_runtime_document(data: &str) -> anyhow::Result<()> {
+    let compose: HoneypotComposeFile = serde_yaml::from_str(data).context("deserialize honeypot compose file")?;
+    let service = compose.services.get("proxy").context("missing compose service proxy")?;
+    let env_file = service
+        .env_file
+        .as_ref()
+        .context("compose service proxy must define env_file")?;
+
+    anyhow::ensure!(
+        env_file.contains(PROXY_ENV_FILE_REF),
+        "compose service proxy must reference {PROXY_ENV_FILE_REF}",
+    );
+    anyhow::ensure!(
+        service.volumes.iter().any(|volume| volume == PROXY_CONFIG_MOUNT),
+        "compose service proxy must mount {PROXY_CONFIG_MOUNT}",
+    );
+    anyhow::ensure!(
+        service.volumes.iter().any(|volume| volume == PROXY_SECRET_MOUNT),
+        "compose service proxy must keep the secret mount separate at {PROXY_SECRET_MOUNT}",
+    );
+
+    Ok(())
+}
+
+pub fn validate_honeypot_proxy_env_document(data: &str) -> anyhow::Result<()> {
+    let env = parse_env_document(data)?;
+    let config_dir = env
+        .get("DGATEWAY_CONFIG_PATH")
+        .context("env file must define DGATEWAY_CONFIG_PATH")?;
+
+    anyhow::ensure!(
+        config_dir == PROXY_CONFIG_DIR,
+        "DGATEWAY_CONFIG_PATH must be {PROXY_CONFIG_DIR}",
     );
 
     Ok(())
@@ -363,6 +431,52 @@ fn validate_honeypot_control_plane_config(config: &ControlPlaneConfig) -> anyhow
     anyhow::ensure!(
         config.paths.kvm_path == Path::new(CONTROL_PLANE_KVM_PATH),
         "control-plane kvm_path must be {CONTROL_PLANE_KVM_PATH}",
+    );
+
+    Ok(())
+}
+
+fn validate_honeypot_proxy_config_document(data: &str) -> anyhow::Result<()> {
+    let conf_file =
+        serde_json::from_str::<gateway_dto::ConfFile>(data).context("deserialize proxy gateway.json config")?;
+    let conf = GatewayConf::from_conf_file(&conf_file).context("build proxy runtime config from gateway.json")?;
+
+    anyhow::ensure!(conf.honeypot.enabled, "proxy honeypot mode must be enabled");
+    anyhow::ensure!(
+        conf.listeners.iter().any(|listener| {
+            listener.internal_url.scheme() == "http"
+                && listener.internal_url.host_str() == Some("0.0.0.0")
+                && listener.internal_url.port_or_known_default() == Some(8080)
+        }),
+        "proxy config must include HTTP listener {PROXY_HTTP_LISTENER}",
+    );
+    anyhow::ensure!(
+        conf.listeners.iter().any(|listener| {
+            listener.internal_url.scheme() == "tcp"
+                && listener.internal_url.host_str() == Some("0.0.0.0")
+                && listener.internal_url.port() == Some(8443)
+        }),
+        "proxy config must include TCP listener {PROXY_TCP_LISTENER}",
+    );
+    anyhow::ensure!(
+        conf.honeypot.control_plane.endpoint.as_ref().map(|url| url.as_str()) == Some(PROXY_CONTROL_PLANE_ENDPOINT),
+        "proxy honeypot control-plane endpoint must be {PROXY_CONTROL_PLANE_ENDPOINT}",
+    );
+    anyhow::ensure!(
+        conf.honeypot.control_plane.service_bearer_token.as_deref() == Some(PROXY_PLACEHOLDER_CONTROL_PLANE_TOKEN),
+        "proxy honeypot control-plane token placeholder must be present",
+    );
+    anyhow::ensure!(
+        conf.honeypot.frontend.public_url.as_ref().map(|url| url.as_str()) == Some(PROXY_FRONTEND_PUBLIC_URL),
+        "proxy frontend public url must be {PROXY_FRONTEND_PUBLIC_URL}",
+    );
+    anyhow::ensure!(
+        conf.honeypot.frontend.bootstrap_path == "/jet/honeypot/bootstrap",
+        "proxy frontend bootstrap path must be /jet/honeypot/bootstrap",
+    );
+    anyhow::ensure!(
+        conf.honeypot.frontend.events_path == "/jet/honeypot/events",
+        "proxy frontend events path must be /jet/honeypot/events",
     );
 
     Ok(())

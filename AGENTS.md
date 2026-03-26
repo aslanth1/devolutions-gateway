@@ -419,13 +419,13 @@ Pass when: a newly produced image boots, reaches a known-ready signal, accepts R
 - [x] Add an explicit honeypot proxy mode instead of mutating the default Gateway path silently.
 Pass when: non-honeypot behavior stays unchanged unless honeypot mode is enabled.
 
-- [ ] Wire the `proxy` binary into the established image target.
+- [x] Wire the `proxy` binary into the established image target.
 Pass when: the service starts from the chosen `honeypot/docker/proxy/` image target and does not inherit the legacy gateway or webapp container bundle by accident.
 
-- [ ] Wire proxy listener and control-plane endpoint config.
+- [x] Wire proxy listener and control-plane endpoint config.
 Pass when: public listener config and control-plane endpoint flow through documented env or mounted files.
 
-- [ ] Wire proxy frontend event delivery config.
+- [x] Wire proxy frontend event delivery config.
 Pass when: the frontend event delivery path flows through documented env or mounted files.
 
 - [x] Wire proxy backend credential material injection.

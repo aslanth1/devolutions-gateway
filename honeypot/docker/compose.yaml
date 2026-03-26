@@ -46,9 +46,11 @@ services:
       - honeypot-edge
     ports:
       - "0.0.0.0:8443:8443"
+    env_file:
+      - ./env/proxy.env
     volumes:
       - honeypot-proxy-data:/var/lib/honeypot/proxy
-      - ./config/proxy:/etc/honeypot/proxy:ro
+      - ./config/proxy/gateway.json:/etc/honeypot/proxy/gateway.json:ro
       - ./secrets/proxy:/run/secrets/honeypot/proxy:ro
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/jet/health >/dev/null || exit 1"]

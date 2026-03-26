@@ -43,7 +43,7 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 ## Runtime Config Mounts
 
 - `control-plane` mounts `honeypot/docker/config/control-plane/config.toml` at `/etc/honeypot/control-plane/config.toml` as read-only.
-- `proxy` mounts `honeypot/docker/config/proxy/config.toml` at `/etc/honeypot/proxy/config.toml` as read-only.
+- `proxy` mounts `honeypot/docker/config/proxy/gateway.json` at `/etc/honeypot/proxy/gateway.json` as read-only and uses `DGATEWAY_CONFIG_PATH=/etc/honeypot/proxy` from its env file so the existing Gateway loader reads the mounted `gateway.json`.
 - `frontend` mounts `honeypot/docker/config/frontend/config.toml` at `/etc/honeypot/frontend/config.toml` as read-only.
 - Config mount paths are restart-safe and are the only supported path for service-specific runtime configuration.
 
@@ -133,7 +133,7 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 - Resolve the `current` digests for all three services from `honeypot/docker/images.lock`.
 - Start `control-plane` with its env file, config mount, secret mount, data volume, host mounts, and `/dev/kvm`.
 - Wait for `control-plane` to validate the configured image manifests, host mounts, QMP or QGA paths, and `/dev/kvm` access before it may report `ready` or a documented `degraded` state that still permits lease lookup.
-- Start `proxy` with its env file, config mount, secret mount, and data volume.
+- Start `proxy` with its env file, `gateway.json` config mount, secret mount, and data volume.
 - Wait for `proxy` health to pass before starting `frontend`.
 - Start `frontend` with its env file, config mount, and secret mount.
 - Confirm that the compose stack reports healthy `control-plane`, `proxy`, and `frontend` services before any operator or attacker traffic is allowed.
