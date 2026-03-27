@@ -130,13 +130,29 @@ impl CredentialStore {
             binding,
         };
 
+        self.evict_if_expired(jti);
         let previous_entry = self.entries.insert(jti, Arc::new(entry));
 
         Ok(previous_entry)
     }
 
-    fn get(&self, token_id: Uuid) -> Option<ArcCredentialEntry> {
+    fn get(&mut self, token_id: Uuid) -> Option<ArcCredentialEntry> {
+        if self.evict_if_expired(token_id) {
+            return None;
+        }
+
         self.entries.get(&token_id).map(Arc::clone)
+    }
+
+    fn evict_if_expired(&mut self, token_id: Uuid) -> bool {
+        let now = time::OffsetDateTime::now_utc();
+
+        if self.entries.get(&token_id).is_some_and(|entry| entry.expires_at <= now) {
+            self.entries.remove(&token_id);
+            return true;
+        }
+
+        false
     }
 
     fn remove(&mut self, token_id: Uuid) -> Option<ArcCredentialEntry> {
@@ -276,7 +292,6 @@ async fn cleanup_task(handle: CredentialStoreHandle, mut shutdown_signal: Shutdo
         }
 
         let now = time::OffsetDateTime::now_utc();
-
         handle.0.lock().entries.retain(|_, src| now < src.expires_at);
     }
 
@@ -373,5 +388,68 @@ mod tests {
                 .get(Uuid::parse_str("00000000-0000-0000-0000-000000000002").expect("parse token id"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn expired_entries_are_evicted_on_lookup() {
+        let store = CredentialStoreHandle::new();
+        let token_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("parse token id");
+
+        store
+            .provision(CredentialProvisionRequest {
+                token: TEST_TOKEN_A.to_owned(),
+                mapping: Some(test_mapping("attacker-a", "backend-a")),
+                time_to_live: time::Duration::ZERO,
+                binding: None,
+            })
+            .expect("provision expiring credential mapping");
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        assert!(store.get(token_id).is_none(), "expired entry should not be returned");
+        assert!(
+            store.0.lock().entries.is_empty(),
+            "expired entry should be evicted from the store"
+        );
+    }
+
+    #[test]
+    fn reprovisioning_expired_entry_does_not_report_replacement() {
+        let store = CredentialStoreHandle::new();
+        let token_id = Uuid::parse_str("00000000-0000-0000-0000-000000000001").expect("parse token id");
+
+        store
+            .provision(CredentialProvisionRequest {
+                token: TEST_TOKEN_A.to_owned(),
+                mapping: Some(test_mapping("attacker-a", "backend-a")),
+                time_to_live: time::Duration::ZERO,
+                binding: None,
+            })
+            .expect("provision expiring credential mapping");
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let replaced = store
+            .provision(CredentialProvisionRequest {
+                token: TEST_TOKEN_A.to_owned(),
+                mapping: Some(test_mapping("attacker-b", "backend-b")),
+                time_to_live: time::Duration::minutes(15),
+                binding: None,
+            })
+            .expect("reprovision credential mapping after expiry");
+
+        assert!(replaced.is_none(), "expired entry should not be reported as replaced");
+
+        let entry = store.get(token_id).expect("fresh reprovisioned entry should exist");
+        let mapping = entry.mapping.as_ref().expect("reprovisioned mapping should exist");
+
+        assert!(matches!(
+            &mapping.proxy,
+            AppCredential::UsernamePassword { username, .. } if username == "attacker-b"
+        ));
+        assert!(matches!(
+            &mapping.target,
+            AppCredential::UsernamePassword { username, .. } if username == "backend-b"
+        ));
     }
 }

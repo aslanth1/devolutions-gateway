@@ -646,7 +646,7 @@ Pass when: the tests verify image artifacts, control sockets, logs, stream outpu
 - [ ] Add a log-redaction negative test.
 Pass when: secrets stay redacted in service logs, host logs, and lab artifacts during both success and failure paths.
 
-- [ ] Add a credential TTL-expiry test.
+- [x] Add a credential TTL-expiry test.
 Pass when: expired mappings are removed deterministically and do not survive disconnect, kill, or recycle paths.
 
 - [x] Add a no-lease handling test.

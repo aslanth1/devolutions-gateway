@@ -143,6 +143,61 @@ async fn test_provision_token_overwrite_alert() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn test_expired_credential_entry_is_not_reported_as_replaced() -> anyhow::Result<()> {
+    let _guard = init_logger();
+
+    let (app, state, _handles) = make_router()?;
+
+    let token_id = Uuid::from_str("5e3e833f-84c7-4541-b676-acc3299e39b8").unwrap();
+    let token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1ZTNlODMzZi04NGM3LTQ1NDEtYjY3Ni1hY2MzMjk5ZTM5YjgifQ.1qECGlrW7y9HWFArc6GPHLGTOY7PhAvzKJ5XMRBg4k4";
+
+    let first_op = json!([{
+        "id": Uuid::new_v4(),
+        "kind": "provision-credentials",
+        "token": token,
+        "proxy_credential": { "kind": "username-password", "username": "expired_proxy", "password": "expired_secret" },
+        "target_credential": { "kind": "username-password", "username": "expired_target", "password": "expired_secret" },
+        "time_to_live": 0
+    }]);
+
+    let response = app.clone().oneshot(preflight_request(first_op)?).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    tokio::time::sleep(tokio::time::Duration::from_millis(5)).await;
+
+    let second_op = json!([{
+        "id": Uuid::new_v4(),
+        "kind": "provision-credentials",
+        "token": token,
+        "proxy_credential": { "kind": "username-password", "username": "fresh_proxy", "password": "fresh_secret" },
+        "target_credential": { "kind": "username-password", "username": "fresh_target", "password": "fresh_secret" },
+        "time_to_live": 15
+    }]);
+
+    let response = app.oneshot(preflight_request(second_op)?).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = response.into_body().collect().await?.to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&body)?;
+
+    assert_eq!(body.as_array().expect("an array").len(), 1);
+    assert_eq!(body[0]["kind"], "ack");
+
+    let entry = state.credential_store.get(token_id).expect("fresh entry should exist");
+    let mapping = entry.mapping.as_ref().expect("fresh credential mapping should exist");
+    assert!(matches!(
+        &mapping.proxy,
+        AppCredential::UsernamePassword { username, .. } if username == "fresh_proxy"
+    ));
+    assert!(matches!(
+        &mapping.target,
+        AppCredential::UsernamePassword { username, .. } if username == "fresh_target"
+    ));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_provision_invalid_params() -> anyhow::Result<()> {
     let _guard = init_logger();
 

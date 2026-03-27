@@ -753,6 +753,54 @@ async fn honeypot_credential_replacement_uses_backend_mapping_on_prepare() -> an
 }
 
 #[tokio::test]
+async fn honeypot_expired_preflight_credentials_are_evicted_on_lookup() -> anyhow::Result<()> {
+    let control_plane = FakeControlPlaneServer::spawn().await?;
+    let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
+    let credential_token_id = extract_jti(CREDENTIAL_TEST_TOKEN).context("extract credential token id")?;
+
+    let response = app
+        .clone()
+        .oneshot(post_json_request_with_auth(
+            "/jet/preflight",
+            PREFLIGHT_SCOPE_BEARER,
+            &json!([{
+                "id": Uuid::new_v4(),
+                "kind": "provision-credentials",
+                "token": CREDENTIAL_TEST_TOKEN,
+                "proxy_credential": {
+                    "kind": "username-password",
+                    "username": "attacker",
+                    "password": "proxy-password",
+                },
+                "target_credential": {
+                    "kind": "username-password",
+                    "username": "Administrator",
+                    "password": "target-password",
+                },
+                "time_to_live": 0,
+            }]),
+        )?)
+        .await
+        .context("post expiring preflight credential mapping")?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    tokio::time::sleep(Duration::from_millis(5)).await;
+
+    assert!(
+        state.credential_store.get(credential_token_id).is_none(),
+        "expired credential mapping should be evicted on lookup"
+    );
+    assert!(
+        control_plane.calls.acquired.lock().await.is_empty(),
+        "credential expiry should not trigger control-plane activity"
+    );
+
+    control_plane.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result<()> {
     let control_plane = FakeControlPlaneServer::spawn().await?;
     let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
