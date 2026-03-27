@@ -63,6 +63,7 @@ This document must not be read as permission to add a fourth runtime service or 
 - Any reset, recycle, cleanup, or integrity failure must move the affected lease artifacts into quarantine instead of silently returning a dirty VM to service.
 - Teardown must remove or quarantine stale QEMU processes, control sockets, overlays, tempdirs, recordings, and related runtime artifacts according to the documented cleanup path.
 - Incident response must preserve enough audit data to explain operator actions without keeping unnecessary access to unsafe content alive.
+- The step-by-step operator response flow for startup, emergency stop, quarantine, evidence capture, and recovery lives in [runbook.md](runbook.md).
 
 ## Decision Links
 

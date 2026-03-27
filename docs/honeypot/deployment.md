@@ -4,8 +4,9 @@
 
 This document is the source of truth for the Docker topology, runtime mounts, healthchecks, startup order, and rollback flow for the honeypot fork.
 It carries the deployment details required by `DF-01`, `DF-06`, `DF-07`, and `DF-08` in [decisions.md](decisions.md).
-It works with [architecture.md](architecture.md), [contracts.md](contracts.md), and [risk.md](risk.md).
+It works with [architecture.md](architecture.md), [contracts.md](contracts.md), [risk.md](risk.md), and [runbook.md](runbook.md).
 It must not be read as permission to add a fourth runtime service, a parallel control plane, or a second container bundle for the same service.
+Operator procedures for bring-up, emergency stop, recycle, evidence capture, and recovery live in [runbook.md](runbook.md).
 
 ## Compose Identity
 

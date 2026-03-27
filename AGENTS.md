@@ -675,7 +675,7 @@ Pass when: the lab proves the guest accepts a non-project RDP client path as an 
 
 ## Milestone 6: Hardening and Operational Readiness
 
-- [ ] Add an operator runbook for lab startup, emergency stop, VM recycle, evidence collection, and session kill procedures.
+- [x] Add an operator runbook for lab startup, emergency stop, VM recycle, evidence collection, and session kill procedures.
 Pass when: another engineer can operate the lab without tribal knowledge and the documented steps match the Rust-validated lifecycle.
 
 - [ ] Add exposure guards for public-internet deployment.
@@ -690,7 +690,7 @@ Pass when: every operator-visible action has a stable audit record with session 
 - [ ] Add operator content-handling policy.
 Pass when: the repo states who may watch, who may propose commands, who may approve execution, and how sensitive attacker content is handled.
 
-- [ ] Add recovery playbooks for failed recycle, image corruption, and stuck leases.
+- [x] Add recovery playbooks for failed recycle, image corruption, and stuck leases.
 Pass when: the runbook describes how to quarantine bad images or hosts without losing auditability.
 
 ## Verification Matrix

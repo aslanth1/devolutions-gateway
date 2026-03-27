@@ -3,8 +3,9 @@
 ## Purpose
 
 This document defines the honeypot verification tiers required by `DF-09`.
-It works with [decisions.md](decisions.md), [contracts.md](contracts.md), and `testsuite`.
+It works with [decisions.md](decisions.md), [contracts.md](contracts.md), [runbook.md](runbook.md), and `testsuite`.
 It must keep the default test path CI-safe and must fail closed before any lab-only work runs.
+The exact operator bring-up and recovery procedure lives in [runbook.md](runbook.md).
 
 ## Tier Summary
 
