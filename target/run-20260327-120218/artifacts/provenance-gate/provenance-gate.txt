@@ -1,0 +1,19 @@
+gate-0 provenance findings
+--------------------------
+- /srv/honeypot/images does not exist on this host, so there is no configured trusted image-store root at the canonical runtime location.
+- /home/jf/research/ned/labs/windows/kvm-win11/README.md describes a generic Windows 11 KVM lab rooted in /home/jf/research/ned/labs/windows/kvm-win11 with default ISO /home/jf/ISOs/Win11_25H2_English_x64.iso.
+- The same README documents a local account jf / ChangeMe123! and headed GTK defaults, but it does not document Tiny11 transformation lineage or a consume-image handoff into a trusted store.
+- Snapshot storage under /home/jf/VirtualMachines/kvm-win11 contains qcow2 and OVMF files only:
+  - snapshots/pre-restore-20260325-100011/windows11.qcow2
+  - snapshots/win11-base/windows11.qcow2
+  - snapshots/win11-hellsd-gateway-base/windows11.qcow2
+- No attestation manifest chain was found under the stable lab roots or snapshot roots.
+- Repository guidance still says generic win11 labs do not count unless first imported into the attested Tiny11-derived store through the documented consume path.
+
+gate-0 outcome
+--------------
+blocked_prereq
+
+blocked reason
+--------------
+No admissible Tiny11-derived attestation lineage was found for the local win11-hellsd-gateway-base assets, and no canonical trusted image store exists at /srv/honeypot/images on this host.

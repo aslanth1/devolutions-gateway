@@ -1,0 +1,17 @@
+docker ps
+---------
+NAMES     STATUS    PORTS
+
+ps -ef | rg 'qemu-system'
+-------------------------
+(no running qemu-system process)
+
+windows11 key file
+------------------
+PRESENT at /home/jf/research/ned/labs/windows/licenses/windows11-pro-key.md
+
+win11 snapshot list
+-------------------
+pre-restore-20260325-100011    2026-03-25T10:00:11-07:00
+win11-base                     2026-03-12T15:54:56-07:00
+win11-hellsd-gateway-base      2026-03-25T10:02:47-07:00

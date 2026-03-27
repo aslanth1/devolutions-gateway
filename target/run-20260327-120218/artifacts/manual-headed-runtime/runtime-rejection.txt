@@ -1,0 +1,7 @@
+command
+-------
+cargo run -p testsuite --bin honeypot-manual-headed-writer -- runtime --evidence-root target/row706 --run-id 6ed7055a-c844-47c0-b2e1-962e63ff354a --anchor-id manual_stack_startup_shutdown --status passed --producer manual-headed-writer --artifact target/run-20260327-115026/artifacts/manual-headed-preflight/runtime/stack-startup-shutdown.json --artifact-relpath runtime/stack-startup-shutdown.json
+
+result
+------
+runtime manual-headed evidence requires a verified row706 run 6ed7055a-c844-47c0-b2e1-962e63ff354a: row706 positive anchor gold_image_acceptance must be executed and passed

@@ -1,0 +1,7 @@
+command
+-------
+cargo run -p testsuite --bin honeypot-manual-headed-writer -- finalize --evidence-root target/row706 --run-id 6ed7055a-c844-47c0-b2e1-962e63ff354a
+
+result
+------
+manual-headed run 6ed7055a-c844-47c0-b2e1-962e63ff354a is incomplete and cannot be finalized yet
