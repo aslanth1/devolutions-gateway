@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -227,6 +227,117 @@ async fn frontend_health_reports_degraded_when_bootstrap_is_unreachable() {
 
     let _ = child.start_kill();
     let _ = child.wait().await;
+}
+
+#[tokio::test]
+async fn frontend_health_recovers_when_proxy_bootstrap_becomes_reachable() {
+    let reserved_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind reserved proxy port");
+    let proxy_addr = reserved_listener.local_addr().expect("read reserved proxy address");
+    drop(reserved_listener);
+
+    let state = mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-health-recovery".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "8".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: Uuid::new_v4().to_string(),
+                vm_lease_id: Some("lease-recovery".to_owned()),
+                state: SessionState::Ready,
+                last_event_id: "event-recovery".to_owned(),
+                last_session_seq: 4,
+                stream_state: StreamState::Ready,
+                stream_preview: Some(StreamPreview {
+                    stream_id: "stream-recovery".to_owned(),
+                    transport: StreamTransport::Websocket,
+                    stream_endpoint: "/jet/honeypot/session/session-recovery/stream?stream_id=stream-recovery"
+                        .to_owned(),
+                    token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
+                }),
+            }],
+        },
+        String::new(),
+        HashMap::new(),
+    );
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let (status_line, _headers, body) = read_http_response(port, "/health")
+        .await
+        .expect("read initial health response");
+    let body: Value = serde_json::from_slice(&body).expect("decode initial health json");
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(body["service_state"], "degraded");
+    assert_eq!(body["proxy_bootstrap_reachable"], false);
+    assert!(
+        body["degraded_reasons"]
+            .as_array()
+            .expect("degraded reasons array")
+            .iter()
+            .any(|reason| reason.as_str().unwrap_or_default().contains("bootstrap unavailable"))
+    );
+
+    let (
+        bound_proxy_addr,
+        proxy_handle,
+        _observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy_on_addr(state, proxy_addr).await;
+    assert_eq!(bound_proxy_addr, proxy_addr);
+
+    let mut recovered = None;
+    for _ in 0..20 {
+        let (status_line, _headers, body) = read_http_response(port, "/health")
+            .await
+            .expect("read recovered health response");
+        let body: Value = serde_json::from_slice(&body).expect("decode recovered health json");
+
+        if status_line.contains("200")
+            && body["service_state"] == "ready"
+            && body["proxy_bootstrap_reachable"] == true
+            && body["live_session_count"] == 1
+            && body["ready_tile_count"] == 1
+        {
+            recovered = Some((status_line, body));
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let (status_line, body) =
+        recovered.expect("frontend health did not recover after proxy bootstrap became reachable");
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(body["service_state"], "ready");
+    assert_eq!(body["proxy_bootstrap_reachable"], true);
+    assert_eq!(body["live_session_count"], 1);
+    assert_eq!(body["ready_tile_count"], 1);
+    assert_eq!(body["degraded_reasons"], Value::Array(Vec::new()));
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
 }
 
 #[tokio::test]
@@ -1528,7 +1639,21 @@ async fn frontend_system_kill_route_requires_system_kill_scope() {
 async fn start_mock_proxy(
     state: MockProxyState,
 ) -> (
-    std::net::SocketAddr,
+    SocketAddr,
+    tokio::task::JoinHandle<()>,
+    Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<Vec<String>>>,
+    Arc<Mutex<u32>>,
+) {
+    start_mock_proxy_on_addr(state, SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await
+}
+
+async fn start_mock_proxy_on_addr(
+    state: MockProxyState,
+    addr: SocketAddr,
+) -> (
+    SocketAddr,
     tokio::task::JoinHandle<()>,
     Arc<Mutex<Vec<String>>>,
     Arc<Mutex<Vec<String>>>,
@@ -1539,9 +1664,7 @@ async fn start_mock_proxy(
     let terminated_sessions = Arc::clone(&state.terminated_sessions);
     let quarantined_sessions = Arc::clone(&state.quarantined_sessions);
     let system_terminate_requests = Arc::clone(&state.system_terminate_requests);
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-        .await
-        .expect("bind mock proxy listener");
+    let listener = TcpListener::bind(addr).await.expect("bind mock proxy listener");
     let addr = listener.local_addr().expect("read mock proxy address");
 
     let router = Router::new()

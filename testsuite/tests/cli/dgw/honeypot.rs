@@ -26,7 +26,15 @@ struct TestControlPlaneHealthServer {
 
 impl TestControlPlaneHealthServer {
     async fn spawn(service_state: ServiceState, degraded_reasons: Vec<String>) -> anyhow::Result<Self> {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        Self::spawn_on_addr(("127.0.0.1", 0), service_state, degraded_reasons).await
+    }
+
+    async fn spawn_on_addr(
+        addr: impl tokio::net::ToSocketAddrs,
+        service_state: ServiceState,
+        degraded_reasons: Vec<String>,
+    ) -> anyhow::Result<Self> {
+        let listener = tokio::net::TcpListener::bind(addr)
             .await
             .context("bind fake control-plane health listener")?;
         let addr = listener.local_addr().context("read fake control-plane address")?;
@@ -256,6 +264,105 @@ async fn proxy_health_reports_unavailable_when_honeypot_control_plane_is_unreach
 
     let _ = process.start_kill();
     let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn proxy_health_recovers_after_control_plane_outage() -> anyhow::Result<()> {
+    let reserved_listener =
+        std::net::TcpListener::bind(("127.0.0.1", 0)).context("bind reserved control-plane port")?;
+    let control_plane_addr = reserved_listener
+        .local_addr()
+        .context("read reserved control-plane address")?;
+    drop(reserved_listener);
+
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(
+            HoneypotConfig::builder()
+                .enabled(true)
+                .control_plane_endpoint(Some(format!("http://{control_plane_addr}/")))
+                .control_plane_service_bearer_token(Some(TEST_CONTROL_PLANE_SERVICE_TOKEN.to_owned()))
+                .control_plane_request_timeout_secs(1)
+                .control_plane_connect_timeout_secs(1)
+                .build(),
+        )
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let (status_line, body) = send_http_request_with_headers(
+        config_handle.http_port(),
+        "GET",
+        "/jet/health",
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+        None,
+        &[("Accept", "application/json")],
+        &[],
+    )
+    .await?;
+    let payload: serde_json::Value =
+        serde_json::from_slice(&body).context("parse initial unavailable health payload")?;
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(payload["honeypot"]["service_state"], "unavailable");
+    assert_eq!(payload["honeypot"]["control_plane_reachable"], false);
+    assert!(payload["honeypot"]["control_plane_service_state"].is_null());
+    assert_eq!(payload["honeypot"]["degraded_reasons"][0], "control_plane_unavailable");
+
+    let control_plane =
+        TestControlPlaneHealthServer::spawn_on_addr(control_plane_addr, ServiceState::Ready, Vec::new()).await?;
+
+    let mut recovered = None;
+    for _ in 0..20 {
+        let (status_line, body) = send_http_request_with_headers(
+            config_handle.http_port(),
+            "GET",
+            "/jet/health",
+            HONEYPOT_WATCH_SCOPE_TOKEN,
+            None,
+            &[("Accept", "application/json")],
+            &[],
+        )
+        .await?;
+        let payload: serde_json::Value = serde_json::from_slice(&body).context("parse recovered health payload")?;
+
+        if status_line.contains("200")
+            && payload["honeypot"]["service_state"] == "ready"
+            && payload["honeypot"]["control_plane_reachable"] == true
+            && payload["honeypot"]["control_plane_service_state"] == "ready"
+        {
+            recovered = Some((status_line, payload));
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let (status_line, payload) = recovered.context("proxy health did not recover after control-plane startup")?;
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(payload["honeypot"]["service_state"], "ready");
+    assert_eq!(payload["honeypot"]["control_plane_reachable"], true);
+    assert_eq!(payload["honeypot"]["control_plane_service_state"], "ready");
+    assert_eq!(
+        payload["honeypot"]["degraded_reasons"],
+        serde_json::Value::Array(Vec::new())
+    );
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+    control_plane.shutdown().await;
 
     Ok(())
 }

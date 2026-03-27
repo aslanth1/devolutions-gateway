@@ -658,7 +658,7 @@ Pass when: single-session and global kill actions tear down sessions and revoke 
 - [ ] Add an orphan-cleanup test.
 Pass when: abandoned VM and container artifacts are reclaimed deterministically after interrupted or failed sessions.
 
-- [ ] Add a control-plane outage degradation test.
+- [x] Add a control-plane outage degradation test.
 Pass when: the proxy and frontend expose control-plane-unavailable state cleanly and recover without manual data repair when connectivity returns.
 
 - [ ] Add a snapshot-corruption detection test.
