@@ -11,15 +11,16 @@ use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use sha2::{Digest as _, Sha256};
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_control_plane::{
-    HoneypotControlPlaneTestConfig, ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL,
+    CANONICAL_TINY11_IMAGE_STORE_ROOT, HoneypotControlPlaneTestConfig, ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL,
     ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP, ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
     ROW706_EVIDENCE_SCHEMA_VERSION, Row706AnchorResult, Row706AnchorStatus, Row706AttemptDisposition,
-    Row706AttemptOutcomeKind, attempt_row706_evidence_run, fake_qemu_bin_path, find_unused_port,
-    get_json_response_with_bearer_token, honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd,
-    load_honeypot_interop_store_evidence, post_json_response_with_bearer_token, read_health_response_with_bearer_token,
-    row706_begin_run, row706_complete_run, row706_default_evidence_dir, send_http_request,
-    validate_honeypot_interop_lease_binding, verify_row706_evidence_envelope, write_honeypot_control_plane_config,
-    write_row706_anchor_result,
+    Row706AttemptOutcomeKind, Tiny11LabCleanStateProbe, Tiny11LabGateBlocker, Tiny11LabGateInputs,
+    Tiny11LabGateOutcome, Tiny11LabRuntimeInput, attempt_row706_evidence_run, evaluate_tiny11_lab_gate,
+    fake_qemu_bin_path, find_unused_port, get_json_response_with_bearer_token, honeypot_control_plane_assert_cmd,
+    honeypot_control_plane_tokio_cmd, load_honeypot_interop_store_evidence, post_json_response_with_bearer_token,
+    read_health_response_with_bearer_token, row706_begin_run, row706_complete_run, row706_default_evidence_dir,
+    send_http_request, validate_honeypot_interop_lease_binding, verify_row706_evidence_envelope,
+    write_honeypot_control_plane_config, write_row706_anchor_result,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
 use uuid::Uuid;
@@ -2414,23 +2415,12 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
         eprintln!("skipping lab-e2e external-client interoperability test: {error:#}");
         return;
     }
-
-    if !external_client_interop_env_is_configured() {
-        record_row706_skipped_anchor_result(
-            ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP,
-            format!(
-                "missing {} {} or {}",
-                HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV
-            ),
-        );
-        eprintln!(
-            "skipping lab-e2e external-client interoperability test: set {} {} and {}",
-            HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
-        );
+    let Some(interop) = load_external_client_interop_or_skip(
+        ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP,
+        "external-client interoperability",
+    ) else {
         return;
-    }
-
-    let interop = load_external_client_interop_config().expect("load external-client interoperability config");
+    };
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
     let config_path = tempdir.path().join("control-plane.toml");
@@ -2563,23 +2553,11 @@ async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_clea
         eprintln!("skipping lab-e2e gold-image acceptance test: {error:#}");
         return;
     }
-
-    if !external_client_interop_env_is_configured() {
-        record_row706_skipped_anchor_result(
-            ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE,
-            format!(
-                "missing {} {} or {}",
-                HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV
-            ),
-        );
-        eprintln!(
-            "skipping lab-e2e gold-image acceptance test: set {} {} and {}",
-            HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
-        );
+    let Some(interop) =
+        load_external_client_interop_or_skip(ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, "gold-image acceptance")
+    else {
         return;
-    }
-
-    let interop = load_external_client_interop_config().expect("load gold-image interop config");
+    };
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
     let config_path = tempdir.path().join("control-plane.toml");
@@ -2661,23 +2639,11 @@ async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_le
         eprintln!("skipping lab-e2e repeated gold-image acceptance test: {error:#}");
         return;
     }
-
-    if !external_client_interop_env_is_configured() {
-        record_row706_skipped_anchor_result(
-            ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
-            format!(
-                "missing {} {} or {}",
-                HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV
-            ),
-        );
-        eprintln!(
-            "skipping lab-e2e repeated gold-image acceptance test: set {} {} and {}",
-            HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
-        );
+    let Some(interop) =
+        load_external_client_interop_or_skip(ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY, "repeated gold-image acceptance")
+    else {
         return;
-    }
-
-    let interop = load_external_client_interop_config().expect("load repeated gold-image interop config");
+    };
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
     let config_path = tempdir.path().join("control-plane.toml");
@@ -2972,6 +2938,115 @@ fn control_plane_interop_store_evidence_binds_attestation_to_base_image_path() {
 
     validate_honeypot_interop_lease_binding(&evidence, "attestation://gold-image-0", &fixture.base_image_paths[0])
         .expect("validate attestation-bound interop base image");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_tiny11_lab_gate_blocks_when_canonical_store_is_missing() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let image_store = tempdir.path().join("missing-store");
+    let manifest_dir = image_store.join("manifests");
+    let gate = evaluate_tiny11_lab_gate(&Tiny11LabGateInputs {
+        image_store_root: image_store,
+        manifest_dir,
+        clean_state_probes: Vec::new(),
+        runtime_inputs: Vec::new(),
+        consume_image_config_path: Some(std::path::PathBuf::from(
+            "honeypot/docker/config/control-plane/config.toml",
+        )),
+        source_manifest_path: None,
+    });
+
+    let Tiny11LabGateOutcome::Blocked(blocked) = gate else {
+        panic!("missing canonical store should block the Tiny11 lab gate");
+    };
+    assert_eq!(blocked.blocker, Tiny11LabGateBlocker::MissingStoreRoot);
+    assert!(
+        blocked.detail.contains("absent or not a directory"),
+        "{}",
+        blocked.detail
+    );
+    let remediation = blocked.remediation.expect("missing store should carry remediation");
+    assert!(remediation.contains("consume-image"), "{remediation}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_tiny11_lab_gate_blocks_invalid_provenance_before_runtime_inputs() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let image_store = tempdir.path().join("images");
+    let manifest_dir = image_store.join("manifests");
+
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+
+    let gate = evaluate_tiny11_lab_gate(&Tiny11LabGateInputs {
+        image_store_root: image_store,
+        manifest_dir,
+        clean_state_probes: Vec::new(),
+        runtime_inputs: vec![Tiny11LabRuntimeInput::non_empty_text(
+            HONEYPOT_INTEROP_RDP_USERNAME_ENV,
+            None,
+        )],
+        consume_image_config_path: None,
+        source_manifest_path: None,
+    });
+
+    let Tiny11LabGateOutcome::Blocked(blocked) = gate else {
+        panic!("invalid provenance should block the Tiny11 lab gate");
+    };
+    assert_eq!(blocked.blocker, Tiny11LabGateBlocker::InvalidProvenance);
+    assert!(
+        blocked.detail.contains("does not contain any .json manifests"),
+        "{}",
+        blocked.detail
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_tiny11_lab_gate_blocks_unclean_state_before_runtime_inputs() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let stale_import_marker = fixture.image_store.join(".importing");
+
+    fs::write(&stale_import_marker, b"incomplete-import").expect("write stale import marker");
+
+    let gate = evaluate_tiny11_lab_gate(&Tiny11LabGateInputs {
+        image_store_root: fixture.image_store.clone(),
+        manifest_dir: fixture.manifest_dir,
+        clean_state_probes: vec![Tiny11LabCleanStateProbe::absent(
+            "stale image import temp marker",
+            &stale_import_marker,
+        )],
+        runtime_inputs: vec![Tiny11LabRuntimeInput::non_empty_text(
+            HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
+            None,
+        )],
+        consume_image_config_path: None,
+        source_manifest_path: None,
+    });
+
+    let Tiny11LabGateOutcome::Blocked(blocked) = gate else {
+        panic!("unclean state should block the Tiny11 lab gate");
+    };
+    assert_eq!(blocked.blocker, Tiny11LabGateBlocker::UncleanState);
+    assert!(blocked.detail.contains(".importing"), "{}", blocked.detail);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_tiny11_lab_gate_accepts_attested_clean_store_with_ready_runtime_inputs() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let gate = evaluate_tiny11_lab_gate(&tiny11_lab_gate_inputs_for_fixture(&fixture));
+
+    let Tiny11LabGateOutcome::Ready(ready) = gate else {
+        panic!("ready runtime inputs should allow the Tiny11 lab gate to pass");
+    };
+    assert_eq!(ready.image_store_root, fixture.image_store);
+    assert_eq!(ready.manifest_dir, fixture.manifest_dir);
+    assert_eq!(ready.evidence.trusted_images.len(), 1);
 }
 
 #[cfg(unix)]
@@ -3881,6 +3956,16 @@ struct ExternalClientInteropConfig {
 }
 
 #[cfg(unix)]
+#[derive(Debug)]
+struct ExternalClientInteropPaths {
+    image_store: std::path::PathBuf,
+    manifest_dir: std::path::PathBuf,
+    qemu_binary_path: std::path::PathBuf,
+    kvm_path: std::path::PathBuf,
+    xfreerdp_path: std::path::PathBuf,
+}
+
+#[cfg(unix)]
 fn row706_live_run_id() -> &'static str {
     ROW706_LIVE_RUN_ID.as_str()
 }
@@ -3940,15 +4025,21 @@ fn record_row706_passed_anchor_result(
 }
 
 #[cfg(unix)]
-fn external_client_interop_env_is_configured() -> bool {
-    std::env::var_os(HONEYPOT_INTEROP_IMAGE_STORE_ENV).is_some()
-        && std::env::var_os(HONEYPOT_INTEROP_RDP_USERNAME_ENV).is_some()
-        && std::env::var_os(HONEYPOT_INTEROP_RDP_PASSWORD_ENV).is_some()
+fn load_external_client_interop_or_skip(anchor_id: &str, test_name: &str) -> Option<ExternalClientInteropConfig> {
+    match load_external_client_interop_config() {
+        Ok(interop) => Some(interop),
+        Err(error) => {
+            record_row706_skipped_anchor_result(anchor_id, format!("{error:#}"));
+            eprintln!("skipping lab-e2e {test_name} test: {error:#}");
+            None
+        }
+    }
 }
 
 #[cfg(unix)]
-fn load_external_client_interop_config() -> anyhow::Result<ExternalClientInteropConfig> {
-    let image_store = required_env_path(HONEYPOT_INTEROP_IMAGE_STORE_ENV)?;
+fn resolve_external_client_interop_paths() -> ExternalClientInteropPaths {
+    let image_store = optional_env_path(HONEYPOT_INTEROP_IMAGE_STORE_ENV)
+        .unwrap_or_else(|| std::path::PathBuf::from(CANONICAL_TINY11_IMAGE_STORE_ROOT));
     let manifest_dir =
         optional_env_path(HONEYPOT_INTEROP_MANIFEST_DIR_ENV).unwrap_or_else(|| image_store.join("manifests"));
     let qemu_binary_path = optional_env_path(HONEYPOT_INTEROP_QEMU_BINARY_ENV)
@@ -3957,6 +4048,108 @@ fn load_external_client_interop_config() -> anyhow::Result<ExternalClientInterop
         optional_env_path(HONEYPOT_INTEROP_KVM_PATH_ENV).unwrap_or_else(|| std::path::PathBuf::from("/dev/kvm"));
     let xfreerdp_path =
         optional_env_path(HONEYPOT_INTEROP_XFREERDP_PATH_ENV).unwrap_or_else(|| std::path::PathBuf::from("xfreerdp"));
+
+    ExternalClientInteropPaths {
+        image_store,
+        manifest_dir,
+        qemu_binary_path,
+        kvm_path,
+        xfreerdp_path,
+    }
+}
+
+#[cfg(unix)]
+fn build_external_client_interop_gate_inputs(paths: &ExternalClientInteropPaths) -> Tiny11LabGateInputs {
+    Tiny11LabGateInputs {
+        image_store_root: paths.image_store.clone(),
+        manifest_dir: paths.manifest_dir.clone(),
+        clean_state_probes: vec![
+            Tiny11LabCleanStateProbe::absent("stale image import temp marker", paths.image_store.join(".importing")),
+            Tiny11LabCleanStateProbe::absent(
+                "stale manifest import temp marker",
+                paths.manifest_dir.join(".importing"),
+            ),
+        ],
+        runtime_inputs: vec![
+            Tiny11LabRuntimeInput::non_empty_text(
+                HONEYPOT_INTEROP_RDP_USERNAME_ENV,
+                optional_env_string(HONEYPOT_INTEROP_RDP_USERNAME_ENV),
+            ),
+            Tiny11LabRuntimeInput::non_empty_text(
+                HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
+                optional_env_string(HONEYPOT_INTEROP_RDP_PASSWORD_ENV),
+            ),
+            Tiny11LabRuntimeInput::existing_path(
+                format!(
+                    "{HONEYPOT_INTEROP_QEMU_BINARY_ENV} ({})",
+                    paths.qemu_binary_path.display()
+                ),
+                paths.qemu_binary_path.clone(),
+            ),
+            Tiny11LabRuntimeInput::existing_path(
+                format!("{HONEYPOT_INTEROP_KVM_PATH_ENV} ({})", paths.kvm_path.display()),
+                paths.kvm_path.clone(),
+            ),
+            Tiny11LabRuntimeInput::existing_command(
+                format!(
+                    "{HONEYPOT_INTEROP_XFREERDP_PATH_ENV} ({})",
+                    paths.xfreerdp_path.display()
+                ),
+                paths.xfreerdp_path.clone(),
+            ),
+        ],
+        consume_image_config_path: Some(std::path::PathBuf::from(
+            "honeypot/docker/config/control-plane/config.toml",
+        )),
+        source_manifest_path: None,
+    }
+}
+
+#[cfg(unix)]
+fn tiny11_lab_gate_error_message(blocker: Tiny11LabGateBlocker, detail: &str, remediation: Option<&str>) -> String {
+    let blocker = match blocker {
+        Tiny11LabGateBlocker::MissingStoreRoot => "missing_store_root",
+        Tiny11LabGateBlocker::InvalidProvenance => "invalid_provenance",
+        Tiny11LabGateBlocker::UncleanState => "unclean_state",
+        Tiny11LabGateBlocker::MissingRuntimeInputs => "missing_runtime_inputs",
+    };
+
+    match remediation {
+        Some(remediation) => format!("Tiny11 lab gate blocked by {blocker}: {detail}\nremediation: {remediation}"),
+        None => format!("Tiny11 lab gate blocked by {blocker}: {detail}"),
+    }
+}
+
+#[cfg(unix)]
+fn tiny11_lab_gate_inputs_for_fixture(fixture: &RuntimeFixture) -> Tiny11LabGateInputs {
+    Tiny11LabGateInputs {
+        image_store_root: fixture.image_store.clone(),
+        manifest_dir: fixture.manifest_dir.clone(),
+        clean_state_probes: vec![
+            Tiny11LabCleanStateProbe::absent("stale image import temp marker", fixture.image_store.join(".importing")),
+            Tiny11LabCleanStateProbe::absent(
+                "stale manifest import temp marker",
+                fixture.manifest_dir.join(".importing"),
+            ),
+        ],
+        runtime_inputs: vec![
+            Tiny11LabRuntimeInput::non_empty_text(HONEYPOT_INTEROP_RDP_USERNAME_ENV, Some("operator".to_owned())),
+            Tiny11LabRuntimeInput::non_empty_text(
+                HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
+                Some("operator-password".to_owned()),
+            ),
+            Tiny11LabRuntimeInput::existing_path("fixture qemu binary", fixture.qemu_binary_path.clone()),
+            Tiny11LabRuntimeInput::existing_path("fixture kvm path", fixture.kvm_path.clone()),
+            Tiny11LabRuntimeInput::existing_command("fixture xfreerdp path", fixture.qemu_binary_path.clone()),
+        ],
+        consume_image_config_path: None,
+        source_manifest_path: None,
+    }
+}
+
+#[cfg(unix)]
+fn load_external_client_interop_config() -> anyhow::Result<ExternalClientInteropConfig> {
+    let paths = resolve_external_client_interop_paths();
     let requested_pool = std::env::var(HONEYPOT_INTEROP_POOL_ENV).unwrap_or_else(|_| "default".to_owned());
     let ready_timeout_secs = std::env::var(HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV)
         .ok()
@@ -3964,19 +4157,26 @@ fn load_external_client_interop_config() -> anyhow::Result<ExternalClientInterop
         .transpose()
         .expect("ready timeout env should be a u16")
         .unwrap_or(120);
+    let evidence = match evaluate_tiny11_lab_gate(&build_external_client_interop_gate_inputs(&paths)) {
+        Tiny11LabGateOutcome::Ready(ready) => ready.evidence,
+        Tiny11LabGateOutcome::Blocked(blocked) => {
+            anyhow::bail!(
+                "{}",
+                tiny11_lab_gate_error_message(blocked.blocker, &blocked.detail, blocked.remediation.as_deref(),)
+            );
+        }
+    };
     let rdp_username = required_env_string(HONEYPOT_INTEROP_RDP_USERNAME_ENV)?;
     let rdp_password = required_env_string(HONEYPOT_INTEROP_RDP_PASSWORD_ENV)?;
     let rdp_domain = optional_env_string(HONEYPOT_INTEROP_RDP_DOMAIN_ENV);
     let rdp_security = optional_env_string(HONEYPOT_INTEROP_RDP_SECURITY_ENV);
-    let evidence = load_honeypot_interop_store_evidence(&image_store, &manifest_dir)
-        .context("load attested interop image store evidence")?;
 
     Ok(ExternalClientInteropConfig {
-        image_store,
-        manifest_dir,
-        qemu_binary_path,
-        kvm_path,
-        xfreerdp_path,
+        image_store: paths.image_store,
+        manifest_dir: paths.manifest_dir,
+        qemu_binary_path: paths.qemu_binary_path,
+        kvm_path: paths.kvm_path,
+        xfreerdp_path: paths.xfreerdp_path,
         requested_pool,
         ready_timeout_secs,
         rdp_username,
@@ -4010,13 +4210,6 @@ fn assert_active_snapshot_matches_interop_store(
     .expect("active lease snapshot should stay bound to the validated interop store");
 
     std::path::PathBuf::from(base_image_path)
-}
-
-#[cfg(unix)]
-fn required_env_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
-    std::env::var_os(name)
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("missing required environment variable {name}"))
 }
 
 #[cfg(unix)]

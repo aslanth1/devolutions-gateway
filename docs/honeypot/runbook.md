@@ -49,6 +49,9 @@ cargo test -p testsuite --test integration_tests
 - Run `lab-e2e` work only when `DGW_HONEYPOT_LAB_E2E=1` is set.
 - `lab-e2e` also requires `DGW_HONEYPOT_TIER_GATE` to point at a gate manifest whose `contract_passed` and `host_smoke_passed` fields are both `true`.
 - The external-client interoperability lane additionally requires the documented `DGW_HONEYPOT_INTEROP_*` variables from [testing.md](testing.md).
+- Relevant Tiny11-backed `lab-e2e` lanes now execute one canonical availability and readiness gate before lease work begins.
+- That gate resolves the interop store from `DGW_HONEYPOT_INTEROP_IMAGE_STORE` when set or from `/srv/honeypot/images` otherwise, reuses manifest-backed provenance validation, rejects stale `.importing` markers, and refuses to proceed when the required RDP credentials, QEMU path, KVM path, or `xfreerdp` path are absent.
+- If the canonical store is absent or fails provenance checks, repopulate it only through `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>`.
 
 ## Local Bring-Up
 

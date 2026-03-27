@@ -579,6 +579,231 @@ pub fn validate_honeypot_interop_lease_binding(
 }
 
 #[cfg(unix)]
+pub const CANONICAL_TINY11_IMAGE_STORE_ROOT: &str = "/srv/honeypot/images";
+#[cfg(unix)]
+const GENERIC_CONSUME_IMAGE_REMEDIATION: &str = "populate the canonical Tiny11 interop store with `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>`";
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tiny11LabGateBlocker {
+    MissingStoreRoot,
+    InvalidProvenance,
+    UncleanState,
+    MissingRuntimeInputs,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct Tiny11LabGateBlocked {
+    pub blocker: Tiny11LabGateBlocker,
+    pub detail: String,
+    pub remediation: Option<String>,
+    pub image_store_root: PathBuf,
+    pub manifest_dir: PathBuf,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct Tiny11LabGateReady {
+    pub image_store_root: PathBuf,
+    pub manifest_dir: PathBuf,
+    pub evidence: HoneypotInteropStoreEvidence,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub enum Tiny11LabGateOutcome {
+    Ready(Tiny11LabGateReady),
+    Blocked(Tiny11LabGateBlocked),
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct Tiny11LabCleanStateProbe {
+    pub label: String,
+    pub path: PathBuf,
+}
+
+#[cfg(unix)]
+impl Tiny11LabCleanStateProbe {
+    pub fn absent(label: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Self {
+            label: label.into(),
+            path: path.into(),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub enum Tiny11LabRuntimeInputCheck {
+    NonEmptyText(Option<String>),
+    ExistingPath(PathBuf),
+    ExistingCommand(PathBuf),
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct Tiny11LabRuntimeInput {
+    pub label: String,
+    pub check: Tiny11LabRuntimeInputCheck,
+}
+
+#[cfg(unix)]
+impl Tiny11LabRuntimeInput {
+    pub fn non_empty_text(label: impl Into<String>, value: Option<String>) -> Self {
+        Self {
+            label: label.into(),
+            check: Tiny11LabRuntimeInputCheck::NonEmptyText(value),
+        }
+    }
+
+    pub fn existing_path(label: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Self {
+            label: label.into(),
+            check: Tiny11LabRuntimeInputCheck::ExistingPath(path.into()),
+        }
+    }
+
+    pub fn existing_command(label: impl Into<String>, path: impl Into<PathBuf>) -> Self {
+        Self {
+            label: label.into(),
+            check: Tiny11LabRuntimeInputCheck::ExistingCommand(path.into()),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+pub struct Tiny11LabGateInputs {
+    pub image_store_root: PathBuf,
+    pub manifest_dir: PathBuf,
+    pub clean_state_probes: Vec<Tiny11LabCleanStateProbe>,
+    pub runtime_inputs: Vec<Tiny11LabRuntimeInput>,
+    pub consume_image_config_path: Option<PathBuf>,
+    pub source_manifest_path: Option<PathBuf>,
+}
+
+#[cfg(unix)]
+pub fn evaluate_tiny11_lab_gate(inputs: &Tiny11LabGateInputs) -> Tiny11LabGateOutcome {
+    if !inputs.image_store_root.is_dir() {
+        return Tiny11LabGateOutcome::Blocked(Tiny11LabGateBlocked {
+            blocker: Tiny11LabGateBlocker::MissingStoreRoot,
+            detail: format!(
+                "canonical Tiny11 interop image store root {} is absent or not a directory",
+                inputs.image_store_root.display()
+            ),
+            remediation: Some(render_consume_image_remediation(
+                inputs.consume_image_config_path.as_deref(),
+                inputs.source_manifest_path.as_deref(),
+            )),
+            image_store_root: inputs.image_store_root.clone(),
+            manifest_dir: inputs.manifest_dir.clone(),
+        });
+    }
+
+    let evidence = match load_honeypot_interop_store_evidence(&inputs.image_store_root, &inputs.manifest_dir) {
+        Ok(evidence) => evidence,
+        Err(error) => {
+            return Tiny11LabGateOutcome::Blocked(Tiny11LabGateBlocked {
+                blocker: Tiny11LabGateBlocker::InvalidProvenance,
+                detail: format!(
+                    "canonical Tiny11 interop store at {} failed provenance validation: {error:#}",
+                    inputs.image_store_root.display()
+                ),
+                remediation: Some(render_consume_image_remediation(
+                    inputs.consume_image_config_path.as_deref(),
+                    inputs.source_manifest_path.as_deref(),
+                )),
+                image_store_root: inputs.image_store_root.clone(),
+                manifest_dir: inputs.manifest_dir.clone(),
+            });
+        }
+    };
+
+    let stale_paths = inputs
+        .clean_state_probes
+        .iter()
+        .filter(|probe| probe.path.exists())
+        .map(|probe| format!("{} ({})", probe.label, probe.path.display()))
+        .collect::<Vec<_>>();
+    if !stale_paths.is_empty() {
+        return Tiny11LabGateOutcome::Blocked(Tiny11LabGateBlocked {
+            blocker: Tiny11LabGateBlocker::UncleanState,
+            detail: format!(
+                "canonical Tiny11 interop store at {} is not in the expected clean state: {}",
+                evidence.image_store_root.display(),
+                stale_paths.join(", ")
+            ),
+            remediation: None,
+            image_store_root: evidence.image_store_root.clone(),
+            manifest_dir: evidence.manifest_dir,
+        });
+    }
+
+    let missing_runtime_inputs = inputs
+        .runtime_inputs
+        .iter()
+        .filter(|input| !tiny11_lab_runtime_input_is_ready(input))
+        .map(|input| input.label.clone())
+        .collect::<Vec<_>>();
+    if !missing_runtime_inputs.is_empty() {
+        return Tiny11LabGateOutcome::Blocked(Tiny11LabGateBlocked {
+            blocker: Tiny11LabGateBlocker::MissingRuntimeInputs,
+            detail: format!(
+                "missing required Tiny11 lab runtime inputs: {}",
+                missing_runtime_inputs.join(", ")
+            ),
+            remediation: None,
+            image_store_root: evidence.image_store_root.clone(),
+            manifest_dir: evidence.manifest_dir,
+        });
+    }
+
+    Tiny11LabGateOutcome::Ready(Tiny11LabGateReady {
+        image_store_root: evidence.image_store_root.clone(),
+        manifest_dir: evidence.manifest_dir.clone(),
+        evidence,
+    })
+}
+
+#[cfg(unix)]
+fn render_consume_image_remediation(config_path: Option<&Path>, source_manifest_path: Option<&Path>) -> String {
+    let Some(source_manifest_path) = source_manifest_path else {
+        return GENERIC_CONSUME_IMAGE_REMEDIATION.to_owned();
+    };
+    if !source_manifest_path.is_file() {
+        return GENERIC_CONSUME_IMAGE_REMEDIATION.to_owned();
+    }
+
+    let config_display = config_path
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "<control-plane.toml>".to_owned());
+    format!(
+        "populate the canonical Tiny11 interop store with `honeypot-control-plane consume-image --config {} --source-manifest {}`",
+        config_display,
+        source_manifest_path.display()
+    )
+}
+
+#[cfg(unix)]
+fn tiny11_lab_runtime_input_is_ready(input: &Tiny11LabRuntimeInput) -> bool {
+    match &input.check {
+        Tiny11LabRuntimeInputCheck::NonEmptyText(value) => value.as_ref().is_some_and(|value| !value.trim().is_empty()),
+        Tiny11LabRuntimeInputCheck::ExistingPath(path) => path.exists(),
+        Tiny11LabRuntimeInputCheck::ExistingCommand(path) => {
+            if path.components().count() == 1 && matches!(path.components().next(), Some(Component::Normal(_))) {
+                std::env::var_os("PATH").is_some_and(|paths| {
+                    std::env::split_paths(&paths).any(|search_root| search_root.join(path).is_file())
+                })
+            } else {
+                path.is_file()
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 pub const ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE: &str = "gold_image_acceptance";
 #[cfg(unix)]
 pub const ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY: &str = "gold_image_repeatability";

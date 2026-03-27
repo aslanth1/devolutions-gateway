@@ -111,6 +111,17 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly` validates one attested Windows 11 Pro x64 image from the configured interop image store, acquires a lease, verifies live RDP readiness with `xfreerdp +auth-only`, confirms required runtime control-channel artifacts, and then proves recycle removes the active snapshot, runtime dir, overlay, pid file, and QMP socket.
 - This acceptance lane is intentionally explicit and fail-closed behind the `lab-e2e` gate plus interop env prerequisites, so it does not run accidentally in the default contract-tier suite.
 
+## Canonical Tiny11 Lab Gate
+
+- `AGENTS.md` pass row `Add a canonical Tiny11 availability and readiness gate for lab-backed runs.` is satisfied by `testsuite::honeypot_control_plane::evaluate_tiny11_lab_gate` plus the lab-backed `load_external_client_interop_config` wrapper in `testsuite/tests/honeypot_control_plane.rs`.
+- The canonical store root resolves from `DGW_HONEYPOT_INTEROP_IMAGE_STORE` when explicitly configured and otherwise falls back to the documented host default `/srv/honeypot/images`; the manifest dir resolves from `DGW_HONEYPOT_INTEROP_MANIFEST_DIR` or `<store>/manifests`.
+- Relevant `lab-e2e` row-`706` anchors now execute one shared fail-closed gate before lease work begins instead of relying on ad hoc env checks.
+- The blocker order is `missing_store_root`, `invalid_provenance`, `unclean_state`, `missing_runtime_inputs`, then `ready`.
+- `missing_store_root` and `invalid_provenance` both point operators at the sanctioned Rust import path `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>` instead of permitting manual manifest edits or shell wrappers.
+- `invalid_provenance` is still owned by `load_honeypot_interop_store_evidence`, so the gate reuses the existing manifest-backed Tiny11 authority instead of inventing a second verifier.
+- `unclean_state` currently rejects stale `.importing` markers in the image store or manifest dir so interrupted imports cannot masquerade as ready Tiny11 state.
+- `missing_runtime_inputs` currently covers the required RDP username, RDP password, QEMU binary path, `/dev/kvm`, and `xfreerdp` availability checks that the live interop lane needs before it can claim readiness.
+
 ## Gold Image RDP Evidence
 
 - `AGENTS.md` pass row `Enable and verify RDP in the gold image.` is satisfied by the Rust `lab-e2e` lane in `testsuite/tests/honeypot_control_plane.rs`.

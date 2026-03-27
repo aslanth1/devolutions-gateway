@@ -246,3 +246,41 @@ fn honeypot_docs_keep_windows_provisioning_key_allowlist_narrow() {
         "Do not copy that key into manual-headed evidence, screenshots, exports, secondary docs, or any other tracked artifact.",
     );
 }
+
+#[test]
+fn honeypot_docs_keep_canonical_tiny11_lab_gate_fail_closed() {
+    let agents_path = "AGENTS.md";
+    let agents = read_repo_text(agents_path);
+    assert_contains(
+        agents_path,
+        &agents,
+        "- [x] Add a canonical Tiny11 availability and readiness gate for lab-backed runs.",
+    );
+
+    let testing_path = "docs/honeypot/testing.md";
+    let testing = read_repo_text(testing_path);
+    assert_contains(testing_path, &testing, "## Canonical Tiny11 Lab Gate");
+    assert_contains(
+        testing_path,
+        &testing,
+        "The blocker order is `missing_store_root`, `invalid_provenance`, `unclean_state`, `missing_runtime_inputs`, then `ready`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "reuses the existing manifest-backed Tiny11 authority instead of inventing a second verifier",
+    );
+
+    let runbook_path = "docs/honeypot/runbook.md";
+    let runbook = read_repo_text(runbook_path);
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Relevant Tiny11-backed `lab-e2e` lanes now execute one canonical availability and readiness gate before lease work begins.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "repopulate it only through `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>`",
+    );
+}

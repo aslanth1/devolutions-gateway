@@ -393,6 +393,9 @@ Pass when: the control plane can retire, reset, or recycle a named VM back to th
 - [x] Build or consume the Tiny11-derived Windows 11 gold image flow without Bash or Python wrappers.
 Pass when: the image process is reproducible, documented, records provenance inputs, and produces a version-pinned base artifact.
 
+- [x] Add a canonical Tiny11 availability and readiness gate for lab-backed runs.
+Pass when: if the documented canonical Tiny11-derived image or trusted interop store is absent, the repo has one sanctioned path to create or import it for use, and if it already exists, every relevant test run executes heuristics that confirm provenance binding, expected clean-state, and required readiness before the run may proceed.
+
 - [x] Enable and verify RDP in the gold image.
 Pass when: a fresh VM from the gold image reaches a known-ready signal and accepts RDP on TCP 3389 in the lab.
 
