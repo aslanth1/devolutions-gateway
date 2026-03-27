@@ -620,7 +620,7 @@ Pass when: terminating a session removes the live session, expires the credentia
 - [x] Add a `control-plane` rollback drill test.
 Pass when: Rust tests can swap `control-plane` from `current` to `previous`, confirm the stack still starts and serves traffic, then restore `previous` back to `current` using `honeypot/docker/images.lock`.
 
-- [ ] Add a `proxy` rollback drill test.
+- [x] Add a `proxy` rollback drill test.
 Pass when: Rust tests can swap `proxy` from `current` to `previous`, confirm the stack still starts and serves traffic, then restore `previous` back to `current` using `honeypot/docker/images.lock`.
 
 - [ ] Add a `frontend` rollback drill test.
