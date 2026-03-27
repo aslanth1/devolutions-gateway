@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "run_id": "c82e8c2a-749e-4a0d-8a46-6975296fae81",
+  "anchor_id": "gold_image_acceptance",
+  "executed": false,
+  "status": "skipped",
+  "detail": "Tiny11 lab gate blocked by invalid_provenance: canonical Tiny11 interop store at /home/jf/research/ned/labs/windows/kvm-win11/vm failed provenance validation: interop manifest dir /home/jf/research/ned/labs/windows/kvm-win11/vm does not contain any .json manifests\nremediation: populate the canonical Tiny11 interop store with `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>`"
+}

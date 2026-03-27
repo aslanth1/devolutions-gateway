@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "run_id": "c82e8c2a-749e-4a0d-8a46-6975296fae81",
+  "created_at_unix_secs": 1774644660,
+  "status": "complete",
+  "expected_anchor_ids": [
+    "gold_image_acceptance",
+    "gold_image_repeatability",
+    "external_client_interop",
+    "digest_mismatch_negative_control"
+  ],
+  "completed_at_unix_secs": 1774644661
+}

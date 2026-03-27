@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "run_id": "c82e8c2a-749e-4a0d-8a46-6975296fae81",
+  "anchor_id": "digest_mismatch_negative_control",
+  "executed": true,
+  "status": "passed",
+  "image_store_root": "/tmp/.tmpdUscHk/images",
+  "detail": "digest mismatch negative control rejected the tampered base image before lease use"
+}
