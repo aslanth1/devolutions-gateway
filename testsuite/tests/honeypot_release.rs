@@ -2238,6 +2238,8 @@ async fn rollback_failure_keeps_the_current_stack_running_and_reports_the_error(
 
         assert_compose_stack_ready(&fixture.compose_path, &project_name)
             .context("stack should remain healthy after failed rollback attempt")?;
+        assert_compose_logs_redacted(&fixture.compose_path, &project_name)
+            .context("rollback-failure compose logs should keep service tokens redacted")?;
 
         Ok(())
     }
