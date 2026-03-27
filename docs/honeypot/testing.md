@@ -72,3 +72,11 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_visibility.rs` also proves an active stream route redirects only while the session is live, then both the stream-token route and the stream route return `404` after terminate-triggered recycle removes the session.
 - `testsuite/tests/cli/dgw/honeypot.rs` proves the proxy rejects mismatched and unknown session IDs for both the stream-token route and the stream route.
 - `testsuite/tests/honeypot_frontend.rs` proves the frontend only uses the requested session's stream binding, removes recycled tiles and focus routes after `host.recycled`, and filters disconnected and recycled sessions out of bootstrap-driven live views.
+
+## Rust E2E Guest And POSIX Artifact Evidence
+
+- `AGENTS.md` pass row `The Rust e2e path validates both guest behavior and POSIX host artifacts.` is satisfied by the existing Rust `lab-e2e` path, with `host-smoke` checks providing supporting depth.
+- `testsuite/tests/honeypot_control_plane.rs` proves guest behavior in the Rust `lab-e2e` lane by acquiring a lease, waiting for forwarded RDP readiness, and recycling back to ready in `control_plane_lab_harness_startup_reaches_rdp_readiness_on_posix_host`.
+- `testsuite/tests/honeypot_control_plane.rs` also proves POSIX host-artifact cleanup in the same Rust `lab-e2e` lane by asserting the active snapshot, runtime dir, overlay, pid file, QMP socket, QGA socket, and fake-QEMU process are all removed after recycle in `control_plane_lab_harness_teardown_cleans_runtime_artifacts_on_posix_host`.
+- `testsuite/tests/honeypot_release.rs` adds supporting POSIX host depth by checking the three-service runtime artifact, permission, and redaction contract in `posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted`.
+- `testsuite/tests/honeypot_control_plane.rs` includes `control_plane_external_client_interoperability_smoke_uses_xfreerdp` as an optional supplemental Rust `lab-e2e` lane when explicit external-client lab inputs are configured.
