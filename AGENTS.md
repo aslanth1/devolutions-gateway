@@ -562,7 +562,7 @@ Pass when: the Docker smoke and compose tiers read the exact `current` and `prev
 - [x] Add a Rust lockfile-schema validation test for `honeypot/docker/images.lock`.
 Pass when: tests fail if `control-plane`, `proxy`, or `frontend` is missing, if `current` or `previous` digest fields are missing, or if validation paths try to use a floating tag.
 
-- [ ] Add a Rust Docker smoke-test tier for the three service images.
+- [x] Add a Rust Docker smoke-test tier for the three service images.
 Pass when: Rust tests can build or pull `control-plane`, `proxy`, and `frontend`, start them in dependency order, and verify their health endpoints without the full QEMU lab.
 
 - [x] Add a Rust pull-by-digest smoke test for the three service images.

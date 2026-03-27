@@ -12,6 +12,9 @@ use serde::Deserialize;
 
 pub const HONEYPOT_IMAGES_LOCK_PATH: &str = "honeypot/docker/images.lock";
 pub const HONEYPOT_COMPOSE_PATH: &str = "honeypot/docker/compose.yaml";
+pub const HONEYPOT_CONTROL_PLANE_DOCKERFILE_PATH: &str = "honeypot/docker/control-plane/Dockerfile";
+pub const HONEYPOT_PROXY_DOCKERFILE_PATH: &str = "honeypot/docker/proxy/Dockerfile";
+pub const HONEYPOT_FRONTEND_DOCKERFILE_PATH: &str = "honeypot/docker/frontend/Dockerfile";
 pub const HONEYPOT_CONTROL_PLANE_ENV_PATH: &str = "honeypot/docker/env/control-plane.env";
 pub const HONEYPOT_CONTROL_PLANE_CONFIG_PATH: &str = "honeypot/docker/config/control-plane/config.toml";
 pub const HONEYPOT_PROXY_ENV_PATH: &str = "honeypot/docker/env/proxy.env";
@@ -324,6 +327,85 @@ pub fn resolve_honeypot_images_for_selection(
     }
 
     Ok(())
+}
+
+pub fn build_honeypot_service_image(service: &'static str, tag: &str) -> anyhow::Result<()> {
+    let dockerfile = repo_relative_path(service_dockerfile_path(service));
+    let context = repo_relative_path(".");
+    let args = vec![
+        "build".to_owned(),
+        "--file".to_owned(),
+        dockerfile.display().to_string(),
+        "--tag".to_owned(),
+        tag.to_owned(),
+        context.display().to_string(),
+    ];
+
+    run_docker_command_owned(&args).with_context(|| format!("build {service} image as {tag}"))?;
+
+    Ok(())
+}
+
+pub fn create_docker_network(name: &str) -> anyhow::Result<()> {
+    let args = vec!["network".to_owned(), "create".to_owned(), name.to_owned()];
+    run_docker_command_owned(&args).with_context(|| format!("create docker network {name}"))?;
+    Ok(())
+}
+
+pub fn remove_docker_network_if_exists(name: &str) -> anyhow::Result<()> {
+    if docker_network_exists(name)? {
+        let args = vec!["network".to_owned(), "rm".to_owned(), name.to_owned()];
+        run_docker_command_owned(&args).with_context(|| format!("remove docker network {name}"))?;
+    }
+
+    Ok(())
+}
+
+pub fn run_docker_container(args: &[String]) -> anyhow::Result<String> {
+    let output = run_docker_command_owned(args)?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+pub fn remove_docker_container_if_exists(name: &str) -> anyhow::Result<()> {
+    if docker_container_exists(name)? {
+        let args = vec![
+            "container".to_owned(),
+            "rm".to_owned(),
+            "--force".to_owned(),
+            name.to_owned(),
+        ];
+        run_docker_command_owned(&args).with_context(|| format!("remove docker container {name}"))?;
+    }
+
+    Ok(())
+}
+
+pub fn remove_docker_image_if_exists(tag: &str) -> anyhow::Result<()> {
+    if docker_image_exists(tag)? {
+        let args = vec![
+            "image".to_owned(),
+            "rm".to_owned(),
+            "--force".to_owned(),
+            tag.to_owned(),
+        ];
+        run_docker_command_owned(&args).with_context(|| format!("remove docker image {tag}"))?;
+    }
+
+    Ok(())
+}
+
+pub fn docker_logs(name: &str) -> anyhow::Result<String> {
+    let args = vec!["logs".to_owned(), name.to_owned()];
+    let output = run_docker_command_owned(&args).with_context(|| format!("read docker logs for {name}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+
+    Ok(match (stdout.is_empty(), stderr.is_empty()) {
+        (false, false) => format!("{stdout}\n{stderr}"),
+        (false, true) => stdout,
+        (true, false) => stderr,
+        (true, true) => String::new(),
+    })
 }
 
 pub fn validate_mixed_version_contract_compatibility(
@@ -703,15 +785,24 @@ fn resolve_image_ref_with_docker(service: &str, image_ref: &str) -> anyhow::Resu
 }
 
 fn run_docker_command(args: &[&str]) -> anyhow::Result<()> {
+    let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    run_docker_command_owned(&args).map(|_| ())
+}
+
+fn run_docker_command_owned(args: &[String]) -> anyhow::Result<std::process::Output> {
     let output = Command::new("docker")
         .args(args)
         .output()
         .with_context(|| format!("run docker {}", args.join(" ")))?;
 
     if output.status.success() {
-        return Ok(());
+        return Ok(output);
     }
 
+    Err(format_docker_error(args, &output))
+}
+
+fn format_docker_error(args: &[String], output: &std::process::Output) -> anyhow::Error {
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let detail = if !stderr.is_empty() {
@@ -722,7 +813,43 @@ fn run_docker_command(args: &[&str]) -> anyhow::Result<()> {
         format!("exit status {}", output.status)
     };
 
-    anyhow::bail!("docker {} failed: {detail}", args.join(" "));
+    anyhow::anyhow!("docker {} failed: {detail}", args.join(" "))
+}
+
+fn docker_container_exists(name: &str) -> anyhow::Result<bool> {
+    Ok(Command::new("docker")
+        .args(["container", "inspect", name])
+        .output()
+        .with_context(|| format!("inspect docker container {name}"))?
+        .status
+        .success())
+}
+
+fn docker_network_exists(name: &str) -> anyhow::Result<bool> {
+    Ok(Command::new("docker")
+        .args(["network", "inspect", name])
+        .output()
+        .with_context(|| format!("inspect docker network {name}"))?
+        .status
+        .success())
+}
+
+fn docker_image_exists(tag: &str) -> anyhow::Result<bool> {
+    Ok(Command::new("docker")
+        .args(["image", "inspect", tag])
+        .output()
+        .with_context(|| format!("inspect docker image {tag}"))?
+        .status
+        .success())
+}
+
+fn service_dockerfile_path(service: &str) -> &'static str {
+    match service {
+        "control-plane" => HONEYPOT_CONTROL_PLANE_DOCKERFILE_PATH,
+        "proxy" => HONEYPOT_PROXY_DOCKERFILE_PATH,
+        "frontend" => HONEYPOT_FRONTEND_DOCKERFILE_PATH,
+        _ => panic!("unsupported service name: {service}"),
+    }
 }
 
 impl HoneypotService {
