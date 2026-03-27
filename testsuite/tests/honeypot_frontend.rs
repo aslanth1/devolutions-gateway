@@ -458,6 +458,122 @@ async fn frontend_focus_fragment_renders_bootstrap_preview_and_renews_stream_tok
 }
 
 #[tokio::test]
+async fn frontend_focus_fragment_uses_only_the_requested_sessions_stream_binding() {
+    let session_a = Uuid::new_v4().to_string();
+    let session_b = Uuid::new_v4().to_string();
+    let mut stream_tokens = HashMap::new();
+    stream_tokens.insert(
+        session_a.clone(),
+        StreamTokenResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "stream-token-session-a".to_owned(),
+            session_id: session_a.clone(),
+            vm_lease_id: "lease-a".to_owned(),
+            stream_id: "stream-a".to_owned(),
+            stream_endpoint: format!("/jet/honeypot/session/{session_a}/stream?stream_id=stream-a"),
+            transport: StreamTransport::Websocket,
+            issued_at: "2026-03-26T12:00:00Z".to_owned(),
+            expires_at: "2026-03-26T12:05:00Z".to_owned(),
+        },
+    );
+
+    let (
+        proxy_addr,
+        proxy_handle,
+        observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-session-isolation".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "18".to_owned(),
+            sessions: vec![
+                BootstrapSession {
+                    session_id: session_a.clone(),
+                    vm_lease_id: Some("lease-a".to_owned()),
+                    state: SessionState::Assigned,
+                    last_event_id: "event-a".to_owned(),
+                    last_session_seq: 1,
+                    stream_state: StreamState::Pending,
+                    stream_preview: None,
+                },
+                BootstrapSession {
+                    session_id: session_b.clone(),
+                    vm_lease_id: Some("lease-b".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-b".to_owned(),
+                    last_session_seq: 2,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-b".to_owned(),
+                        transport: StreamTransport::Websocket,
+                        stream_endpoint: format!("/jet/honeypot/session/{session_b}/stream?stream_id=stream-b"),
+                        token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
+                    }),
+                },
+            ],
+        },
+        String::new(),
+        stream_tokens,
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let path = authed_path(
+        format!("/session/{session_a}").as_str(),
+        HONEYPOT_STREAM_READ_SCOPE_TOKEN,
+    );
+    let (status_line, _headers, body) = read_http_response(port, &path).await.expect("read focus fragment");
+    let body = String::from_utf8(body).expect("decode focus fragment");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("stream-a"), "{body}");
+    assert!(
+        body.contains(&format!("/jet/honeypot/session/{session_a}/stream")),
+        "{body}"
+    );
+    assert!(!body.contains("stream-b"), "{body}");
+    assert!(!body.contains(session_b.as_str()), "{body}");
+
+    let observed_tokens = observed_tokens.lock().await.clone();
+    assert!(
+        observed_tokens
+            .iter()
+            .any(|entry| entry == &format!("STREAM_TOKEN:{session_a}"))
+    );
+    assert!(
+        !observed_tokens
+            .iter()
+            .any(|entry| entry == &format!("STREAM_TOKEN:{session_b}"))
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
 async fn frontend_dashboard_filters_terminal_sessions_from_bootstrap() {
     let live_session_id = Uuid::new_v4().to_string();
     let disconnected_session_id = Uuid::new_v4().to_string();

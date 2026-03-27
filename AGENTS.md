@@ -543,7 +543,7 @@ Pass when: tiles close cleanly on disconnect or recycle.
 - [x] Reuse or explicitly reject existing Gateway streaming and media code.
 Pass when: the implementation names the reuse points in `recording.rs`, `streaming.rs`, `ws.rs`, `crates/transport`, `video-streamer`, and `terminal-streamer`, or explains why they are insufficient.
 
-- [ ] Add stream provenance and isolation tests.
+- [x] Add stream provenance and isolation tests.
 Pass when: the lab proves where video comes from, how it is authenticated, and that one session cannot read another session's stream.
 
 ## Milestone 5: Rust E2E and Lab Validation

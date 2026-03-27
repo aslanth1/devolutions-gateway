@@ -146,10 +146,22 @@ pub(crate) async fn get_stream(
         .await
         .map_err(HttpError::internal().err())?
         .ok_or_else(|| HttpError::not_found().msg("session not found"))?;
-    let stream = session
+    let metadata = session
         .honeypot
         .as_ref()
-        .and_then(|metadata| metadata.stream.as_ref())
+        .ok_or_else(|| HttpError::conflict().msg("no active honeypot stream"))?;
+    if !matches!(
+        metadata.state,
+        honeypot_contracts::events::SessionState::Connected
+            | honeypot_contracts::events::SessionState::Assigned
+            | honeypot_contracts::events::SessionState::Ready
+    ) {
+        return Err(HttpError::not_found().msg("honeypot stream not found"));
+    }
+
+    let stream = metadata
+        .stream
+        .as_ref()
         .ok_or_else(|| HttpError::conflict().msg("no active honeypot stream"))?;
     if stream.state != honeypot_contracts::events::StreamState::Ready {
         return Err(HttpError::conflict().msg("honeypot stream is not ready"));
