@@ -640,7 +640,7 @@ Pass when: a service restored from `previous` back to `current` can continue exc
 
 ### Milestone 5g: Negative, Cleanup, And Host Isolation Checks
 
-- [ ] Add POSIX host artifact checks.
+- [x] Add POSIX host artifact checks.
 Pass when: the tests verify image artifacts, control sockets, logs, stream outputs, and Docker runtime artifacts on the host filesystem with correct ownership, isolation, and redaction.
 
 - [x] Add a log-redaction negative test.

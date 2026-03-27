@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -29,6 +31,22 @@ use uuid::Uuid;
 
 const DOCKER_SMOKE_TIMEOUT: Duration = Duration::from_secs(240);
 const DOCKER_SMOKE_POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+#[cfg(unix)]
+#[derive(Debug, Clone)]
+struct PosixHostArtifact {
+    relative_path: PathBuf,
+    kind: &'static str,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+}
+
+#[cfg(unix)]
+fn set_unix_mode(path: &Path, mode: u32) -> anyhow::Result<()> {
+    let permissions = std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(path, permissions).with_context(|| format!("set mode {mode:o} on {}", path.display()))
+}
 
 fn expected_image_ref(lockfile: &HoneypotImagesLock, service: &'static str, slot: ImageSlot) -> String {
     let entry = lockfile.service_entry(service);
@@ -215,6 +233,16 @@ impl DockerSmokeFixture {
                 .build(),
         )
         .context("write frontend docker smoke config")?;
+        #[cfg(unix)]
+        {
+            set_unix_mode(&control_plane_secret_dir, 0o700)?;
+            set_unix_mode(&control_plane_qmp_dir, 0o700)?;
+            set_unix_mode(&control_plane_qga_dir, 0o700)?;
+            set_unix_mode(&proxy_secret_dir, 0o700)?;
+            set_unix_mode(&control_plane_secret_dir.join("backend-credentials.json"), 0o600)?;
+            set_unix_mode(&proxy_secret_dir.join("backend-credentials.json"), 0o600)?;
+            set_unix_mode(&proxy_secret_dir.join("control-plane-service-token"), 0o600)?;
+        }
 
         Ok(Self {
             _root: root,
@@ -419,6 +447,26 @@ impl DockerComposeFixture {
         .context("write compose proxy control-plane token")?;
         std::fs::write(proxy_secret_dir.join("backend-credentials.json"), "{}")
             .context("write compose proxy backend credentials")?;
+        #[cfg(unix)]
+        {
+            set_unix_mode(&root.path().join("secrets"), 0o700)?;
+            for dir in [
+                &control_plane_secret_dir,
+                &proxy_secret_dir,
+                &frontend_secret_dir,
+                &qmp_dir,
+                &qga_dir,
+            ] {
+                set_unix_mode(dir, 0o700)?;
+            }
+            for file in [
+                control_plane_secret_dir.join("backend-credentials.json"),
+                proxy_secret_dir.join("control-plane-service-token"),
+                proxy_secret_dir.join("backend-credentials.json"),
+            ] {
+                set_unix_mode(&file, 0o600)?;
+            }
+        }
 
         write_trusted_image_fixture(&image_store_dir)?;
 
@@ -435,6 +483,10 @@ impl DockerComposeFixture {
         fixture.write_compose_selection(resources, lockfile, ServiceVersionSelection::default())?;
 
         Ok(fixture)
+    }
+
+    fn root_path(&self) -> &Path {
+        self._root.path()
     }
 
     fn write_compose_selection(
@@ -1075,6 +1127,184 @@ fn cleanup_compose_project(compose_path: &Path, project_name: &str, resources: &
     }
 
     cleanup_errors
+}
+
+#[cfg(unix)]
+fn collect_posix_host_artifacts(
+    root: &Path,
+    current: &Path,
+    artifacts: &mut Vec<PosixHostArtifact>,
+) -> anyhow::Result<()> {
+    for entry in std::fs::read_dir(current).with_context(|| format!("read {}", current.display()))? {
+        let entry = entry.with_context(|| format!("read entry in {}", current.display()))?;
+        let path = entry.path();
+        let metadata = std::fs::symlink_metadata(&path).with_context(|| format!("stat {}", path.display()))?;
+        let relative_path = path
+            .strip_prefix(root)
+            .with_context(|| format!("strip {} from {}", root.display(), path.display()))?
+            .to_path_buf();
+        let file_type = metadata.file_type();
+        let kind = if file_type.is_dir() {
+            "dir"
+        } else if file_type.is_file() {
+            "file"
+        } else if file_type.is_symlink() {
+            "symlink"
+        } else {
+            "other"
+        };
+        artifacts.push(PosixHostArtifact {
+            relative_path,
+            kind,
+            uid: metadata.uid(),
+            gid: metadata.gid(),
+            mode: metadata.permissions().mode() & 0o777,
+        });
+        if file_type.is_dir() {
+            collect_posix_host_artifacts(root, &path, artifacts)?;
+        }
+    }
+
+    artifacts.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    Ok(())
+}
+
+#[cfg(unix)]
+fn list_posix_host_artifacts(fixture: &DockerComposeFixture) -> anyhow::Result<Vec<PosixHostArtifact>> {
+    let mut artifacts = Vec::new();
+    collect_posix_host_artifacts(fixture.root_path(), fixture.root_path(), &mut artifacts)?;
+    Ok(artifacts)
+}
+
+#[cfg(unix)]
+fn artifact_has_stream_output_shape(relative_path: &Path) -> bool {
+    let suspicious_components = ["recordings", "recording", "streams", "stream", "captures", "capture"];
+    if relative_path.components().any(|component| {
+        suspicious_components
+            .iter()
+            .any(|needle| component.as_os_str() == std::ffi::OsStr::new(needle))
+    }) {
+        return true;
+    }
+
+    let suspicious_extensions = ["jrec", "cast", "webm", "mp4", "mkv", "avi"];
+    relative_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| suspicious_extensions.contains(&extension))
+}
+
+#[cfg(unix)]
+fn assert_fixture_posix_host_artifacts(fixture: &DockerComposeFixture) -> anyhow::Result<()> {
+    let root = fixture.root_path();
+    let root_metadata = std::fs::metadata(root).with_context(|| format!("stat {}", root.display()))?;
+    let expected_user_id = root_metadata.uid();
+    let expected_group_id = root_metadata.gid();
+    let artifacts = list_posix_host_artifacts(fixture)?;
+    anyhow::ensure!(
+        !artifacts.is_empty(),
+        "compose fixture should create host artifacts under {}",
+        root.display()
+    );
+
+    let allowed_top_level = ["compose.yaml", "config", "env", "secrets", "srv"];
+    for artifact in &artifacts {
+        let top_level = artifact
+            .relative_path
+            .components()
+            .next()
+            .map(|component| component.as_os_str().to_string_lossy().into_owned())
+            .context("artifact path should contain a top-level component")?;
+        anyhow::ensure!(
+            allowed_top_level.contains(&top_level.as_str()),
+            "unexpected host artifact escaped the compose fixture root: {}",
+            artifact.relative_path.display()
+        );
+        anyhow::ensure!(
+            artifact.kind != "symlink" && artifact.kind != "other",
+            "host artifact must be a regular file or directory: {} ({})",
+            artifact.relative_path.display(),
+            artifact.kind
+        );
+        anyhow::ensure!(
+            artifact.uid == expected_user_id && artifact.gid == expected_group_id,
+            "host artifact must stay owned by the fixture user: {} uid={} gid={} expected_uid={} expected_gid={}",
+            artifact.relative_path.display(),
+            artifact.uid,
+            artifact.gid,
+            expected_user_id,
+            expected_group_id
+        );
+        anyhow::ensure!(
+            artifact.mode & 0o002 == 0,
+            "host artifact must not be world-writable: {} mode={:o}",
+            artifact.relative_path.display(),
+            artifact.mode
+        );
+        if artifact.relative_path.starts_with("secrets")
+            || artifact.relative_path.starts_with("srv/honeypot/run/qmp")
+            || artifact.relative_path.starts_with("srv/honeypot/run/qga")
+        {
+            anyhow::ensure!(
+                artifact.mode & 0o077 == 0,
+                "sensitive host artifact must stay owner-only: {} mode={:o}",
+                artifact.relative_path.display(),
+                artifact.mode
+            );
+        }
+        anyhow::ensure!(
+            !artifact_has_stream_output_shape(&artifact.relative_path),
+            "host-smoke compose run must not leave stream output artifacts on disk: {}",
+            artifact.relative_path.display()
+        );
+    }
+
+    for required_path in [
+        Path::new("srv/honeypot/images/tiny11-base.qcow2"),
+        Path::new("srv/honeypot/images/manifests/tiny11-smoke.json"),
+    ] {
+        anyhow::ensure!(
+            artifacts.iter().any(|artifact| artifact.relative_path == required_path),
+            "expected host artifact is missing: {}",
+            required_path.display()
+        );
+    }
+
+    for (label, directory) in [
+        ("lease", fixture.lease_store_dir.as_path()),
+        ("quarantine", fixture.quarantine_store_dir.as_path()),
+        ("qmp", fixture.qmp_dir.as_path()),
+        ("qga", fixture.qga_dir.as_path()),
+    ] {
+        let entries = std::fs::read_dir(directory)
+            .with_context(|| format!("read {label} directory {}", directory.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .with_context(|| format!("collect {label} directory entries from {}", directory.display()))?;
+        anyhow::ensure!(
+            entries.is_empty(),
+            "{label} runtime directory should stay empty during compose host smoke, found {} entries in {}",
+            entries.len(),
+            directory.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn assert_compose_logs_redacted(compose_path: &Path, project_name: &str) -> anyhow::Result<()> {
+    let logs = docker_compose_logs(compose_path, project_name);
+    for (label, secret) in [
+        (
+            "control-plane service token",
+            honeypot_scope_token("gateway.honeypot.control-plane"),
+        ),
+        ("frontend watch token", honeypot_scope_token("gateway.honeypot.watch")),
+    ] {
+        anyhow::ensure!(!logs.contains(&secret), "compose logs leaked the {label}: {secret}");
+    }
+
+    Ok(())
 }
 
 #[test]
@@ -2435,6 +2665,104 @@ async fn orphan_cleanup_reclaims_vm_and_container_artifacts() {
         (Ok(()), Err(cleanup_error)) => panic!("orphan-cleanup image cleanup failed: {cleanup_error:#}"),
         (Err(test_error), Ok(())) => panic!("{test_error:#}"),
         (Err(test_error), Err(cleanup_error)) => panic!("{test_error:#}\ncleanup error: {cleanup_error:#}"),
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping POSIX host-artifact host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let project_name = format!("dgw-honeypot-host-artifacts-{}", Uuid::new_v4().simple());
+    let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build current control-plane POSIX artifact image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image)
+            .context("build current proxy POSIX artifact image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image)
+            .context("build current frontend POSIX artifact image")?;
+
+        fixture
+            .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+            .context("write compose selection for POSIX host-artifact checks")?;
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "docker compose up failed before POSIX host-artifact checks\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should be healthy before POSIX host-artifact checks")?;
+
+        let project_label = format!("com.docker.compose.project={project_name}");
+        let live_containers = docker_filtered_names("container", &project_label).context("list compose containers")?;
+        anyhow::ensure!(
+            !live_containers.is_empty(),
+            "compose project {project_name} should create containers before POSIX host-artifact checks"
+        );
+        let live_networks = docker_filtered_names("network", &project_label).context("list compose networks")?;
+        anyhow::ensure!(
+            !live_networks.is_empty(),
+            "compose project {project_name} should create networks before POSIX host-artifact checks"
+        );
+        let live_volumes = docker_filtered_names("volume", &project_label).context("list compose volumes")?;
+        anyhow::ensure!(
+            !live_volumes.is_empty(),
+            "compose project {project_name} should create volumes before POSIX host-artifact checks"
+        );
+
+        assert_fixture_posix_host_artifacts(&fixture).context("verify POSIX host artifact ownership and isolation")?;
+        assert_compose_logs_redacted(&fixture.compose_path, &project_name)
+            .context("compose logs should keep service tokens redacted")?;
+
+        Ok(())
+    }
+    .await;
+
+    let cleanup_errors = cleanup_compose_project_orphans(&fixture.compose_path, &project_name, &fixture);
+    let final_cleanup = resources.cleanup();
+    match (result, cleanup_errors.is_empty(), final_cleanup) {
+        (Ok(()), true, Ok(())) => {}
+        (Ok(()), false, Ok(())) => {
+            panic!("POSIX host-artifact cleanup failed: {}", cleanup_errors.join("; "))
+        }
+        (Ok(()), true, Err(cleanup_error)) => {
+            panic!("POSIX host-artifact image cleanup failed: {cleanup_error:#}")
+        }
+        (Ok(()), false, Err(cleanup_error)) => panic!(
+            "POSIX host-artifact cleanup failed: {}\nimage cleanup error: {cleanup_error:#}",
+            cleanup_errors.join("; ")
+        ),
+        (Err(test_error), true, Ok(())) => panic!("{test_error:#}"),
+        (Err(test_error), false, Ok(())) => {
+            panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; "))
+        }
+        (Err(test_error), true, Err(cleanup_error)) => {
+            panic!("{test_error:#}\nimage cleanup error: {cleanup_error:#}")
+        }
+        (Err(test_error), false, Err(cleanup_error)) => panic!(
+            "{test_error:#}\ncleanup error: {}\nimage cleanup error: {cleanup_error:#}",
+            cleanup_errors.join("; ")
+        ),
     }
 }
 
