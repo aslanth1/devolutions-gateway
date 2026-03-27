@@ -402,7 +402,7 @@ Pass when: the prep flow records the source `kvm-win11` image and firmware state
 - [x] Boot the cloned `kvm-win11` prep image and confirm it reaches a known pre-transformation ready state under QEMU.
 Pass when: the cloned VM can be started intentionally, the prep notes record the boot path and guest identity used for the session, and the clone is ready for Tiny11 modification without relying on the original gold image staying powered on.
 
-- [ ] Apply the approved Tiny11 transformation scripts to the cloned `kvm-win11` prep image and capture the resulting provenance inputs.
+- [x] Apply the approved Tiny11 transformation scripts to the cloned `kvm-win11` prep image and capture the resulting provenance inputs.
 Pass when: the transformation runs against the clone rather than the original working image, the script references and digests needed for later manifest attestation are recorded, and the transformed output is ready for post-transform RDP verification plus sanctioned `consume-image` import into the canonical interop store.
 
 - [x] Enable and verify RDP in the gold image.
