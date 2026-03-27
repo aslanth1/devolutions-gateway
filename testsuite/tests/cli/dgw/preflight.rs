@@ -6,7 +6,7 @@
 use anyhow::Context as _;
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{DgwConfig, DgwConfigHandle, VerbosityProfile};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 
 /// Test scope token with gateway.preflight scope.
@@ -55,36 +55,16 @@ async fn start_gateway_with_logs(
     Ok((process, stdout_handle))
 }
 
-/// Sends a provision-credentials preflight request containing the given password.
+/// Sends a preflight request and returns the raw HTTP response.
 ///
-/// The request includes both proxy and target credentials with the test password.
-/// This function only sends the request; it does not wait for or validate the response.
-async fn send_provision_credentials_request(http_port: u16, test_password: &str) -> anyhow::Result<()> {
-    use tokio::io::AsyncWriteExt;
-
-    let request_body = serde_json::json!([{
-        "id": "00000000-0000-0000-0000-000000000001",
-        "kind": "provision-credentials",
-        "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkucHJlZmxpZ2h0In0.invalid-signature",
-        "proxy_credential": {
-            "kind": "username-password",
-            "username": "proxy-user",
-            "password": test_password
-        },
-        "target_credential": {
-            "kind": "username-password",
-            "username": "target-user",
-            "password": test_password
-        },
-        "time_to_live": 300
-    }]);
-
+async fn send_preflight_request(http_port: u16, request_body: serde_json::Value) -> anyhow::Result<String> {
     let body = request_body.to_string();
     let http_request = format!(
         "POST /jet/preflight HTTP/1.1\r\n\
          Host: 127.0.0.1:{http_port}\r\n\
          Content-Type: application/json\r\n\
          Authorization: Bearer {PREFLIGHT_SCOPE_TOKEN}\r\n\
+         Connection: close\r\n\
          Content-Length: {}\r\n\
          \r\n\
          {}",
@@ -103,12 +83,59 @@ async fn send_provision_credentials_request(http_port: u16, test_password: &str)
 
     stream.flush().await.context("failed to flush stream")?;
 
-    // Read response to ensure the request is fully processed before closing the connection.
-    let mut reader = BufReader::new(stream);
-    let mut line = String::new();
-    let _ = reader.read_line(&mut line).await;
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .await
+        .context("failed to read HTTP response")?;
 
-    Ok(())
+    String::from_utf8(response).context("response is not valid utf-8")
+}
+
+/// Sends a provision-credentials preflight request containing the given passwords.
+async fn send_provision_credentials_request(
+    http_port: u16,
+    proxy_password: &str,
+    target_password: &str,
+    time_to_live: u32,
+) -> anyhow::Result<String> {
+    let request_body = serde_json::json!([{
+        "id": "00000000-0000-0000-0000-000000000001",
+        "kind": "provision-credentials",
+        "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDEiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkucHJlZmxpZ2h0In0.invalid-signature",
+        "proxy_credential": {
+            "kind": "username-password",
+            "username": "proxy-user",
+            "password": proxy_password
+        },
+        "target_credential": {
+            "kind": "username-password",
+            "username": "target-user",
+            "password": target_password
+        },
+        "time_to_live": time_to_live
+    }]);
+
+    send_preflight_request(http_port, request_body).await
+}
+
+fn assert_passwords_are_redacted(output: &str, passwords: &[&str]) {
+    assert!(
+        output.contains("Preflight operations"),
+        "expected preflight logging to occur"
+    );
+
+    for password in passwords {
+        assert!(
+            !output.contains(password),
+            "password '{password}' found in logs (should be redacted)"
+        );
+    }
+
+    assert!(
+        output.contains("***REDACTED***"),
+        "expected '***REDACTED***' to appear in logs"
+    );
 }
 
 /// Test that passwords in provision-credentials requests are redacted in logs.
@@ -134,9 +161,10 @@ async fn provision_credentials_passwords_not_logged() -> anyhow::Result<()> {
     let (mut process, stdout_handle) = start_gateway_with_logs(&config_handle).await?;
 
     // 2) Send the preflight request with test password.
-    send_provision_credentials_request(config_handle.http_port(), TEST_PASSWORD)
+    let response = send_provision_credentials_request(config_handle.http_port(), TEST_PASSWORD, TEST_PASSWORD, 300)
         .await
         .context("send provision credentials request")?;
+    assert!(response.contains("200 OK"), "{response}");
 
     // Allow time for the request to be logged.
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -151,24 +179,56 @@ async fn provision_credentials_passwords_not_logged() -> anyhow::Result<()> {
 
     let stdout_output = stdout_lines.join("");
 
-    // Verify logging occurred.
-    assert!(
-        stdout_output.contains("Preflight operations"),
-        "expected preflight logging to occur"
-    );
+    assert_passwords_are_redacted(&stdout_output, &[TEST_PASSWORD]);
 
-    // 4) Verify the password does not appear in cleartext.
-    assert!(
-        !stdout_output.contains(TEST_PASSWORD),
-        "password '{}' found in logs (should be redacted)",
-        TEST_PASSWORD
-    );
+    Ok(())
+}
 
-    // 5) Verify redaction marker appears.
+/// Test that failure-path preflight validation still keeps passwords redacted in logs.
+///
+/// This exercises a request that is valid enough to reach the debug logging path but
+/// invalid enough to return an `invalid-parameters` alert because the TTL exceeds the
+/// configured maximum.
+#[tokio::test]
+async fn provision_credentials_passwords_not_logged_when_request_fails_validation() -> anyhow::Result<()> {
+    const PROXY_PASSWORD: &str = "proxy-negative-secret-12345";
+    const TARGET_PASSWORD: &str = "target-negative-secret-67890";
+
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .verbosity_profile(VerbosityProfile::DEBUG)
+        .build()
+        .init()
+        .context("init config")?;
+
+    let (mut process, stdout_handle) = start_gateway_with_logs(&config_handle).await?;
+
+    let response =
+        send_provision_credentials_request(config_handle.http_port(), PROXY_PASSWORD, TARGET_PASSWORD, 7_201)
+            .await
+            .context("send invalid provision credentials request")?;
+
+    assert!(response.contains("200 OK"), "{response}");
     assert!(
-        stdout_output.contains("***REDACTED***"),
-        "expected '***REDACTED***' to appear in logs"
+        response.contains("\"alert_status\":\"invalid-parameters\""),
+        "{response}"
     );
+    assert!(response.contains("exceeding the maximum TTL duration"), "{response}");
+    assert!(!response.contains(PROXY_PASSWORD), "{response}");
+    assert!(!response.contains(TARGET_PASSWORD), "{response}");
+
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    let _ = process.start_kill();
+    let stdout_lines = tokio::time::timeout(tokio::time::Duration::from_secs(5), stdout_handle)
+        .await
+        .context("timeout waiting for stdout")?
+        .context("wait for stdout collection")?;
+    let _ = process.wait().await;
+
+    let stdout_output = stdout_lines.join("");
+
+    assert_passwords_are_redacted(&stdout_output, &[PROXY_PASSWORD, TARGET_PASSWORD]);
 
     Ok(())
 }

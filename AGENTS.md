@@ -643,7 +643,7 @@ Pass when: a service restored from `previous` back to `current` can continue exc
 - [ ] Add POSIX host artifact checks.
 Pass when: the tests verify image artifacts, control sockets, logs, stream outputs, and Docker runtime artifacts on the host filesystem with correct ownership, isolation, and redaction.
 
-- [ ] Add a log-redaction negative test.
+- [x] Add a log-redaction negative test.
 Pass when: secrets stay redacted in service logs, host logs, and lab artifacts during both success and failure paths.
 
 - [x] Add a credential TTL-expiry test.
