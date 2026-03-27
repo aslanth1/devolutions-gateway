@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::extract::{Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, LOCATION};
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -148,7 +148,7 @@ async fn fake_acquire_handler(
         guest_rdp_addr: GUEST_RDP_ADDR.to_owned(),
         guest_rdp_port: GUEST_RDP_PORT,
         lease_state: LeaseState::Ready,
-        lease_expires_at: "2026-03-26T12:10:00Z".to_owned(),
+        lease_expires_at: "2036-03-26T12:10:00Z".to_owned(),
         backend_credential_ref: request.backend_credential_ref,
         attestation_ref: ATTESTATION_REF.to_owned(),
     })
@@ -174,7 +174,7 @@ async fn fake_stream_handler(
         capture_source_kind: CaptureSourceKind::GatewayRecording,
         capture_source_ref: CAPTURE_SOURCE_REF.to_owned(),
         source_ready: true,
-        expires_at: "2026-03-26T12:05:00Z".to_owned(),
+        expires_at: "2036-03-26T12:05:00Z".to_owned(),
     })
 }
 
@@ -1117,6 +1117,186 @@ async fn honeypot_terminate_recycles_vm_and_cleans_up_live_state() -> anyhow::Re
             quarantined,
             ..
         } => {
+            assert_eq!(*recycle_state, RecycleState::Recycled);
+            assert!(!quarantined);
+        }
+        payload => panic!("expected host.recycled payload, got {payload:?}"),
+    }
+
+    control_plane.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow::Result<()> {
+    let control_plane = FakeControlPlaneServer::spawn().await?;
+    let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
+    let session_id = Uuid::new_v4();
+    let session = live_session(session_id);
+
+    start_live_session_with_kill_cleanup(&state, &session).await?;
+
+    let stream_token_request = StreamTokenRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: format!("stream-recycle-token-{session_id}"),
+        session_id: session_id.to_string(),
+    };
+    let response = app
+        .clone()
+        .oneshot(post_json_request(
+            &format!("/jet/honeypot/session/{session_id}/stream-token"),
+            &stream_token_request,
+        )?)
+        .await
+        .context("request stream token before terminate")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let stream_token: StreamTokenResponse = serde_json::from_slice(&collect_response_body(response).await?)
+        .context("decode stream token before terminate")?;
+    assert_eq!(stream_token.session_id, session_id.to_string());
+    assert_eq!(stream_token.vm_lease_id, LEASE_ID);
+
+    let response = app
+        .clone()
+        .oneshot(get_request(&stream_token.stream_endpoint)?)
+        .await
+        .context("request active honeypot stream route before terminate")?;
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    let location = response
+        .headers()
+        .get(LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .context("stream redirect location should be present before terminate")?;
+    assert!(location.starts_with("/jet/jrec/play?"), "{location}");
+    assert!(location.contains(&format!("sessionId={session_id}")), "{location}");
+
+    let response = app
+        .clone()
+        .oneshot(post_request(&format!("/jet/session/{session_id}/terminate"))?)
+        .await
+        .context("request terminate route for stream recycle test")?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut session_removed = false;
+    for _ in 0..20 {
+        let response = app
+            .clone()
+            .oneshot(get_request("/jet/sessions")?)
+            .await
+            .context("request running sessions after stream terminate")?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let sessions_after: Value = serde_json::from_slice(&collect_response_body(response).await?)
+            .context("decode running sessions after stream terminate")?;
+
+        if sessions_after.as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|entry| entry["association_id"].as_str() != Some(session_id.to_string().as_str()))
+        }) {
+            session_removed = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        session_removed,
+        "stream-bound session should be removed from /jet/sessions after recycle"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(get_request("/jet/honeypot/bootstrap")?)
+        .await
+        .context("request bootstrap after stream terminate")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bootstrap_after: BootstrapResponse = serde_json::from_slice(&collect_response_body(response).await?)
+        .context("decode bootstrap after stream terminate")?;
+    assert!(
+        bootstrap_after
+            .sessions
+            .iter()
+            .all(|entry| entry.session_id != session_id.to_string()),
+        "recycled stream-bound session should not remain in bootstrap"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(post_json_request(
+            &format!("/jet/honeypot/session/{session_id}/stream-token"),
+            &stream_token_request,
+        )?)
+        .await
+        .context("request stream token after recycle")?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app
+        .clone()
+        .oneshot(get_request(&stream_token.stream_endpoint)?)
+        .await
+        .context("request stream route after recycle")?;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    let response = app
+        .oneshot(get_request("/jet/honeypot/events?cursor=0")?)
+        .await
+        .context("request replay after stream terminate")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let sse_body = collect_sse_replay(response, 6).await?;
+    let replay = parse_sse_events(&sse_body)?;
+
+    assert_eq!(replay.len(), 6, "{sse_body}");
+    assert!(
+        replay
+            .iter()
+            .all(|event| event.session_id.as_deref() == Some(session_id.to_string().as_str()))
+    );
+    assert!(matches!(replay[0].payload, EventPayload::SessionStarted { .. }));
+    assert!(matches!(replay[1].payload, EventPayload::SessionAssigned { .. }));
+    match &replay[2].payload {
+        EventPayload::SessionStreamReady {
+            transport,
+            stream_endpoint,
+            stream_state,
+            ..
+        } => {
+            assert_eq!(replay[2].vm_lease_id.as_deref(), Some(LEASE_ID));
+            assert_eq!(replay[2].stream_id.as_deref(), Some(stream_token.stream_id.as_str()));
+            assert_eq!(*transport, stream_token.transport);
+            assert_eq!(stream_endpoint, &stream_token.stream_endpoint);
+            assert_eq!(*stream_state, StreamState::Ready);
+        }
+        payload => panic!("expected session.stream.ready payload, got {payload:?}"),
+    }
+    match &replay[3].payload {
+        EventPayload::SessionKilled {
+            kill_scope,
+            kill_reason,
+            ..
+        } => {
+            assert_eq!(*kill_scope, KillScope::Session);
+            assert_eq!(kill_reason, SessionKillReason::OperatorRequested.as_reason_code());
+        }
+        payload => panic!("expected session.killed payload, got {payload:?}"),
+    }
+    match &replay[4].payload {
+        EventPayload::SessionRecycleRequested {
+            recycle_reason,
+            requested_by,
+            ..
+        } => {
+            assert_eq!(recycle_reason, "session_killed");
+            assert_eq!(requested_by, "proxy");
+        }
+        payload => panic!("expected session.recycle.requested payload, got {payload:?}"),
+    }
+    match &replay[5].payload {
+        EventPayload::HostRecycled {
+            recycle_state,
+            quarantined,
+            ..
+        } => {
+            assert_eq!(replay[5].vm_lease_id.as_deref(), Some(LEASE_ID));
             assert_eq!(*recycle_state, RecycleState::Recycled);
             assert!(!quarantined);
         }

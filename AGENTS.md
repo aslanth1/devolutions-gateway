@@ -706,6 +706,6 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 - [ ] The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.
 - [x] The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.
 - [x] The frontend can bootstrap, create, update, fullscreen, and remove tiles from live session events.
-- [ ] The stream path is bound to session identity and survives disconnect and recycle correctly.
+- [x] The stream path is bound to session identity and survives disconnect and recycle correctly.
 - [ ] The Rust e2e path validates both guest behavior and POSIX host artifacts.
 - [ ] Normal and failure-path teardown leave no orphaned QEMU processes, exposed control sockets, leaked overlays, stale containers, stale networks, stale volumes, or unredacted sensitive logs.

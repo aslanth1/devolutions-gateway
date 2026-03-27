@@ -64,3 +64,11 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_visibility.rs` proves the proxy replaces attacker-supplied preflight credentials with the mapped backend credentials during honeypot prepare, binds the backend credential reference to the session, and cleans the mapping up on abort.
 - `testsuite/tests/cli/dgw/preflight.rs` proves the provisioned proxy and target passwords are redacted from gateway logs on the successful credential-provisioning path.
 - `testsuite/tests/cli/dgw/preflight.rs` also proves the same passwords stay redacted when credential provisioning fails validation before session startup.
+
+## Stream Identity And Recycle Evidence
+
+- `AGENTS.md` pass row `The stream path is bound to session identity and survives disconnect and recycle correctly.` is satisfied by the current `contract` tier.
+- `testsuite/tests/honeypot_visibility.rs` proves the proxy binds `session_id`, `vm_lease_id`, `stream_id`, bootstrap preview, and SSE replay to the same live stream identity.
+- `testsuite/tests/honeypot_visibility.rs` also proves an active stream route redirects only while the session is live, then both the stream-token route and the stream route return `404` after terminate-triggered recycle removes the session.
+- `testsuite/tests/cli/dgw/honeypot.rs` proves the proxy rejects mismatched and unknown session IDs for both the stream-token route and the stream route.
+- `testsuite/tests/honeypot_frontend.rs` proves the frontend only uses the requested session's stream binding, removes recycled tiles and focus routes after `host.recycled`, and filters disconnected and recycled sessions out of bootstrap-driven live views.
