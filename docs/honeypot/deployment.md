@@ -24,6 +24,7 @@ Operator procedures for bring-up, emergency stop, recycle, evidence capture, and
 - `frontend` uses `honeypot/docker/frontend/Dockerfile`.
 - The build context for each image is the repository root so shared crates and workspace metadata remain available.
 - The legacy `package/Linux/Dockerfile` path is reference-only and must not be used as the honeypot `proxy` or `frontend` image base by accident.
+- The release-input contract tests must confirm the honeypot Dockerfiles build their service binaries directly and that the `proxy` and `frontend` Dockerfiles do not drift back toward the legacy `package/Linux` or `webapp/` bundle path.
 
 ## Images Lock Consumption
 

@@ -29,6 +29,7 @@ It must not be read as permission to introduce a fourth runtime service, a paral
 - `devolutions-gateway/src/ws.rs`: `adapt`. It is the current websocket wrapper and should remain available only if `DF-04` keeps a minimal websocket bridge for stream delivery.
 - `devolutions-gateway/src/service.rs`: `reuse`. It is the current startup and background-task composition point for the gateway binary and should remain the place where honeypot proxy state is wired in.
 - `devolutions-gateway/src/api/mod.rs`: `reuse`. It is the current route composition seam and should host honeypot proxy route extensions instead of a parallel router tree.
+- `devolutions-gateway/src/api/webapp.rs`: `adapt`. It is a token-issuance and auth-pattern reference only, and the honeypot frontend must keep its own UI, routes, and assets instead of reusing the legacy webapp surface.
 - `devolutions-gateway/src/extract.rs`: `adapt`. It already provides scoped request extraction patterns and should be extended for honeypot scopes rather than bypassed.
 - `devolutions-gateway/src/middleware/auth.rs`: `adapt`. It is the current auth gate and should remain the style reference for stream and operator auth enforcement.
 - `devolutions-gateway/src/config.rs`: `adapt`. It is the right place to add honeypot mode, control-plane endpoint, stream, and operator settings.
@@ -58,7 +59,7 @@ It must not be read as permission to introduce a fourth runtime service, a paral
 
 - `cadeau`: `reuse`. It is already an in-tree dependency used by the current recording and video-streaming path, so it remains a direct reuse input for any recording-based stream plan chosen under `DF-04`.
 - `devolutions-labs`: `do not use`. No in-tree dependency or concrete runtime role is documented today, so it stays optional validation-only context rather than a build, orchestration, or service dependency.
-- `package/Linux/Dockerfile`: `do not use`. It remains reference-only packaging context and must not be inherited accidentally by the honeypot `proxy` or `frontend` images.
+- `package/Linux/Dockerfile`: `do not use`. It remains reference-only packaging context and must not be inherited accidentally by the honeypot `proxy` or `frontend` images, and the release-input contract tests reject drift back toward that bundle.
 - `WINDOWS11-LICENSE.md`: `do not use`. It may remain an operator scratch note, but it is not a provenance, attestation, or release input for `DF-05`.
 
 ## DF-05 And DF-06 Working Conclusions

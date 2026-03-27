@@ -146,7 +146,7 @@ Pass when: the plan either reuses `/jet/sessions` and `/jet/session/{id}/termina
 - [ ] Review `devolutions-gateway/src/recording.rs`, `devolutions-gateway/src/streaming.rs`, `devolutions-gateway/src/ws.rs`, `crates/transport/src/ws.rs`, `crates/video-streamer`, and `crates/terminal-streamer` before building new browser-stream code.
 Pass when: the stream plan names the reuse points or explains why they are insufficient.
 
-- [ ] Review `devolutions-gateway/src/api/webapp.rs` for token issuance and auth ideas only.
+- [x] Review `devolutions-gateway/src/api/webapp.rs` for token issuance and auth ideas only.
 Pass when: the honeypot frontend keeps its own UI code while reusing only the auth and token patterns that still fit.
 
 - [x] Review and document the existing Gateway integration seams in `devolutions-gateway/src/lib.rs`, `devolutions-gateway/src/service.rs`, `devolutions-gateway/src/api/mod.rs`, `devolutions-gateway/src/extract.rs`, and `devolutions-gateway/src/middleware/auth.rs`.
@@ -167,7 +167,7 @@ Pass when: each repo is mapped to a concrete use, validation role, or explicit n
 - [x] Record how the in-tree `cadeau` dependency and `devolutions-labs` affect the honeypot plan.
 Pass when: `docs/honeypot/research.md` labels `cadeau` as a reuse or validation input and marks `devolutions-labs` as optional, validation-only, or non-use unless a concrete lab role is documented.
 
-- [ ] Keep `package/Linux/Dockerfile` and the legacy gateway container packaging path as reference-only unless a honeypot service explicitly reuses a safe fragment.
+- [x] Keep `package/Linux/Dockerfile` and the legacy gateway container packaging path as reference-only unless a honeypot service explicitly reuses a safe fragment.
 Pass when: the honeypot `proxy` and `frontend` images do not inherit the current gateway or webapp container bundle by accident.
 
 ## Cross-Service Contracts

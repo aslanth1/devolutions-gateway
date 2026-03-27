@@ -322,6 +322,76 @@ pub fn validate_honeypot_release_inputs(lock_path: &Path, compose_path: &Path) -
     validate_honeypot_compose_document(&compose_data, &lockfile)
 }
 
+pub fn validate_honeypot_dockerfile_packaging_contract() -> anyhow::Result<()> {
+    for (path, package_name, binary_name, forbid_webapp_bundle) in [
+        (
+            HONEYPOT_CONTROL_PLANE_DOCKERFILE_PATH,
+            "honeypot-control-plane",
+            "honeypot-control-plane",
+            false,
+        ),
+        (
+            HONEYPOT_PROXY_DOCKERFILE_PATH,
+            "devolutions-gateway",
+            "devolutions-gateway",
+            true,
+        ),
+        (
+            HONEYPOT_FRONTEND_DOCKERFILE_PATH,
+            "honeypot-frontend",
+            "honeypot-frontend",
+            true,
+        ),
+    ] {
+        let dockerfile_path = repo_relative_path(path);
+        let dockerfile = std::fs::read_to_string(&dockerfile_path)
+            .with_context(|| format!("read dockerfile at {}", dockerfile_path.display()))?;
+        validate_honeypot_service_dockerfile(path, &dockerfile, package_name, binary_name, forbid_webapp_bundle)?;
+    }
+
+    Ok(())
+}
+
+fn validate_honeypot_service_dockerfile(
+    path: &str,
+    dockerfile: &str,
+    package_name: &str,
+    binary_name: &str,
+    forbid_webapp_bundle: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        dockerfile.contains(&format!("RUN cargo build --release -p {package_name}")),
+        "{path} must build the {package_name} package directly"
+    );
+    anyhow::ensure!(
+        dockerfile.contains(&format!(
+            "COPY --from=build /workspace/target/release/{binary_name} /usr/local/bin/{binary_name}"
+        )),
+        "{path} must copy the {binary_name} binary directly from the workspace build stage"
+    );
+    anyhow::ensure!(
+        dockerfile.contains(&format!("ENTRYPOINT [\"/usr/local/bin/{binary_name}\"]")),
+        "{path} must use /usr/local/bin/{binary_name} as its direct entrypoint"
+    );
+    anyhow::ensure!(
+        !dockerfile.contains("package/Linux/Dockerfile"),
+        "{path} must not reference the legacy package/Linux/Dockerfile bundle"
+    );
+
+    if forbid_webapp_bundle {
+        anyhow::ensure!(
+            !dockerfile.contains("COPY webapp"),
+            "{path} must not copy the legacy webapp bundle into the honeypot image"
+        );
+        anyhow::ensure!(
+            !dockerfile.contains(" webapp"),
+            "{path} must not reference the legacy webapp bundle"
+        );
+    }
+
+    Ok(())
+}
+
 pub fn resolve_honeypot_images_for_selection(
     lock_path: &Path,
     selection: ServiceVersionSelection,

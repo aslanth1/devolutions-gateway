@@ -126,6 +126,7 @@ disconnect / kill / timeout
 - `devolutions-gateway/src/lib.rs` exposes `DgwState`, so honeypot state should plug into the current binary state instead of creating a parallel process-local registry.
 - `devolutions-gateway/src/service.rs` is where background tasks, managers, credential store, and listener wiring are assembled, so honeypot startup work should register there or in a thin wrapper that still reuses the same library core.
 - `devolutions-gateway/src/api/mod.rs` is the current HTTP composition point for `/jet/*` routes, so honeypot routes should be nested here or alongside it under the chosen proxy packaging model from `DF-01`.
+- `devolutions-gateway/src/api/webapp.rs` is a token-signing and auth-pattern reference only, so the honeypot frontend may reuse compatible token and auth ideas but must keep its own UI routes and assets instead of inheriting the legacy webapp surface.
 - `devolutions-gateway/src/extract.rs` contains token- and scope-based request extractors, so honeypot scopes should extend this pattern instead of layering a second authorization parser.
 - `devolutions-gateway/src/middleware/auth.rs` is the current auth gate and exception list, so operator and stream auth should reuse this style of token validation and route scoping where it fits.
 - `devolutions-gateway/src/rdp_proxy.rs` is the current RDP MITM and credential injection path, so the honeypot proxy must extend or wrap it instead of reimplementing CredSSP and RDP forwarding.

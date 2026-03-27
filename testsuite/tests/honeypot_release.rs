@@ -19,10 +19,11 @@ use testsuite::honeypot_release::{
     remove_docker_network_if_exists, repo_relative_path, resolve_honeypot_images_for_selection, run_docker_compose,
     run_docker_container, validate_honeypot_compose_document, validate_honeypot_compose_document_for_selection,
     validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
-    validate_honeypot_control_plane_runtime_contract, validate_honeypot_frontend_compose_runtime_document,
-    validate_honeypot_frontend_env_document, validate_honeypot_frontend_runtime_contract,
-    validate_honeypot_images_lock_document, validate_honeypot_proxy_compose_runtime_document,
-    validate_honeypot_proxy_env_document, validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
+    validate_honeypot_control_plane_runtime_contract, validate_honeypot_dockerfile_packaging_contract,
+    validate_honeypot_frontend_compose_runtime_document, validate_honeypot_frontend_env_document,
+    validate_honeypot_frontend_runtime_contract, validate_honeypot_images_lock_document,
+    validate_honeypot_proxy_compose_runtime_document, validate_honeypot_proxy_env_document,
+    validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
     validate_mixed_version_contract_compatibility, validate_restored_service_contract_compatibility,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
@@ -1334,6 +1335,14 @@ fn release_inputs_on_disk_match_the_honeypot_lockfile_contract() {
         &repo_relative_path(HONEYPOT_FRONTEND_CONFIG_PATH),
     )
     .expect("frontend runtime config injection should match the deployment contract");
+}
+
+#[test]
+fn honeypot_service_dockerfiles_keep_legacy_packaging_reference_only() {
+    require_honeypot_tier(HoneypotTestTier::Contract).expect("contract tier should always be available");
+
+    validate_honeypot_dockerfile_packaging_contract()
+        .expect("honeypot Dockerfiles should build direct service binaries without legacy package or webapp drift");
 }
 
 #[test]
