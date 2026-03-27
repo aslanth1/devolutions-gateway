@@ -1,5 +1,6 @@
 use anyhow::Context as _;
-use honeypot_control_plane::{config::ControlPlaneConfig, run_control_plane};
+use honeypot_control_plane::config::ControlPlaneConfig;
+use honeypot_control_plane::run_control_plane;
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]

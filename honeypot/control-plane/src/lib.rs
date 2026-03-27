@@ -9,18 +9,15 @@ mod vm;
 
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{
-    Json, Router,
-    routing::{get, post},
-};
+use axum::routing::{get, post};
+use axum::{Json, Router};
 use honeypot_contracts::Versioned as _;
 use honeypot_contracts::control_plane::{
     AcquireVmRequest, AcquireVmResponse, HealthResponse, RecycleVmRequest, RecycleVmResponse, ReleaseVmRequest,

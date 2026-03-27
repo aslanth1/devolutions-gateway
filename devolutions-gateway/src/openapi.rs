@@ -1,3 +1,5 @@
+use honeypot_contracts::events::{KillScope, SessionState, StreamState, TerminalOutcome};
+use honeypot_contracts::stream::StreamTransport;
 use time::OffsetDateTime;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
 use utoipa::{Modify, OpenApi};
@@ -5,8 +7,6 @@ use uuid::Uuid;
 
 use crate::api::preflight::PreflightAlertStatus;
 use crate::config::dto::{DataEncoding, PubKeyFormat, Subscriber};
-use honeypot_contracts::events::{KillScope, SessionState, StreamState, TerminalOutcome};
-use honeypot_contracts::stream::StreamTransport;
 
 #[derive(OpenApi)]
 #[openapi(

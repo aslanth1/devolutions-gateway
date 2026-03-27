@@ -1590,8 +1590,7 @@ async fn frontend_rollback_drill_restores_the_stack_through_images_lock_selectio
     let result: anyhow::Result<()> = async {
         build_honeypot_service_image("control-plane", &resources.control_plane_image)
             .context("build control-plane frontend rollback image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image)
-            .context("build proxy frontend rollback image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy frontend rollback image")?;
         build_honeypot_service_image("frontend", &resources.frontend_image)
             .context("build current frontend rollback image")?;
         build_honeypot_service_image("frontend", &resources.frontend_previous_image)

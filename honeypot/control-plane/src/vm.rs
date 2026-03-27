@@ -1,8 +1,7 @@
-use std::fs;
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
-use std::thread;
 use std::time::{Duration, Instant};
+use std::{fs, thread};
 
 use anyhow::Context as _;
 

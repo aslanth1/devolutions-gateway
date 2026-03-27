@@ -3,15 +3,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use axum::Router;
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::extract::{Path, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderMap, Request, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, response::Response};
+use axum::{Json, Router};
 use devolutions_gateway::credential::{
     AppCredential, AppCredentialMapping, CredentialBinding, CredentialProvisionRequest, Password,
 };

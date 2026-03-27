@@ -300,11 +300,12 @@ async fn cleanup_task(handle: CredentialStoreHandle, mut shutdown_signal: Shutdo
 
 #[cfg(test)]
 mod tests {
+    use uuid::Uuid;
+
     use super::{
         AppCredential, AppCredentialMapping, CredentialBinding, CredentialProvisionRequest, CredentialStoreHandle,
         Password,
     };
-    use uuid::Uuid;
 
     fn username_password(username: &str, password: &str) -> AppCredential {
         AppCredential::UsernamePassword {

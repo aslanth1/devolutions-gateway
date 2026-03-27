@@ -1795,14 +1795,11 @@ mod tests {
     use std::sync::Arc;
 
     use axum::extract::{Path, Query, State};
-    use axum::http::HeaderMap;
-    use axum::http::StatusCode;
     use axum::http::header::AUTHORIZATION;
+    use axum::http::{HeaderMap, StatusCode};
     use axum::response::{IntoResponse, Response};
-    use axum::{
-        Json, Router,
-        routing::{get, post},
-    };
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
     use honeypot_contracts::control_plane::{
         AcquireVmRequest, AcquireVmResponse, CaptureSourceKind, HealthRequest, HealthResponse, LeaseState, PoolState,
         RecycleState, RecycleVmRequest, RecycleVmResponse, ReleaseState, ReleaseVmRequest, ReleaseVmResponse,
