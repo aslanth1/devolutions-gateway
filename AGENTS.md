@@ -693,6 +693,35 @@ Pass when: the repo states who may watch, who may propose commands, who may appr
 - [x] Add recovery playbooks for failed recycle, image corruption, and stuck leases.
 Pass when: the runbook describes how to quarantine bad images or hosts without losing auditability.
 
+### Milestone 6a: Manual Headed Tiny11 Walkthrough Contract (Gated)
+
+- [ ] Add a gated manual-headed lab prerequisite checklist.
+Pass when: the run requires an explicit manual-lab gate, confirms headed-display and Chrome availability, records the Tiny11 key path without committing key material, and names the attested Tiny11 image-store or interop root before startup begins.
+
+- [ ] Add a manual-headed run-identity binding checklist.
+Pass when: one `run_id` is created and every committed log, manifest, frontend snapshot, video reference, and service-state capture binds to that same `run_id`, `session_id`, and `vm_lease_id` whenever those identifiers exist.
+
+- [ ] Add a manual full-stack startup and shutdown proof checklist for `control-plane`, `proxy`, and `frontend`.
+Pass when: the manual lane records health or bootstrap evidence for all three services under the same run envelope before interaction starts and records clean teardown or explicit failure disposition at the end.
+
+- [ ] Add a Tiny11 host provisioning checklist that includes key-based setup and RDP enablement.
+Pass when: the runbook names where key material is loaded from without committing it, records the Tiny11 lineage used for the run, and captures non-skipped RDP-ready evidence for the same guest identity that the headed walkthrough uses.
+
+- [ ] Add a headed QEMU and Chrome frontend observation checklist.
+Pass when: the run records the non-headless QEMU launch path, the Chrome frontend access path, and a correlation snapshot proving the observed tile or session matches the active Tiny11 lease.
+
+- [ ] Add a bounded manual interaction checklist.
+Pass when: the run records a bounded mouse, keyboard, and guest-browsing interaction window whose timestamps are tied to the same `run_id`, `session_id`, and `vm_lease_id`.
+
+- [ ] Add a video-evidence checklist for manual-headed runs.
+Pass when: a reviewable video artifact is saved through the approved artifact path and the committed evidence index records its digest, duration floor, timestamp window, storage URI, and retention window.
+
+- [ ] Add a redaction and credential-handling checklist for manual-headed runs.
+Pass when: plaintext RDP credentials, product keys, session tokens, and similar secrets are forbidden from git-tracked artifacts, redacted evidence remains reviewable, and live credentials follow the documented secret-handling path.
+
+- [ ] Add a VM artifact storage and retrieval checklist for manual-headed runs.
+Pass when: raw `.qcow2`, overlay, memory-dump, and equivalent heavy or sensitive VM state are forbidden from normal git history, the approved storage backend is recorded, and the checklist fails if the referenced artifact cannot be retrieved or its digest mismatches.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

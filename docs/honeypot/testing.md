@@ -117,6 +117,12 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `control_plane_lab_harness_startup_accepts_rdp_on_tcp_3389_for_gold_image` proves a fresh lease from the attested manifest path reaches known-ready on the forwarded host RDP port and records a QEMU host-forward target of guest `tcp/3389` in the active launch snapshot.
 - `control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly` remains the stronger interop anchor when the explicit `DGW_HONEYPOT_INTEROP_*` lab inputs are configured, because it verifies `xfreerdp +auth-only` against a prepared image store.
 
+## Manual Headed Lab Contract
+
+- `AGENTS.md` now carries a gated `Milestone 6a` contract for any future headed Tiny11 walkthrough that also touches Chrome or manual guest interaction.
+- That contract is intentionally fail-closed: it requires explicit run identity binding, service-state capture, redacted credential handling, retrievable artifact references, and approved storage for heavy or sensitive VM assets instead of normal git history.
+- The manual-headed lane remains supplemental to the canonical Rust `lab-e2e` proof and must not be used to bypass the existing Tiny11 lineage, RDP-ready, or cleanup evidence gates.
+
 ## Tiny11 Production And Recycle Evidence
 
 - `AGENTS.md` row `The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.` is stricter than a compile-only or skipped lane.

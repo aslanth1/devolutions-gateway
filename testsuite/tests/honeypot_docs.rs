@@ -158,3 +158,39 @@ fn honeypot_docs_enforce_milestone_gate_completion_before_later_milestones() {
         "{agents_path} must contain checked Milestone 1 through Milestone 6 rows for gate validation"
     );
 }
+
+#[test]
+fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
+    let agents_path = "AGENTS.md";
+    let agents = read_repo_text(agents_path);
+
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6a: Manual Headed Tiny11 Walkthrough Contract (Gated)",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "one `run_id` is created and every committed log, manifest, frontend snapshot, video reference, and service-state capture binds to that same `run_id`, `session_id`, and `vm_lease_id` whenever those identifiers exist.",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "plaintext RDP credentials, product keys, session tokens, and similar secrets are forbidden from git-tracked artifacts",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "raw `.qcow2`, overlay, memory-dump, and equivalent heavy or sensitive VM state are forbidden from normal git history",
+    );
+
+    let testing_path = "docs/honeypot/testing.md";
+    let testing = read_repo_text(testing_path);
+    assert_contains(testing_path, &testing, "## Manual Headed Lab Contract");
+    assert_contains(
+        testing_path,
+        &testing,
+        "The manual-headed lane remains supplemental to the canonical Rust `lab-e2e` proof",
+    );
+}
