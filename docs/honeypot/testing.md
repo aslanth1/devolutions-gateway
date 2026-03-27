@@ -103,6 +103,12 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly` validates one attested Windows 11 Pro x64 image from the configured interop image store, acquires a lease, verifies live RDP readiness with `xfreerdp +auth-only`, confirms required runtime control-channel artifacts, and then proves recycle removes the active snapshot, runtime dir, overlay, pid file, and QMP socket.
 - This acceptance lane is intentionally explicit and fail-closed behind the `lab-e2e` gate plus interop env prerequisites, so it does not run accidentally in the default contract-tier suite.
 
+## Gold Image RDP Evidence
+
+- `AGENTS.md` pass row `Enable and verify RDP in the gold image.` is satisfied by the Rust `lab-e2e` lane in `testsuite/tests/honeypot_control_plane.rs`.
+- `control_plane_lab_harness_startup_accepts_rdp_on_tcp_3389_for_gold_image` proves a fresh lease from the attested manifest path reaches known-ready on the forwarded host RDP port and records a QEMU host-forward target of guest `tcp/3389` in the active launch snapshot.
+- `control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly` remains the stronger interop anchor when the explicit `DGW_HONEYPOT_INTEROP_*` lab inputs are configured, because it verifies `xfreerdp +auth-only` against a prepared image store.
+
 ## Tiny11 Production And Recycle Evidence
 
 - `AGENTS.md` row `The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.` is stricter than a compile-only or skipped lane.

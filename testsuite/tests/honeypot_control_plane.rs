@@ -1987,6 +1987,110 @@ async fn control_plane_process_driver_assigns_and_recycles_a_typed_lease() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn control_plane_lab_harness_startup_accepts_rdp_on_tcp_3389_for_gold_image() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
+        eprintln!("skipping lab-e2e control-plane tcp/3389 startup test: {error:#}");
+        return;
+    }
+
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let forwarded_rdp_port = find_unused_port();
+    rewrite_manifest_guest_rdp_port(&fixture.manifest_paths[0], forwarded_rdp_port);
+    let process_qemu_path = install_fake_qemu_binary(tempdir.path(), "fake-qemu-rdp-ready");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .qga_dir(fixture.qga_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .enable_guest_agent(true)
+        .lifecycle_driver("process")
+        .stop_timeout_secs(1)
+        .qemu_binary_path(process_qemu_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-lab-3389"))
+            .await
+            .expect("acquire lease");
+
+    assert_eq!(acquire.guest_rdp_addr, "127.0.0.1");
+    assert_eq!(acquire.guest_rdp_port, forwarded_rdp_port);
+    wait_for_tcp_port(forwarded_rdp_port)
+        .await
+        .expect("wait for forwarded RDP port to become reachable");
+
+    let active_snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    let active_snapshot =
+        fs::read_to_string(&active_snapshot_path).expect("read active lease snapshot for tcp/3389 assertion");
+    assert!(
+        active_snapshot.contains("-:3389"),
+        "expected launch plan to forward to guest tcp/3389, snapshot: {}",
+        active_snapshot_path.display()
+    );
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-lab-3389-1".to_owned(),
+            session_id: "session-lab-3389".to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .expect("release lease");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let (_, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-lab-3389-1".to_owned(),
+            session_id: "session-lab-3389".to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+            force_quarantine: false,
+        },
+    )
+    .await
+    .expect("recycle lease");
+    assert_eq!(recycle.recycle_state, RecycleState::Recycled);
+    assert_eq!(recycle.pool_state, PoolState::Ready);
+
+    let health = read_authed_health_response(port)
+        .await
+        .expect("read health response after recycle");
+    assert_eq!(health.service_state, ServiceState::Ready);
+    assert_eq!(health.active_lease_count, 0);
+    assert_eq!(health.quarantined_lease_count, 0);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn control_plane_lab_harness_startup_reaches_rdp_readiness_on_posix_host() {
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
         eprintln!("skipping lab-e2e control-plane startup test: {error:#}");
