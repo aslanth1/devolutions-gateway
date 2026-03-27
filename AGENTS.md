@@ -579,7 +579,7 @@ Pass when: the three-service stack refuses validation if a service image referen
 - [x] Add a downgraded `control-plane` compose compatibility test.
 Pass when: the test boots `previous/current/current` and verifies the downgraded `control-plane` can rejoin two current peers safely.
 
-- [ ] Add a downgraded `proxy` compose compatibility test.
+- [x] Add a downgraded `proxy` compose compatibility test.
 Pass when: the test boots `current/previous/current` and verifies the downgraded `proxy` can rejoin two current peers safely.
 
 - [ ] Add a downgraded `frontend` compose compatibility test.
