@@ -12,7 +12,7 @@ This document must not be read as permission to add a fourth runtime service or 
 - This fork is for authorized defensive research only.
 - Written authorization from the owner of the target environment, network, credentials, and storage is required before the stack is exposed to untrusted traffic.
 - Unauthorized deployment, credential harvesting, or use against third-party systems is out of scope.
-- Public internet deployment remains out of scope until the operator auth, exposure guards, retention rules, audit logging, and kill-switch controls are complete and verified.
+- Public internet deployment remains out of scope until the Windows image pipeline, gold-image acceptance path, host resource and network controls, and kill-switch controls are complete and verified.
 - This repository policy is not a substitute for legal review by the operator’s organization.
 
 ## Operator Authorization
@@ -71,9 +71,9 @@ This document must not be read as permission to add a fourth runtime service or 
   Quarantined artifacts must stay under `/srv/honeypot/quarantine` and must never return directly to the reusable pool or browser-facing surfaces.
 - Operator action records may retain only the minimum fields needed to explain who observed, killed, quarantined, exported, or halted intake for a session.
   Keep those records in redacted case storage no longer than `90` days after case closure unless a written hold extends the retention window.
-  Until the dedicated audit-logging row is complete, no second ad hoc operator-action journal may be introduced outside the documented case or service-log paths.
+  No second ad hoc operator-action journal may be introduced outside the documented control-plane envelopes, lifecycle events, case records, or service-log paths.
 - Vote history has a zero-retention boundary in MVP because `propose` and `approve` remain disabled.
-  No vote state, vote transcript, or vote export may be persisted until the deferred voting rows and the dedicated audit-logging row are implemented and explicitly enabled.
+  No vote state, vote transcript, or vote export may be persisted until the deferred voting rows are implemented and explicitly enabled.
 - Secret mounts, backend credentials, bearer tokens, private keys, raw credential mappings, and other secret transport material are never valid evidence artifacts.
   They must be revoked or deleted rather than retained, exported, or attached to a case bundle.
 

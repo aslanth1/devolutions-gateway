@@ -98,3 +98,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_release.rs` proves orphan cleanup reclaims stale runtime artifacts plus stale containers, networks, and volumes in `orphan_cleanup_reclaims_vm_and_container_artifacts`.
 - `testsuite/tests/honeypot_release.rs` and `testsuite/tests/cli/dgw/preflight.rs` prove normal and failure-path logs stay redacted, which enforces the policy that secrets are not retained as forensic artifacts.
 - [contracts.md](contracts.md) and [operator-content-policy.md](operator-content-policy.md) enforce a zero-retention vote-history boundary today because `gateway.honeypot.command.propose` and `gateway.honeypot.command.approve` remain reserved-only scopes and no vote surface may persist state until those deferred rows are implemented.
+
+## Audit Logging Evidence
+
+- `AGENTS.md` pass row `Add audit logging for control-plane actions, session kills, and frontend vote actions.` is satisfied by the existing typed control-plane envelopes and honeypot lifecycle events, with vote actions held at a reserved-only contract boundary.
+- `testsuite/tests/honeypot_control_plane.rs` proves acquire, reset, stream-endpoint, release, and recycle responses all carry stable correlation keys in `control_plane_assigns_resets_streams_and_recycles_a_typed_lease`.
+- `testsuite/tests/honeypot_visibility.rs` proves session kill auditability in `honeypot_terminate_recycles_vm_and_cleans_up_live_state` by asserting `operator_id`, `session_id`, `vm_lease_id`, and `correlation_id` across `session.killed`, `session.recycle.requested`, and `host.recycled`.
+- `testsuite/tests/honeypot_visibility.rs` also proves quarantine auditability in `honeypot_quarantine_recycles_vm_with_quarantined_audit_fields`, including the quarantined recycle outcome and the operator-bound reason code.
+- `testsuite/tests/honeypot_visibility.rs` proves stream-bound session termination keeps the same audit identifiers through recycle in `honeypot_stream_binding_is_revoked_after_terminate_recycle`.
+- `testsuite/tests/cli/dgw/honeypot.rs` proves the global emergency-stop route remains explicitly scoped to `gateway.honeypot.system.kill`, which is the operator action that fans out into the per-session audited lifecycle sequence.
+- `honeypot/contracts/src/tests.rs` freezes `gateway.honeypot.command.propose` and `gateway.honeypot.command.approve` as reserved scope strings, which means no frontend vote action can ship without an explicit audited contract expansion.

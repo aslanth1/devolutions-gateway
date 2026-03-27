@@ -219,6 +219,11 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 
 - Every control-plane request, frontend bootstrap response, stream-token issuance, and lifecycle event carries `correlation_id`.
 - `session_id`, `vm_lease_id`, and `stream_id` are the canonical identifiers for logs, metrics, and audit events.
+- The current stable audit record surface is the existing typed control-plane request and response envelopes together with the honeypot lifecycle event envelopes, not a second browser-facing audit API.
+- Control-plane actions are auditable by stable `request_id`, `correlation_id`, and `vm_lease_id` fields across `acquire_vm`, `reset_vm`, `release_vm`, `recycle_vm`, and `stream_endpoint`.
+- Single-session kill and quarantine actions are auditable by the ordered `session.killed`, `session.recycle.requested`, and `host.recycled` event sequence bound to `operator_id`, `session_id`, `vm_lease_id`, and `correlation_id`.
+- Global emergency stop is auditable by the `POST /jet/session/system/terminate` response plus the same per-session lifecycle sequence for every affected session.
+- Frontend vote actions remain disabled in MVP, so `gateway.honeypot.command.propose` and `gateway.honeypot.command.approve` are reserved-only scopes and must not execute or persist vote state today.
 - Metrics must distinguish `session_started_total`, `session_ended_total`, `session_killed_total`, `lease_acquire_fail_total`, `lease_quarantine_total`, and `stream_start_fail_total`.
 - Audit events must capture `operator_id`, `actor_type`, `action`, `result`, `session_id` when present, `vm_lease_id` when present, `stream_id` when present, and `correlation_id`.
 - Logs must never include raw guest credentials, stream tokens, or private key material.

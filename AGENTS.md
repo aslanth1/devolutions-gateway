@@ -684,7 +684,7 @@ Pass when: public listeners require explicit allowlists, rate controls, and a do
 - [x] Add retention and forensic boundaries for recordings, streams, operator actions, and vote history.
 Pass when: retention windows and cleanup behavior are documented and enforced.
 
-- [ ] Add audit logging for control-plane actions, session kills, and frontend vote actions.
+- [x] Add audit logging for control-plane actions, session kills, and frontend vote actions.
 Pass when: every operator-visible action has a stable audit record with session and VM correlation IDs.
 
 - [x] Add operator content-handling policy.

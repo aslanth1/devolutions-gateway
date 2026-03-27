@@ -45,9 +45,13 @@ fn sample_event_document(payload: serde_json::Value) -> serde_json::Value {
 fn token_scopes_serialize_to_frozen_strings() {
     let watch = serde_json::to_string(&TokenScope::Watch).expect("serialize watch scope");
     let kill = serde_json::to_string(&TokenScope::SessionKill).expect("serialize kill scope");
+    let propose = serde_json::to_string(&TokenScope::CommandPropose).expect("serialize propose scope");
+    let approve = serde_json::to_string(&TokenScope::CommandApprove).expect("serialize approve scope");
 
     assert_eq!(watch, "\"gateway.honeypot.watch\"");
     assert_eq!(kill, "\"gateway.honeypot.session.kill\"");
+    assert_eq!(propose, "\"gateway.honeypot.command.propose\"");
+    assert_eq!(approve, "\"gateway.honeypot.command.approve\"");
 }
 
 #[test]

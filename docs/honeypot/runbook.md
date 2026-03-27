@@ -11,7 +11,7 @@ It does not by itself approve public deployment or exposure to untrusted traffic
 - Obtain written authorization for the target environment, network, credentials, storage, and attacker-content handling scope before exposing any listener.
 - Use a prepared Linux host with Docker, `/dev/kvm`, and the documented host paths under `/srv/honeypot/`.
 - Keep `control-plane`, `proxy`, and `frontend` as the only runtime services.
-- Do not expose the checked-in compose stack to the public internet until the remaining audit hardening row is complete.
+- Do not expose the checked-in compose stack to the public internet until the Windows image pipeline, host resource controls, and gold-image acceptance rows are complete.
 - Treat the checked-in compose and frontend config as local-lab defaults only, because the checked-in frontend config disables operator token validation for local bring-up.
 
 ## Public Deployment Gate
@@ -81,6 +81,7 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - The proxy replay and live update route is `GET /jet/honeypot/events`.
 - The proxy session list route is `GET /jet/sessions`.
 - The canonical correlation keys for logs, events, and evidence are `session_id`, `vm_lease_id`, `stream_id`, `event_id`, and `correlation_id`.
+- The current audit surface is the existing typed control-plane request and response envelopes plus the honeypot lifecycle events, not a second browser-facing audit API.
 
 ## Session Kill Procedure
 
@@ -147,6 +148,7 @@ docker compose -f honeypot/docker/compose.yaml logs --timestamps control-plane p
 - Close or reclassify quarantined overlays, runtime directories, pid files, QMP or QGA sockets, attestation copies, and related logs within `14` days of incident closure unless a written hold extends the case.
 - Delete intentionally exported screenshots, recordings, and evidence bundles within `30` days of case closure unless a written hold extends the case.
 - Delete operator action summaries, incident notes, and similar case metadata within `90` days of case closure unless a written hold extends the case.
+- Preserve the matching control-plane envelopes plus `session.killed`, `session.recycle.requested`, and `host.recycled` records for kill, quarantine, and system-kill incidents before deleting the surrounding case bundle on schedule.
 - Do not retain vote transcripts or vote history because `propose` and `approve` remain disabled in MVP.
 - Never copy secret mounts, backend credentials, bearer tokens, private keys, or raw credential mappings into case storage.
 

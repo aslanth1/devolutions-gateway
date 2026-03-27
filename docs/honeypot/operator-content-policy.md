@@ -12,7 +12,7 @@ It must not be read as approval to enable deferred interactive features before t
 - This policy applies to live streams, replayable recordings, screenshots, logs, audit records, operator notes, exported evidence, and quarantined honeypot artifacts.
 - This policy applies to `frontend`, `proxy` operator routes, `control-plane` administration, and any host-side incident review tied to the honeypot stack.
 - Retention windows and deletion behavior are defined in [risk.md](risk.md).
-- This policy does not replace the dedicated audit-logging requirement that remains open elsewhere in `AGENTS.md`.
+- Audit-record expectations are defined in [contracts.md](contracts.md) and verified in [testing.md](testing.md).
 
 ## Role Model
 

@@ -219,7 +219,7 @@ async fn fake_recycle_handler(
         vm_lease_id,
         recycle_state: RecycleState::Recycled,
         pool_state: PoolState::Ready,
-        quarantined: false,
+        quarantined: request.force_quarantine,
     })
 }
 
@@ -392,6 +392,20 @@ fn post_request(uri: &str) -> anyhow::Result<Request<Body>> {
         .uri(uri)
         .header(AUTHORIZATION, WILDCARD_BEARER)
         .body(Body::empty())?)
+}
+
+fn wildcard_operator_id() -> anyhow::Result<String> {
+    Ok(extract_jti(WILDCARD_BEARER.trim_start_matches("Bearer "))?.to_string())
+}
+
+fn assert_audit_record_keys(event: &EventEnvelope, session_id: Uuid, vm_lease_id: &str) {
+    assert_eq!(event.session_id.as_deref(), Some(session_id.to_string().as_str()));
+    assert_eq!(event.vm_lease_id.as_deref(), Some(vm_lease_id));
+    assert!(
+        event.correlation_id.starts_with("honeypot-correlation-"),
+        "unexpected correlation_id: {}",
+        event.correlation_id
+    );
 }
 
 async fn collect_response_body(response: Response) -> anyhow::Result<Vec<u8>> {
@@ -952,6 +966,7 @@ async fn honeypot_terminate_recycles_vm_and_cleans_up_live_state() -> anyhow::Re
     let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
     let session_id = Uuid::new_v4();
     let session = live_session(session_id);
+    let operator_id = wildcard_operator_id()?;
     let credential_token_id = extract_jti(CREDENTIAL_TEST_TOKEN).context("extract credential token id")?;
 
     start_live_session_with_kill_cleanup(&state, &session).await?;
@@ -1089,17 +1104,21 @@ async fn honeypot_terminate_recycles_vm_and_cleans_up_live_state() -> anyhow::Re
     assert_eq!(replay.len(), 5, "{sse_body}");
     assert!(matches!(replay[0].payload, EventPayload::SessionStarted { .. }));
     assert!(matches!(replay[1].payload, EventPayload::SessionAssigned { .. }));
+    assert_audit_record_keys(&replay[2], session_id, LEASE_ID);
     match &replay[2].payload {
         EventPayload::SessionKilled {
             kill_scope,
+            killed_by_operator_id,
             kill_reason,
             ..
         } => {
             assert_eq!(*kill_scope, KillScope::Session);
+            assert_eq!(killed_by_operator_id, &operator_id);
             assert_eq!(kill_reason, SessionKillReason::OperatorRequested.as_reason_code());
         }
         payload => panic!("expected session.killed payload, got {payload:?}"),
     }
+    assert_audit_record_keys(&replay[3], session_id, LEASE_ID);
     match &replay[3].payload {
         EventPayload::SessionRecycleRequested {
             recycle_reason,
@@ -1111,6 +1130,7 @@ async fn honeypot_terminate_recycles_vm_and_cleans_up_live_state() -> anyhow::Re
         }
         payload => panic!("expected session.recycle.requested payload, got {payload:?}"),
     }
+    assert_audit_record_keys(&replay[4], session_id, LEASE_ID);
     match &replay[4].payload {
         EventPayload::HostRecycled {
             recycle_state,
@@ -1129,11 +1149,131 @@ async fn honeypot_terminate_recycles_vm_and_cleans_up_live_state() -> anyhow::Re
 }
 
 #[tokio::test]
+async fn honeypot_quarantine_recycles_vm_with_quarantined_audit_fields() -> anyhow::Result<()> {
+    let control_plane = FakeControlPlaneServer::spawn().await?;
+    let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
+    let session_id = Uuid::new_v4();
+    let session = live_session(session_id);
+    let operator_id = wildcard_operator_id()?;
+
+    start_live_session_with_kill_cleanup(&state, &session).await?;
+
+    let response = app
+        .clone()
+        .oneshot(post_request(&format!("/jet/session/{session_id}/quarantine"))?)
+        .await
+        .context("request quarantine route")?;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut session_removed = false;
+    for _ in 0..20 {
+        let response = app
+            .clone()
+            .oneshot(get_request("/jet/sessions")?)
+            .await
+            .context("request running sessions after quarantine")?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let sessions_after: Value = serde_json::from_slice(&collect_response_body(response).await?)
+            .context("decode running sessions after quarantine")?;
+
+        if sessions_after.as_array().is_some_and(|entries| {
+            entries
+                .iter()
+                .all(|entry| entry["association_id"].as_str() != Some(session_id.to_string().as_str()))
+        }) {
+            session_removed = true;
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(session_removed, "session should be removed from /jet/sessions");
+
+    let (released, recycled) = {
+        let mut observed = None;
+        for _ in 0..20 {
+            let released = control_plane.calls.released.lock().await.clone();
+            let recycled = control_plane.calls.recycled.lock().await.clone();
+            if released.len() == 1 && recycled.len() == 1 {
+                observed = Some((released, recycled));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        observed.context("wait for quarantine release and recycle calls")?
+    };
+    assert_eq!(released[0].1.release_reason, "operator_quarantine");
+    assert_eq!(released[0].1.terminal_outcome, "killed");
+    assert_eq!(recycled[0].1.recycle_reason, "operator_quarantine");
+    assert!(recycled[0].1.quarantine_on_failure);
+    assert!(recycled[0].1.force_quarantine);
+
+    let response = app
+        .oneshot(get_request("/jet/honeypot/events?cursor=0")?)
+        .await
+        .context("request replay after quarantine")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let sse_body = collect_sse_replay(response, 5).await?;
+    let replay = parse_sse_events(&sse_body)?;
+
+    assert_eq!(replay.len(), 5, "{sse_body}");
+    assert_audit_record_keys(&replay[2], session_id, LEASE_ID);
+    match &replay[2].payload {
+        EventPayload::SessionKilled {
+            kill_scope,
+            killed_by_operator_id,
+            kill_reason,
+            ..
+        } => {
+            assert_eq!(*kill_scope, KillScope::Session);
+            assert_eq!(killed_by_operator_id, &operator_id);
+            assert_eq!(kill_reason, SessionKillReason::OperatorQuarantine.as_reason_code());
+        }
+        payload => panic!("expected session.killed payload, got {payload:?}"),
+    }
+    assert_audit_record_keys(&replay[3], session_id, LEASE_ID);
+    match &replay[3].payload {
+        EventPayload::SessionRecycleRequested {
+            recycle_reason,
+            requested_by,
+            ..
+        } => {
+            assert_eq!(recycle_reason, "operator_quarantine");
+            assert_eq!(requested_by, "proxy");
+        }
+        payload => panic!("expected session.recycle.requested payload, got {payload:?}"),
+    }
+    assert_audit_record_keys(&replay[4], session_id, LEASE_ID);
+    match &replay[4].payload {
+        EventPayload::HostRecycled {
+            recycle_state,
+            quarantined,
+            quarantine_reason,
+            ..
+        } => {
+            assert_eq!(*recycle_state, RecycleState::Recycled);
+            assert!(*quarantined);
+            assert_eq!(
+                quarantine_reason.as_deref(),
+                Some("control_plane_recycled_into_quarantine")
+            );
+        }
+        payload => panic!("expected host.recycled payload, got {payload:?}"),
+    }
+
+    control_plane.shutdown().await;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow::Result<()> {
     let control_plane = FakeControlPlaneServer::spawn().await?;
     let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
     let session_id = Uuid::new_v4();
     let session = live_session(session_id);
+    let operator_id = wildcard_operator_id()?;
 
     start_live_session_with_kill_cleanup(&state, &session).await?;
 
@@ -1271,10 +1411,13 @@ async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow:
     match &replay[3].payload {
         EventPayload::SessionKilled {
             kill_scope,
+            killed_by_operator_id,
             kill_reason,
             ..
         } => {
+            assert_audit_record_keys(&replay[3], session_id, LEASE_ID);
             assert_eq!(*kill_scope, KillScope::Session);
+            assert_eq!(killed_by_operator_id, &operator_id);
             assert_eq!(kill_reason, SessionKillReason::OperatorRequested.as_reason_code());
         }
         payload => panic!("expected session.killed payload, got {payload:?}"),
@@ -1285,6 +1428,7 @@ async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow:
             requested_by,
             ..
         } => {
+            assert_audit_record_keys(&replay[4], session_id, LEASE_ID);
             assert_eq!(recycle_reason, "session_killed");
             assert_eq!(requested_by, "proxy");
         }
@@ -1296,6 +1440,7 @@ async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow:
             quarantined,
             ..
         } => {
+            assert_audit_record_keys(&replay[5], session_id, LEASE_ID);
             assert_eq!(replay[5].vm_lease_id.as_deref(), Some(LEASE_ID));
             assert_eq!(*recycle_state, RecycleState::Recycled);
             assert!(!quarantined);

@@ -456,6 +456,11 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     );
     assert_eq!(acquire.backend_credential_ref, DEFAULT_BACKEND_CREDENTIAL_REF);
     assert!(acquire.vm_name.starts_with("honeypot-"));
+    assert!(
+        acquire.correlation_id.starts_with("acquire-"),
+        "unexpected acquire correlation_id: {}",
+        acquire.correlation_id
+    );
 
     let (status_line, reset): (String, ResetVmResponse) = post_authed_json_response(
         port,
@@ -473,6 +478,11 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert!(status_line.contains("200"), "{status_line}");
     assert_eq!(reset.reset_state, ResetState::ResetComplete);
     assert!(!reset.quarantine_required);
+    assert!(
+        reset.correlation_id.starts_with("reset-"),
+        "unexpected reset correlation_id: {}",
+        reset.correlation_id
+    );
 
     let runtime_dir = fixture.lease_store.join(&acquire.vm_lease_id);
     let overlay_path = runtime_dir.join("overlay.qcow2");
@@ -510,6 +520,11 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert_eq!(stream.vm_lease_id, acquire.vm_lease_id);
     assert!(stream.source_ready);
     assert!(stream.capture_source_ref.starts_with("gateway-recording://"));
+    assert!(
+        stream.correlation_id.starts_with("stream-endpoint-"),
+        "unexpected stream correlation_id: {}",
+        stream.correlation_id
+    );
 
     let (status_line, release): (String, ReleaseVmResponse) = post_authed_json_response(
         port,
@@ -527,6 +542,11 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert!(status_line.contains("200"), "{status_line}");
     assert_eq!(release.release_state, ReleaseState::Recycling);
     assert!(release.recycle_required);
+    assert!(
+        release.correlation_id.starts_with("release-"),
+        "unexpected release correlation_id: {}",
+        release.correlation_id
+    );
 
     let (status_line, recycle): (String, RecycleVmResponse) = post_authed_json_response(
         port,
@@ -546,6 +566,11 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
     assert_eq!(recycle.recycle_state, RecycleState::Recycled);
     assert_eq!(recycle.pool_state, PoolState::Ready);
     assert!(!recycle.quarantined);
+    assert!(
+        recycle.correlation_id.starts_with("recycle-"),
+        "unexpected recycle correlation_id: {}",
+        recycle.correlation_id
+    );
     assert!(
         !runtime_dir.exists(),
         "runtime dir should be removed after recycle: {}",
