@@ -61,6 +61,7 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - The `kill` role maps to `gateway.honeypot.session.kill` for single-session kills or quarantines and `gateway.honeypot.system.kill` for global kill.
 - The `propose` role maps to `gateway.honeypot.command.propose` and is reserved only.
 - The `approve` role maps to `gateway.honeypot.command.approve` and is reserved only.
+- The operator workflow and sensitive-content rules for those roles live in [operator-content-policy.md](operator-content-policy.md).
 - Every operator-visible action must carry `operator_id`, `role`, `session_id` when present, `vm_lease_id` when present, `event_id` when present, and `correlation_id`.
 
 ## Error Envelope

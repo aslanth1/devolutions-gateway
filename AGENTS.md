@@ -687,7 +687,7 @@ Pass when: retention windows and cleanup behavior are documented and enforced.
 - [ ] Add audit logging for control-plane actions, session kills, and frontend vote actions.
 Pass when: every operator-visible action has a stable audit record with session and VM correlation IDs.
 
-- [ ] Add operator content-handling policy.
+- [x] Add operator content-handling policy.
 Pass when: the repo states who may watch, who may propose commands, who may approve execution, and how sensitive attacker content is handled.
 
 - [x] Add recovery playbooks for failed recycle, image corruption, and stuck leases.

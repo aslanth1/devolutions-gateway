@@ -3,7 +3,7 @@
 ## Purpose
 
 This document is the canonical operator procedure for local honeypot bring-up, session control, emergency stop, VM recycle, evidence capture, and recovery.
-It works with [deployment.md](deployment.md), [contracts.md](contracts.md), [risk.md](risk.md), and [testing.md](testing.md).
+It works with [deployment.md](deployment.md), [contracts.md](contracts.md), [risk.md](risk.md), [testing.md](testing.md), and [operator-content-policy.md](operator-content-policy.md).
 It does not by itself approve public deployment or exposure to untrusted traffic.
 
 ## Preconditions
@@ -128,6 +128,7 @@ docker compose -f honeypot/docker/compose.yaml logs --timestamps control-plane p
 7. Never copy secret mounts into an evidence bundle.
 8. Redact guest credentials, service tokens, private keys, and personally identifying information from exported material unless explicit authorization requires otherwise.
 9. Keep evidence on access-controlled storage and preserve enough audit context to explain every operator action.
+10. Apply the role and sharing limits in [operator-content-policy.md](operator-content-policy.md) before viewing, exporting, or escalating attacker content.
 
 ## Recovery Playbooks
 

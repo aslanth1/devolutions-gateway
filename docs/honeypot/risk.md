@@ -51,6 +51,7 @@ This document must not be read as permission to add a fourth runtime service or 
 - Secrets, credentials, and personally identifying information must be redacted from exported evidence unless explicit authorization and a documented need require otherwise.
 - Recordings and logs must stay on access-controlled storage and must not be mirrored to third-party analytics or cloud services by default.
 - Operators must not browse, share, or replay attacker content outside the scope of the authorized research objective.
+- The detailed role-to-content rules for attacker material live in [operator-content-policy.md](operator-content-policy.md).
 - Retention windows, export rules, and deletion behavior must be frozen under `DF-08` before long-running capture or external reporting workflows are enabled.
 
 ## Teardown And Incident Response
