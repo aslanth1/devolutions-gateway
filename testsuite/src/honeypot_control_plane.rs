@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::LazyLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use honeypot_contracts::control_plane::HealthResponse;
@@ -10,6 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use typed_builder::TypedBuilder;
+use uuid::Uuid;
 
 static HONEYPOT_CONTROL_PLANE_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
@@ -565,7 +568,7 @@ pub const ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP: &str = "external_client_interop
 #[cfg(unix)]
 pub const ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL: &str = "digest_mismatch_negative_control";
 #[cfg(unix)]
-pub const ROW706_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+pub const ROW706_EVIDENCE_SCHEMA_VERSION: u32 = 2;
 
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -577,9 +580,18 @@ pub enum Row706AnchorStatus {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Row706RunStatus {
+    Running,
+    Complete,
+}
+
+#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Row706AnchorResult {
     pub schema_version: u32,
+    pub run_id: String,
     pub anchor_id: String,
     pub executed: bool,
     pub status: Row706AnchorStatus,
@@ -591,6 +603,18 @@ pub struct Row706AnchorResult {
     pub image_store_root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Row706RunManifest {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub created_at_unix_secs: u64,
+    pub status: Row706RunStatus,
+    pub expected_anchor_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_unix_secs: Option<u64>,
 }
 
 #[cfg(unix)]
@@ -611,11 +635,127 @@ pub fn row706_default_evidence_dir() -> PathBuf {
 }
 
 #[cfg(unix)]
-pub fn write_row706_anchor_result(root: &Path, result: &Row706AnchorResult) -> anyhow::Result<()> {
-    validate_row706_anchor_result_shape(result)?;
-    fs::create_dir_all(root).with_context(|| format!("create row706 evidence dir {}", root.display()))?;
+pub fn row706_runs_root(root: &Path) -> PathBuf {
+    root.join("runs")
+}
 
-    let result_path = row706_anchor_result_path(root, &result.anchor_id);
+#[cfg(unix)]
+pub fn row706_run_dir(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
+    validate_row706_run_id(run_id)?;
+    Ok(row706_runs_root(root).join(run_id))
+}
+
+#[cfg(unix)]
+pub fn row706_begin_run(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
+    let run_dir = row706_run_dir(root, run_id)?;
+    let runs_root = row706_runs_root(root);
+    fs::create_dir_all(&runs_root).with_context(|| format!("create row706 runs root {}", runs_root.display()))?;
+
+    if run_dir.exists() {
+        let metadata = fs::symlink_metadata(&run_dir)
+            .with_context(|| format!("read row706 run dir metadata {}", run_dir.display()))?;
+        anyhow::ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "row706 run dir must be a real directory: {}",
+            run_dir.display()
+        );
+    } else {
+        fs::create_dir(&run_dir).with_context(|| format!("create row706 run dir {}", run_dir.display()))?;
+    }
+    ensure_row706_run_dir_within_root(&runs_root, &run_dir)?;
+
+    let manifest = Row706RunManifest {
+        schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+        run_id: run_id.to_owned(),
+        created_at_unix_secs: unix_timestamp_secs()?,
+        status: Row706RunStatus::Running,
+        expected_anchor_ids: expected_row706_anchor_ids()
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect(),
+        completed_at_unix_secs: None,
+    };
+    let manifest_path = row706_run_manifest_path(&run_dir);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&manifest_path)
+        .with_context(|| format!("create row706 run manifest {}", manifest_path.display()))?;
+    let bytes = serde_json::to_vec_pretty(&manifest).context("serialize row706 run manifest")?;
+    file.write_all(&bytes)
+        .with_context(|| format!("write row706 run manifest {}", manifest_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync row706 run manifest {}", manifest_path.display()))?;
+
+    Ok(run_dir)
+}
+
+#[cfg(unix)]
+pub fn row706_complete_run(root: &Path, run_id: &str) -> anyhow::Result<bool> {
+    let run_dir = row706_run_dir(root, run_id)?;
+    let mut manifest = read_row706_run_manifest(&run_dir)?;
+    anyhow::ensure!(
+        manifest.run_id == run_id,
+        "row706 manifest run_id {} does not match requested run {}",
+        manifest.run_id,
+        run_id
+    );
+
+    if manifest.status == Row706RunStatus::Complete {
+        return Ok(true);
+    }
+
+    if expected_row706_anchor_ids()
+        .into_iter()
+        .any(|anchor_id| !row706_anchor_result_path(&run_dir, anchor_id).is_file())
+    {
+        return Ok(false);
+    }
+
+    manifest.status = Row706RunStatus::Complete;
+    manifest.completed_at_unix_secs = Some(unix_timestamp_secs()?);
+    write_row706_run_manifest(&run_dir, &manifest)?;
+
+    Ok(true)
+}
+
+#[cfg(unix)]
+pub fn write_row706_anchor_result(root: &Path, run_id: &str, result: &Row706AnchorResult) -> anyhow::Result<()> {
+    validate_row706_anchor_result_shape(result)?;
+    anyhow::ensure!(
+        result.run_id == run_id,
+        "row706 anchor {} run_id {} does not match requested run {}",
+        result.anchor_id,
+        result.run_id,
+        run_id
+    );
+
+    let run_dir = row706_run_dir(root, run_id)?;
+    let manifest = read_row706_run_manifest(&run_dir)?;
+    anyhow::ensure!(
+        manifest.status == Row706RunStatus::Running,
+        "row706 run {} must be running before writing anchor {}",
+        run_id,
+        result.anchor_id
+    );
+    anyhow::ensure!(
+        manifest
+            .expected_anchor_ids
+            .iter()
+            .any(|anchor_id| anchor_id == &result.anchor_id),
+        "row706 anchor {} is not declared in manifest {}",
+        result.anchor_id,
+        row706_run_manifest_path(&run_dir).display()
+    );
+
+    let result_path = row706_anchor_result_path(&run_dir, &result.anchor_id);
+    anyhow::ensure!(
+        !result_path.exists(),
+        "row706 anchor {} already exists in {}",
+        result.anchor_id,
+        result_path.display()
+    );
+
     let tmp_path = result_path.with_extension(format!("tmp-{}", std::process::id()));
     let bytes = serde_json::to_vec_pretty(result).context("serialize row706 anchor result")?;
     fs::write(&tmp_path, bytes).with_context(|| format!("write row706 temp fragment {}", tmp_path.display()))?;
@@ -631,69 +771,26 @@ pub fn write_row706_anchor_result(root: &Path, result: &Row706AnchorResult) -> a
 }
 
 #[cfg(unix)]
-pub fn read_row706_anchor_results(root: &Path) -> anyhow::Result<Vec<Row706AnchorResult>> {
+pub fn verify_row706_evidence_envelope(root: &Path, run_id: &str) -> anyhow::Result<Row706EvidenceEnvelope> {
+    let run_dir = row706_run_dir(root, run_id)?;
+    let manifest = read_row706_run_manifest(&run_dir)?;
     anyhow::ensure!(
-        root.is_dir(),
-        "row706 evidence dir must exist and be a directory: {}",
-        root.display()
+        manifest.run_id == run_id,
+        "row706 manifest run_id {} does not match requested run {}",
+        manifest.run_id,
+        run_id
+    );
+    anyhow::ensure!(
+        manifest.status == Row706RunStatus::Complete,
+        "row706 run {} must be complete before verification",
+        run_id
     );
 
-    let mut result_paths = fs::read_dir(root)
-        .with_context(|| format!("read row706 evidence dir {}", root.display()))?
-        .map(|entry| entry.map(|entry| entry.path()))
-        .collect::<Result<Vec<_>, _>>()
-        .with_context(|| format!("collect row706 fragments from {}", root.display()))?;
-    result_paths.retain(|path| path.extension().is_some_and(|extension| extension == "json"));
-    result_paths.sort();
-
-    anyhow::ensure!(
-        !result_paths.is_empty(),
-        "row706 evidence dir {} does not contain any .json fragments",
-        root.display()
-    );
-
-    let mut results = Vec::with_capacity(result_paths.len());
-    let mut seen_anchor_ids = BTreeMap::new();
-
-    for result_path in result_paths {
-        let bytes =
-            fs::read(&result_path).with_context(|| format!("read row706 fragment {}", result_path.display()))?;
-        let result: Row706AnchorResult = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parse row706 fragment {}", result_path.display()))?;
-        validate_row706_anchor_result_shape(&result)?;
-        if let Some(previous_path) = seen_anchor_ids.insert(result.anchor_id.clone(), result_path.clone()) {
-            anyhow::bail!(
-                "row706 anchor {} is duplicated in {} and {}",
-                result.anchor_id,
-                previous_path.display(),
-                result_path.display()
-            );
-        }
-        results.push(result);
-    }
-
-    Ok(results)
-}
-
-#[cfg(unix)]
-pub fn verify_row706_evidence_envelope(root: &Path) -> anyhow::Result<Row706EvidenceEnvelope> {
-    let results = read_row706_anchor_results(root)?;
+    let results = read_row706_anchor_results(&run_dir, &manifest)?;
     let mut by_anchor_id = BTreeMap::new();
     for result in results {
         by_anchor_id.insert(result.anchor_id.clone(), result);
     }
-
-    for anchor_id in expected_row706_anchor_ids() {
-        anyhow::ensure!(
-            by_anchor_id.contains_key(anchor_id),
-            "row706 evidence is missing required anchor fragment {anchor_id}"
-        );
-    }
-    anyhow::ensure!(
-        by_anchor_id.len() == expected_row706_anchor_ids().len(),
-        "row706 evidence contains unexpected anchors in {}",
-        root.display()
-    );
 
     let positive_anchor_results = [
         by_anchor_id
@@ -776,6 +873,83 @@ pub fn verify_row706_evidence_envelope(root: &Path) -> anyhow::Result<Row706Evid
 }
 
 #[cfg(unix)]
+fn read_row706_anchor_results(run_dir: &Path, manifest: &Row706RunManifest) -> anyhow::Result<Vec<Row706AnchorResult>> {
+    let mut json_paths = fs::read_dir(run_dir)
+        .with_context(|| format!("read row706 run dir {}", run_dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("collect row706 run entries from {}", run_dir.display()))?;
+    json_paths.retain(|path| path.extension().is_some_and(|extension| extension == "json"));
+    json_paths.sort();
+
+    let expected_json_names: BTreeMap<_, _> = expected_row706_anchor_ids()
+        .into_iter()
+        .map(|anchor_id| (format!("{anchor_id}.json"), anchor_id))
+        .collect();
+    for json_path in &json_paths {
+        let file_name = json_path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .ok_or_else(|| anyhow::anyhow!("row706 run dir contains a non-utf8 json path {}", json_path.display()))?;
+        anyhow::ensure!(
+            file_name == "manifest.json" || expected_json_names.contains_key(file_name),
+            "row706 run {} contains unexpected json file {}",
+            manifest.run_id,
+            json_path.display()
+        );
+    }
+
+    let mut results = Vec::with_capacity(manifest.expected_anchor_ids.len());
+    for anchor_id in &manifest.expected_anchor_ids {
+        let result_path = row706_anchor_result_path(run_dir, anchor_id);
+        let bytes =
+            fs::read(&result_path).with_context(|| format!("read row706 fragment {}", result_path.display()))?;
+        let result: Row706AnchorResult = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse row706 fragment {}", result_path.display()))?;
+        validate_row706_anchor_result_shape(&result)?;
+        anyhow::ensure!(
+            result.run_id == manifest.run_id,
+            "row706 anchor {} does not match run_id {}",
+            result.anchor_id,
+            manifest.run_id
+        );
+        results.push(result);
+    }
+
+    Ok(results)
+}
+
+#[cfg(unix)]
+fn read_row706_run_manifest(run_dir: &Path) -> anyhow::Result<Row706RunManifest> {
+    let manifest_path = row706_run_manifest_path(run_dir);
+    let bytes =
+        fs::read(&manifest_path).with_context(|| format!("read row706 run manifest {}", manifest_path.display()))?;
+    let manifest: Row706RunManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse row706 run manifest {}", manifest_path.display()))?;
+    validate_row706_run_manifest_shape(run_dir, &manifest)?;
+
+    Ok(manifest)
+}
+
+#[cfg(unix)]
+fn write_row706_run_manifest(run_dir: &Path, manifest: &Row706RunManifest) -> anyhow::Result<()> {
+    validate_row706_run_manifest_shape(run_dir, manifest)?;
+    let manifest_path = row706_run_manifest_path(run_dir);
+    let tmp_path = manifest_path.with_extension(format!("tmp-{}", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(manifest).context("serialize row706 run manifest")?;
+    fs::write(&tmp_path, bytes).with_context(|| format!("write row706 temp manifest {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &manifest_path).with_context(|| {
+        format!(
+            "publish row706 run manifest {} via {}",
+            manifest_path.display(),
+            tmp_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
 fn expected_row706_anchor_ids() -> [&'static str; 4] {
     [
         ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE,
@@ -786,8 +960,13 @@ fn expected_row706_anchor_ids() -> [&'static str; 4] {
 }
 
 #[cfg(unix)]
-fn row706_anchor_result_path(root: &Path, anchor_id: &str) -> PathBuf {
-    root.join(format!("{anchor_id}.json"))
+fn row706_run_manifest_path(run_dir: &Path) -> PathBuf {
+    run_dir.join("manifest.json")
+}
+
+#[cfg(unix)]
+fn row706_anchor_result_path(run_dir: &Path, anchor_id: &str) -> PathBuf {
+    run_dir.join(format!("{anchor_id}.json"))
 }
 
 #[cfg(unix)]
@@ -798,6 +977,7 @@ fn validate_row706_anchor_result_shape(result: &Row706AnchorResult) -> anyhow::R
         result.anchor_id,
         ROW706_EVIDENCE_SCHEMA_VERSION
     );
+    validate_row706_run_id(&result.run_id)?;
     anyhow::ensure!(
         expected_row706_anchor_ids().contains(&result.anchor_id.as_str()),
         "row706 anchor id {} is not recognized",
@@ -818,6 +998,77 @@ fn validate_row706_anchor_result_shape(result: &Row706AnchorResult) -> anyhow::R
     }
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn validate_row706_run_manifest_shape(run_dir: &Path, manifest: &Row706RunManifest) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        manifest.schema_version == ROW706_EVIDENCE_SCHEMA_VERSION,
+        "row706 manifest in {} must use schema version {}",
+        row706_run_manifest_path(run_dir).display(),
+        ROW706_EVIDENCE_SCHEMA_VERSION
+    );
+    validate_row706_run_id(&manifest.run_id)?;
+    anyhow::ensure!(
+        manifest.expected_anchor_ids.len() == expected_row706_anchor_ids().len(),
+        "row706 manifest {} must declare all expected anchors",
+        row706_run_manifest_path(run_dir).display()
+    );
+    for anchor_id in expected_row706_anchor_ids() {
+        anyhow::ensure!(
+            manifest
+                .expected_anchor_ids
+                .iter()
+                .any(|declared_anchor| declared_anchor == anchor_id),
+            "row706 manifest {} is missing expected anchor {}",
+            row706_run_manifest_path(run_dir).display(),
+            anchor_id
+        );
+    }
+    if manifest.status == Row706RunStatus::Complete {
+        anyhow::ensure!(
+            manifest.completed_at_unix_secs.is_some(),
+            "row706 manifest {} must record completed_at_unix_secs when complete",
+            row706_run_manifest_path(run_dir).display()
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_row706_run_id(run_id: &str) -> anyhow::Result<()> {
+    let parsed = Uuid::parse_str(run_id).with_context(|| format!("row706 run_id {run_id} must be a valid UUID"))?;
+    anyhow::ensure!(
+        parsed.get_version_num() == 4,
+        "row706 run_id {run_id} must be a UUID v4"
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_row706_run_dir_within_root(runs_root: &Path, run_dir: &Path) -> anyhow::Result<()> {
+    let canonical_runs_root = runs_root
+        .canonicalize()
+        .with_context(|| format!("canonicalize row706 runs root {}", runs_root.display()))?;
+    let canonical_run_dir = run_dir
+        .canonicalize()
+        .with_context(|| format!("canonicalize row706 run dir {}", run_dir.display()))?;
+    anyhow::ensure!(
+        canonical_run_dir.starts_with(&canonical_runs_root),
+        "row706 run dir {} escapes runs root {}",
+        canonical_run_dir.display(),
+        canonical_runs_root.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unix_timestamp_secs() -> anyhow::Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before unix epoch")?
+        .as_secs())
 }
 
 #[cfg(unix)]

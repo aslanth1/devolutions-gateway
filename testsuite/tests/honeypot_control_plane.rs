@@ -1,4 +1,5 @@
 use std::fs;
+use std::sync::LazyLock;
 
 use anyhow::Context as _;
 use honeypot_contracts::control_plane::{
@@ -15,10 +16,12 @@ use testsuite::honeypot_control_plane::{
     ROW706_EVIDENCE_SCHEMA_VERSION, Row706AnchorResult, Row706AnchorStatus, fake_qemu_bin_path, find_unused_port,
     get_json_response_with_bearer_token, honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd,
     load_honeypot_interop_store_evidence, post_json_response_with_bearer_token, read_health_response_with_bearer_token,
-    row706_default_evidence_dir, send_http_request, validate_honeypot_interop_lease_binding,
-    verify_row706_evidence_envelope, write_honeypot_control_plane_config, write_row706_anchor_result,
+    row706_begin_run, row706_complete_run, row706_default_evidence_dir, send_http_request,
+    validate_honeypot_interop_lease_binding, verify_row706_evidence_envelope, write_honeypot_control_plane_config,
+    write_row706_anchor_result,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
+use uuid::Uuid;
 
 const CONTROL_PLANE_CONFIG_ENV: &str = "HONEYPOT_CONTROL_PLANE_CONFIG";
 const CONTROL_PLANE_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAxMDEiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3QuY29udHJvbC1wbGFuZSJ9.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
@@ -46,6 +49,12 @@ const HONEYPOT_INTEROP_POOL_ENV: &str = "DGW_HONEYPOT_INTEROP_POOL";
 const HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV: &str = "DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS";
 #[cfg(unix)]
 const HONEYPOT_INTEROP_XFREERDP_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_PATH";
+#[cfg(unix)]
+static ROW706_LIVE_RUN_ID: LazyLock<String> = LazyLock::new(|| {
+    let run_id = Uuid::new_v4().to_string();
+    row706_begin_run(&row706_default_evidence_dir(), &run_id).expect("begin row706 live evidence run");
+    run_id
+});
 
 async fn read_authed_health_response(port: u16) -> anyhow::Result<honeypot_contracts::control_plane::HealthResponse> {
     read_health_response_with_bearer_token(port, Some(CONTROL_PLANE_SCOPE_TOKEN)).await
@@ -3011,16 +3020,20 @@ fn control_plane_interop_store_evidence_rejects_unattested_base_image_binding() 
 fn control_plane_row706_evidence_envelope_accepts_complete_non_skipped_consistent_fragments() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
     let image_store_root = tempdir.path().join("images");
     let base_image_path = image_store_root.join("tiny11.qcow2");
 
+    row706_begin_run(&evidence_dir, &run_id).expect("begin row706 evidence run");
     fs::create_dir_all(&image_store_root).expect("create image store root");
     fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
-    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
+    write_row706_positive_test_fragments(&evidence_dir, &run_id, &base_image_path, &image_store_root);
     write_row706_anchor_result(
         &evidence_dir,
+        &run_id,
         &Row706AnchorResult {
             schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
             anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
             executed: true,
             status: Row706AnchorStatus::Passed,
@@ -3031,8 +3044,12 @@ fn control_plane_row706_evidence_envelope_accepts_complete_non_skipped_consisten
         },
     )
     .expect("write negative control fragment");
+    assert!(
+        row706_complete_run(&evidence_dir, &run_id).expect("complete row706 evidence run"),
+        "all four fragments should complete the run"
+    );
 
-    let envelope = verify_row706_evidence_envelope(&evidence_dir).expect("verify row706 evidence envelope");
+    let envelope = verify_row706_evidence_envelope(&evidence_dir, &run_id).expect("verify row706 evidence envelope");
     assert_eq!(envelope.attestation_ref, "attestation://gold-image-0");
     assert_eq!(envelope.base_image_path, base_image_path);
     assert_eq!(envelope.image_store_root, image_store_root);
@@ -3044,19 +3061,19 @@ fn control_plane_row706_evidence_envelope_accepts_complete_non_skipped_consisten
 fn control_plane_row706_evidence_envelope_rejects_missing_anchor() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
     let image_store_root = tempdir.path().join("images");
     let base_image_path = image_store_root.join("tiny11.qcow2");
 
+    row706_begin_run(&evidence_dir, &run_id).expect("begin row706 evidence run");
     fs::create_dir_all(&image_store_root).expect("create image store root");
     fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
-    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
+    write_row706_positive_test_fragments(&evidence_dir, &run_id, &base_image_path, &image_store_root);
 
-    let error = verify_row706_evidence_envelope(&evidence_dir).expect_err("missing anchor should fail verification");
+    let error =
+        verify_row706_evidence_envelope(&evidence_dir, &run_id).expect_err("incomplete run should fail verification");
     let rendered_error = format!("{error:#}");
-    assert!(
-        rendered_error.contains(ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL),
-        "{rendered_error}"
-    );
+    assert!(rendered_error.contains("must be complete"), "{rendered_error}");
 }
 
 #[cfg(unix)]
@@ -3064,16 +3081,40 @@ fn control_plane_row706_evidence_envelope_rejects_missing_anchor() {
 fn control_plane_row706_evidence_envelope_rejects_skipped_positive_anchor() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
     let image_store_root = tempdir.path().join("images");
     let base_image_path = image_store_root.join("tiny11.qcow2");
 
+    row706_begin_run(&evidence_dir, &run_id).expect("begin row706 evidence run");
     fs::create_dir_all(&image_store_root).expect("create image store root");
     fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
-    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
+    for anchor_id in [
+        ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE,
+        ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
+    ] {
+        write_row706_anchor_result(
+            &evidence_dir,
+            &run_id,
+            &Row706AnchorResult {
+                schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+                run_id: run_id.clone(),
+                anchor_id: anchor_id.to_owned(),
+                executed: true,
+                status: Row706AnchorStatus::Passed,
+                attestation_ref: Some("attestation://gold-image-0".to_owned()),
+                base_image_path: Some(base_image_path.clone()),
+                image_store_root: Some(image_store_root.clone()),
+                detail: Some(format!("{anchor_id} passed")),
+            },
+        )
+        .expect("write positive row706 fragment");
+    }
     write_row706_anchor_result(
         &evidence_dir,
+        &run_id,
         &Row706AnchorResult {
             schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
             anchor_id: ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP.to_owned(),
             executed: false,
             status: Row706AnchorStatus::Skipped,
@@ -3083,11 +3124,13 @@ fn control_plane_row706_evidence_envelope_rejects_skipped_positive_anchor() {
             detail: Some("lab gate disabled".to_owned()),
         },
     )
-    .expect("overwrite positive anchor with skipped fragment");
+    .expect("write skipped positive anchor fragment");
     write_row706_anchor_result(
         &evidence_dir,
+        &run_id,
         &Row706AnchorResult {
             schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
             anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
             executed: true,
             status: Row706AnchorStatus::Passed,
@@ -3098,8 +3141,12 @@ fn control_plane_row706_evidence_envelope_rejects_skipped_positive_anchor() {
         },
     )
     .expect("write negative control fragment");
+    assert!(
+        row706_complete_run(&evidence_dir, &run_id).expect("complete row706 evidence run"),
+        "all four fragments should complete the run"
+    );
 
-    let error = verify_row706_evidence_envelope(&evidence_dir)
+    let error = verify_row706_evidence_envelope(&evidence_dir, &run_id)
         .expect_err("skipped positive anchor should fail row706 verification");
     let rendered_error = format!("{error:#}");
     assert!(
@@ -3113,30 +3160,67 @@ fn control_plane_row706_evidence_envelope_rejects_skipped_positive_anchor() {
 fn control_plane_row706_evidence_envelope_rejects_inconsistent_attestation() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
     let image_store_root = tempdir.path().join("images");
     let base_image_path = image_store_root.join("tiny11.qcow2");
 
+    row706_begin_run(&evidence_dir, &run_id).expect("begin row706 evidence run");
     fs::create_dir_all(&image_store_root).expect("create image store root");
     fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
-    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
     write_row706_anchor_result(
         &evidence_dir,
+        &run_id,
         &Row706AnchorResult {
             schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            anchor_id: ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: Some("attestation://gold-image-0".to_owned()),
+            base_image_path: Some(base_image_path.clone()),
+            image_store_root: Some(image_store_root.clone()),
+            detail: Some("acceptance passed".to_owned()),
+        },
+    )
+    .expect("write gold image acceptance fragment");
+    write_row706_anchor_result(
+        &evidence_dir,
+        &run_id,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
             anchor_id: ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY.to_owned(),
             executed: true,
             status: Row706AnchorStatus::Passed,
             attestation_ref: Some("attestation://gold-image-99".to_owned()),
-            base_image_path: Some(base_image_path),
+            base_image_path: Some(base_image_path.clone()),
             image_store_root: Some(image_store_root.clone()),
             detail: Some("mismatched attestation".to_owned()),
         },
     )
-    .expect("overwrite repeatability anchor with mismatched attestation");
+    .expect("write repeatability fragment with mismatched attestation");
     write_row706_anchor_result(
         &evidence_dir,
+        &run_id,
         &Row706AnchorResult {
             schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            anchor_id: ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: Some("attestation://gold-image-0".to_owned()),
+            base_image_path: Some(base_image_path),
+            image_store_root: Some(image_store_root.clone()),
+            detail: Some("external client interop passed".to_owned()),
+        },
+    )
+    .expect("write external client interop fragment");
+    write_row706_anchor_result(
+        &evidence_dir,
+        &run_id,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
             anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
             executed: true,
             status: Row706AnchorStatus::Passed,
@@ -3147,8 +3231,12 @@ fn control_plane_row706_evidence_envelope_rejects_inconsistent_attestation() {
         },
     )
     .expect("write negative control fragment");
+    assert!(
+        row706_complete_run(&evidence_dir, &run_id).expect("complete row706 evidence run"),
+        "all four fragments should complete the run"
+    );
 
-    let error = verify_row706_evidence_envelope(&evidence_dir)
+    let error = verify_row706_evidence_envelope(&evidence_dir, &run_id)
         .expect_err("inconsistent attestation should fail row706 verification");
     let rendered_error = format!("{error:#}");
     assert!(rendered_error.contains("attestation_ref"), "{rendered_error}");
@@ -3159,17 +3247,133 @@ fn control_plane_row706_evidence_envelope_rejects_inconsistent_attestation() {
 fn control_plane_row706_evidence_envelope_rejects_malformed_fragment() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let evidence_dir = tempdir.path().join("row706");
-
-    fs::create_dir_all(&evidence_dir).expect("create row706 evidence dir");
+    let run_id = Uuid::new_v4().to_string();
+    let run_dir = row706_begin_run(&evidence_dir, &run_id).expect("begin row706 evidence run");
     fs::write(
-        evidence_dir.join(format!("{ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE}.json")),
+        run_dir.join(format!("{ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE}.json")),
         "{not-json",
     )
     .expect("write malformed fragment");
 
-    let error = verify_row706_evidence_envelope(&evidence_dir).expect_err("malformed fragment should fail parsing");
+    write_row706_anchor_result(
+        &evidence_dir,
+        &run_id,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            anchor_id: ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: Some("attestation://gold-image-0".to_owned()),
+            base_image_path: Some(tempdir.path().join("tiny11.qcow2")),
+            image_store_root: Some(tempdir.path().join("images")),
+            detail: Some("repeatability passed".to_owned()),
+        },
+    )
+    .expect("write repeatability fragment");
+    write_row706_anchor_result(
+        &evidence_dir,
+        &run_id,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            anchor_id: ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: Some("attestation://gold-image-0".to_owned()),
+            base_image_path: Some(tempdir.path().join("tiny11.qcow2")),
+            image_store_root: Some(tempdir.path().join("images")),
+            detail: Some("external client interop passed".to_owned()),
+        },
+    )
+    .expect("write external client interop fragment");
+    write_row706_anchor_result(
+        &evidence_dir,
+        &run_id,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: None,
+            base_image_path: None,
+            image_store_root: Some(tempdir.path().join("images")),
+            detail: Some("negative control passed".to_owned()),
+        },
+    )
+    .expect("write negative control fragment");
+    assert!(
+        row706_complete_run(&evidence_dir, &run_id).expect("complete row706 evidence run"),
+        "all four fragments should complete the run"
+    );
+
+    let error =
+        verify_row706_evidence_envelope(&evidence_dir, &run_id).expect_err("malformed fragment should fail parsing");
     let rendered_error = format!("{error:#}");
     assert!(rendered_error.contains("parse row706 fragment"), "{rendered_error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_rejects_pre_manifest_fragment_write() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    let error = write_row706_anchor_result(
+        &evidence_dir,
+        &run_id,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: run_id.clone(),
+            anchor_id: ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: Some("attestation://gold-image-0".to_owned()),
+            base_image_path: Some(tempdir.path().join("tiny11.qcow2")),
+            image_store_root: Some(tempdir.path().join("images")),
+            detail: Some("acceptance passed".to_owned()),
+        },
+    )
+    .expect_err("fragment writes must be rejected before manifest creation");
+
+    let rendered_error = format!("{error:#}");
+    assert!(rendered_error.contains("read row706 run manifest"), "{rendered_error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_rejects_duplicate_manifest_creation() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    row706_begin_run(&evidence_dir, &run_id).expect("begin row706 evidence run");
+    let error = row706_begin_run(&evidence_dir, &run_id).expect_err("duplicate run manifest should fail");
+    let rendered_error = format!("{error:#}");
+    assert!(
+        rendered_error.contains("create row706 run manifest"),
+        "{rendered_error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_rejects_symlinked_run_dir() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let runs_root = evidence_dir.join("runs");
+    let run_id = Uuid::new_v4().to_string();
+    let escaped_dir = tempdir.path().join("escaped");
+
+    fs::create_dir_all(&runs_root).expect("create row706 runs root");
+    fs::create_dir_all(&escaped_dir).expect("create escaped dir");
+    std::os::unix::fs::symlink(&escaped_dir, runs_root.join(&run_id)).expect("symlink run dir");
+
+    let error = row706_begin_run(&evidence_dir, &run_id).expect_err("symlinked run dir should fail");
+    let rendered_error = format!("{error:#}");
+    assert!(rendered_error.contains("real directory"), "{rendered_error}");
 }
 
 #[cfg(unix)]
@@ -3498,6 +3702,7 @@ fn rewrite_manifest_base_image_path(manifest_path: &std::path::Path, base_image_
 #[cfg(unix)]
 fn write_row706_positive_test_fragments(
     evidence_dir: &std::path::Path,
+    run_id: &str,
     base_image_path: &std::path::Path,
     image_store_root: &std::path::Path,
 ) {
@@ -3508,8 +3713,10 @@ fn write_row706_positive_test_fragments(
     ] {
         write_row706_anchor_result(
             evidence_dir,
+            run_id,
             &Row706AnchorResult {
                 schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+                run_id: run_id.to_owned(),
                 anchor_id: anchor_id.to_owned(),
                 executed: true,
                 status: Row706AnchorStatus::Passed,
@@ -3549,11 +3756,24 @@ struct ExternalClientInteropConfig {
 }
 
 #[cfg(unix)]
+fn row706_live_run_id() -> &'static str {
+    ROW706_LIVE_RUN_ID.as_str()
+}
+
+#[cfg(unix)]
+fn maybe_complete_row706_live_run() {
+    row706_complete_run(&row706_default_evidence_dir(), row706_live_run_id())
+        .expect("complete row706 live evidence run when all anchors are present");
+}
+
+#[cfg(unix)]
 fn record_row706_skipped_anchor_result(anchor_id: &str, detail: impl Into<String>) {
     write_row706_anchor_result(
         &row706_default_evidence_dir(),
+        row706_live_run_id(),
         &Row706AnchorResult {
             schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: row706_live_run_id().to_owned(),
             anchor_id: anchor_id.to_owned(),
             executed: false,
             status: Row706AnchorStatus::Skipped,
@@ -3564,6 +3784,7 @@ fn record_row706_skipped_anchor_result(anchor_id: &str, detail: impl Into<String
         },
     )
     .expect("write skipped row706 anchor fragment");
+    maybe_complete_row706_live_run();
 }
 
 #[cfg(unix)]
@@ -3576,8 +3797,10 @@ fn record_row706_passed_anchor_result(
 ) {
     write_row706_anchor_result(
         &row706_default_evidence_dir(),
+        row706_live_run_id(),
         &Row706AnchorResult {
             schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            run_id: row706_live_run_id().to_owned(),
             anchor_id: anchor_id.to_owned(),
             executed: true,
             status: Row706AnchorStatus::Passed,
@@ -3588,6 +3811,7 @@ fn record_row706_passed_anchor_result(
         },
     )
     .expect("write passed row706 anchor fragment");
+    maybe_complete_row706_live_run();
 }
 
 #[cfg(unix)]
