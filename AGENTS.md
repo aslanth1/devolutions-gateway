@@ -405,7 +405,7 @@ Pass when: one session maps to one VM lease and a released VM returns to the cho
 - [x] Add orphaned QEMU, socket, overlay, and lease cleanup.
 Pass when: stale QEMU processes, QMP or QGA sockets, overlays, tempdirs, and lease artifacts are reclaimed deterministically after crashes or abandoned sessions.
 
-- [ ] Add host-side resource and network controls.
+- [x] Add host-side resource and network controls.
 Pass when: CPU, memory, disk, outbound routing, control sockets, and emergency stop limits are enforced per VM.
 
 - [x] Add secret storage for backend credentials with a replaceable adapter.

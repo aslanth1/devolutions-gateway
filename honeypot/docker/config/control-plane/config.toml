@@ -14,6 +14,12 @@ enable_guest_agent = true
 lifecycle_driver = "process"
 stop_timeout_secs = 5
 
+[runtime.limits]
+max_vcpu_count = 8
+max_memory_mib = 16384
+max_overlay_size_mib = 65536
+max_stop_timeout_secs = 15
+
 [runtime.qemu]
 binary_path = "/usr/bin/qemu-system-x86_64"
 machine_type = "q35"

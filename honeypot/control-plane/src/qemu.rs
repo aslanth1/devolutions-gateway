@@ -104,6 +104,7 @@ impl QemuLaunchPlan {
 
 pub(crate) fn validate_qemu_runtime_contract(config: &ControlPlaneConfig) -> anyhow::Result<()> {
     let qemu_config = &config.runtime.qemu;
+    let limits = &config.runtime.limits;
 
     ensure_file("runtime.qemu.binary_path", &qemu_config.binary_path)?;
     anyhow::ensure!(
@@ -119,17 +120,54 @@ pub(crate) fn validate_qemu_runtime_contract(config: &ControlPlaneConfig) -> any
         "runtime.qemu.vcpu_count must be greater than zero",
     );
     anyhow::ensure!(
+        limits.max_vcpu_count > 0,
+        "runtime.limits.max_vcpu_count must be greater than zero",
+    );
+    anyhow::ensure!(
+        qemu_config.vcpu_count <= limits.max_vcpu_count,
+        "runtime.qemu.vcpu_count must be less than or equal to runtime.limits.max_vcpu_count",
+    );
+    anyhow::ensure!(
         qemu_config.memory_mib > 0,
         "runtime.qemu.memory_mib must be greater than zero",
+    );
+    anyhow::ensure!(
+        limits.max_memory_mib > 0,
+        "runtime.limits.max_memory_mib must be greater than zero",
+    );
+    anyhow::ensure!(
+        qemu_config.memory_mib <= limits.max_memory_mib,
+        "runtime.qemu.memory_mib must be less than or equal to runtime.limits.max_memory_mib",
     );
     anyhow::ensure!(
         !qemu_config.network.netdev_id.trim().is_empty(),
         "runtime.qemu.network.netdev_id must not be empty",
     );
     anyhow::ensure!(
+        qemu_config
+            .network
+            .netdev_id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')),
+        "runtime.qemu.network.netdev_id must contain only ASCII letters, digits, hyphens, and underscores",
+    );
+    anyhow::ensure!(
         config.runtime.stop_timeout_secs > 0,
         "runtime.stop_timeout_secs must be greater than zero",
     );
+    anyhow::ensure!(
+        limits.max_stop_timeout_secs > 0,
+        "runtime.limits.max_stop_timeout_secs must be greater than zero",
+    );
+    anyhow::ensure!(
+        config.runtime.stop_timeout_secs <= limits.max_stop_timeout_secs,
+        "runtime.stop_timeout_secs must be less than or equal to runtime.limits.max_stop_timeout_secs",
+    );
+    anyhow::ensure!(
+        limits.max_overlay_size_mib > 0,
+        "runtime.limits.max_overlay_size_mib must be greater than zero",
+    );
+    let _ = limits.max_overlay_size_bytes()?;
 
     if matches!(qemu_config.network.mode, QemuNetworkMode::User) {
         anyhow::ensure!(
@@ -198,7 +236,7 @@ fn network_argv(config: &ControlPlaneConfig, guest_rdp_port: u16) -> Vec<String>
     vec![
         "-netdev".to_owned(),
         format!(
-            "{},id={},hostfwd=tcp:{}:{}-:{}",
+            "{},restrict=on,id={},hostfwd=tcp:{}:{}-:{}",
             network.mode.as_qemu_value(),
             network.netdev_id,
             network.host_loopback_addr,
@@ -269,6 +307,11 @@ mod tests {
             "{:?}",
             plan.argv
         );
+        assert!(
+            plan.argv.iter().any(|arg| arg.contains("restrict=on")),
+            "{:?}",
+            plan.argv
+        );
         assert!(plan.argv.windows(2).any(|window| {
             window.first().map(String::as_str) == Some("-display") && window.get(1).map(String::as_str) == Some("none")
         }));
@@ -300,6 +343,49 @@ mod tests {
             .expect_err("non-loopback user networking should fail");
 
         assert!(format!("{error:#}").contains("host_loopback_addr"), "{error:#}");
+    }
+
+    #[test]
+    fn qemu_launch_plan_rejects_vcpu_counts_above_runtime_limit() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let mut config = test_config(tempdir.path());
+        config.runtime.limits.max_vcpu_count = 2;
+        let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
+        fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
+
+        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
+            .expect_err("vcpu counts above the configured runtime limit should fail");
+
+        assert!(format!("{error:#}").contains("max_vcpu_count"), "{error:#}");
+    }
+
+    #[test]
+    fn qemu_launch_plan_rejects_memory_above_runtime_limit() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let mut config = test_config(tempdir.path());
+        config.runtime.limits.max_memory_mib = 1024;
+        let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
+        fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
+
+        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
+            .expect_err("memory above the configured runtime limit should fail");
+
+        assert!(format!("{error:#}").contains("max_memory_mib"), "{error:#}");
+    }
+
+    #[test]
+    fn qemu_launch_plan_rejects_stop_timeout_above_runtime_limit() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let mut config = test_config(tempdir.path());
+        config.runtime.stop_timeout_secs = 30;
+        config.runtime.limits.max_stop_timeout_secs = 10;
+        let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
+        fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
+
+        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
+            .expect_err("stop timeout above the configured runtime limit should fail");
+
+        assert!(format!("{error:#}").contains("max_stop_timeout_secs"), "{error:#}");
     }
 
     #[test]

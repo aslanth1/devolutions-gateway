@@ -104,6 +104,40 @@ fn control_plane_fails_closed_when_required_paths_are_missing() {
     );
 }
 
+#[test]
+fn control_plane_fails_closed_when_qemu_resource_limits_are_exceeded() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let config_path = tempdir.path().join("control-plane.toml");
+    let bind_addr = format!("127.0.0.1:{}", find_unused_port());
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(bind_addr)
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path)
+        .qemu_vcpu_count(9)
+        .qemu_max_vcpu_count(8)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let output = honeypot_control_plane_assert_cmd()
+        .env(CONTROL_PLANE_CONFIG_ENV, &config_path)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("validate control-plane startup contract"), "{stderr}");
+    assert!(stderr.contains("max_vcpu_count"), "{stderr}");
+}
+
 #[tokio::test]
 async fn control_plane_reports_ready_when_contract_is_satisfied() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
@@ -138,6 +172,63 @@ async fn control_plane_reports_ready_when_contract_is_satisfied() {
     assert_eq!(health.trusted_image_count, 1);
     assert_eq!(health.active_lease_count, 0);
     assert_eq!(health.quarantined_lease_count, 0);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_rejects_base_images_that_exceed_overlay_size_limit() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let oversized_base_image = vec![0x5a; 2 * 1024 * 1024];
+    fs::write(&fixture.base_image_paths[0], &oversized_base_image).expect("rewrite oversized base image");
+    write_attested_manifest(
+        &fixture.manifest_paths[0],
+        &fixture.base_image_paths[0],
+        0,
+        &oversized_base_image,
+    );
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .qemu_max_overlay_size_mib(1)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let request_body = serde_json::to_vec(&acquire_request("session-oversized-overlay")).expect("serialize request");
+    let (status_line, body) = send_http_request(
+        port,
+        "POST",
+        "/api/v1/vm/acquire",
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        Some(&request_body),
+    )
+    .await
+    .expect("send acquire request");
+    let error: ErrorResponse = serde_json::from_slice(&body).expect("parse error response");
+
+    assert!(status_line.contains("503"), "{status_line}");
+    assert_eq!(error.error_code, ErrorCode::HostUnavailable);
+    assert!(error.message.contains("max_overlay_size_mib"), "{}", error.message);
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -2297,7 +2388,7 @@ async fn control_plane_process_driver_reports_qemu_startup_failures() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn control_plane_recycle_failure_is_surfaced_and_keeps_the_lease_out_of_service() {
+async fn control_plane_recycle_escalates_to_emergency_stop_after_stop_timeout() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
     let config_path = tempdir.path().join("control-plane.toml");
@@ -2333,7 +2424,14 @@ async fn control_plane_recycle_failure_is_surfaced_and_keeps_the_lease_out_of_se
             .expect("acquire lease");
     let active_snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
     let active_runtime_dir = fixture.lease_store.join(&acquire.vm_lease_id);
+    let pid_file_path = active_runtime_dir.join("qemu.pid");
     let qmp_socket_path = fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id));
+    let qemu_pid = read_pid_file(&pid_file_path);
+
+    assert!(
+        process_is_running(qemu_pid),
+        "expected fake qemu process {qemu_pid} to be running before recycle",
+    );
 
     let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
         port,
@@ -2350,66 +2448,44 @@ async fn control_plane_recycle_failure_is_surfaced_and_keeps_the_lease_out_of_se
     .expect("release lease");
     assert_eq!(release.release_state, ReleaseState::Recycling);
 
-    let request_body = serde_json::to_vec(&RecycleVmRequest {
-        schema_version: honeypot_contracts::SCHEMA_VERSION,
-        request_id: "recycle-process-timeout-1".to_owned(),
-        session_id: "session-process-timeout".to_owned(),
-        recycle_reason: "release_cleanup".to_owned(),
-        quarantine_on_failure: true,
-        force_quarantine: false,
-    })
-    .expect("serialize recycle request");
-    let (status_line, body) = send_http_request(
+    let (_, recycle): (String, RecycleVmResponse) = post_authed_json_response(
         port,
-        "POST",
         &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
-        Some(CONTROL_PLANE_SCOPE_TOKEN),
-        Some(&request_body),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-process-timeout-1".to_owned(),
+            session_id: "session-process-timeout".to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+            force_quarantine: false,
+        },
     )
     .await
-    .expect("send recycle request");
-    let error: ErrorResponse = serde_json::from_slice(&body).expect("parse recycle error response");
+    .expect("recycle lease");
+    assert_eq!(recycle.recycle_state, RecycleState::Recycled);
+    assert_eq!(recycle.pool_state, PoolState::Ready);
 
-    assert!(status_line.contains("503"), "{status_line}");
-    assert_eq!(error.error_code, ErrorCode::HostUnavailable);
-    assert!(error.message.contains("did not exit within"), "{}", error.message);
+    wait_for_process_exit(qemu_pid).await;
 
     let health = read_authed_health_response(port).await.expect("read health response");
-    assert_eq!(health.active_lease_count, 1);
+    assert_eq!(health.active_lease_count, 0);
     assert_eq!(health.quarantined_lease_count, 0);
     assert!(
-        active_snapshot_path.is_file(),
-        "failed recycle should preserve the active lease snapshot",
+        !active_snapshot_path.exists(),
+        "successful recycle should remove the active lease snapshot",
     );
     assert!(
-        active_runtime_dir.is_dir(),
-        "failed recycle should preserve the active runtime dir",
+        !active_runtime_dir.exists(),
+        "successful recycle should remove the runtime dir",
+    );
+    assert!(!pid_file_path.exists(), "successful recycle should remove the pid file",);
+    assert!(
+        !qmp_socket_path.exists(),
+        "successful recycle should remove the qmp socket",
     );
     assert!(
-        qmp_socket_path.exists(),
-        "failed recycle should preserve the live qmp socket",
-    );
-
-    let second_request_body = serde_json::to_vec(&acquire_request("session-process-timeout-second"))
-        .expect("serialize second acquire request");
-    let (second_status_line, second_body) = send_http_request(
-        port,
-        "POST",
-        "/api/v1/vm/acquire",
-        Some(CONTROL_PLANE_SCOPE_TOKEN),
-        Some(&second_request_body),
-    )
-    .await
-    .expect("send second acquire request");
-    let second_error: ErrorResponse =
-        serde_json::from_slice(&second_body).expect("parse second acquire error response");
-
-    assert!(second_status_line.contains("503"), "{second_status_line}");
-    assert_eq!(second_error.error_code, ErrorCode::NoCapacity);
-    assert!(
-        second_error.message.contains("currently assigned"),
-        "{}",
-        second_error.message
+        !process_is_running(qemu_pid),
+        "expected fake qemu process {qemu_pid} to exit after emergency-stop escalation",
     );
 
     child.kill().await.expect("kill control-plane");

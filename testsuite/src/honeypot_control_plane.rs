@@ -69,6 +69,14 @@ pub struct HoneypotControlPlaneTestConfig {
     pub lifecycle_driver: String,
     #[builder(default = 1)]
     pub stop_timeout_secs: u64,
+    #[builder(default = 8)]
+    pub qemu_max_vcpu_count: u8,
+    #[builder(default = 16 * 1024)]
+    pub qemu_max_memory_mib: u32,
+    #[builder(default = 64 * 1024)]
+    pub qemu_max_overlay_size_mib: u64,
+    #[builder(default = 15)]
+    pub max_stop_timeout_secs: u64,
     #[builder(setter(into))]
     pub qemu_binary_path: PathBuf,
     #[builder(default = "q35".to_owned(), setter(into))]
@@ -118,6 +126,11 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
          enable_guest_agent = {}\n\n\
          lifecycle_driver = \"{}\"\n\
          stop_timeout_secs = {}\n\n\
+         [runtime.limits]\n\
+         max_vcpu_count = {}\n\
+         max_memory_mib = {}\n\
+         max_overlay_size_mib = {}\n\
+         max_stop_timeout_secs = {}\n\n\
          [runtime.qemu]\n\
          binary_path = \"{}\"\n\
          machine_type = \"{}\"\n\
@@ -140,6 +153,10 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
         config.enable_guest_agent,
         config.lifecycle_driver,
         config.stop_timeout_secs,
+        config.qemu_max_vcpu_count,
+        config.qemu_max_memory_mib,
+        config.qemu_max_overlay_size_mib,
+        config.max_stop_timeout_secs,
         config.qemu_binary_path.display(),
         config.qemu_machine_type,
         config.qemu_cpu_model,

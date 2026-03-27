@@ -45,7 +45,7 @@ Operator procedures for bring-up, emergency stop, recycle, evidence capture, and
 ## Runtime Config Mounts
 
 - `control-plane` mounts `honeypot/docker/config/control-plane/config.toml` at `/etc/honeypot/control-plane/config.toml` as read-only, resolves `auth.proxy_verifier_public_key_pem_file` from the control-plane secret mount rather than from checked-in PEM content, and pins `backend_credentials.file_path` to the mounted backend credential store.
-- The checked-in `control-plane` runtime config also pins `runtime.qemu.binary_path`, `machine_type`, `cpu_model`, `vcpu_count`, `memory_mib`, and the user-mode network id so the launch plan is derived from mounted config rather than hidden defaults.
+- The checked-in `control-plane` runtime config also pins `runtime.limits.max_vcpu_count`, `max_memory_mib`, `max_overlay_size_mib`, and `max_stop_timeout_secs` plus `runtime.qemu.binary_path`, `machine_type`, `cpu_model`, `vcpu_count`, `memory_mib`, and the user-mode network id so the launch plan is derived from mounted config rather than hidden defaults.
 - `proxy` mounts `honeypot/docker/config/proxy/gateway.json` at `/etc/honeypot/proxy/gateway.json` as read-only, uses `DGATEWAY_CONFIG_PATH=/etc/honeypot/proxy` from its env file so the existing Gateway loader reads the mounted `gateway.json`, and resolves `Honeypot.ControlPlane.ServiceBearerTokenFile` from the proxy secret mount rather than from checked-in config content.
 - `frontend` mounts `honeypot/docker/config/frontend/config.toml` at `/etc/honeypot/frontend/config.toml` as read-only and uses `HONEYPOT_FRONTEND_CONFIG_PATH=/etc/honeypot/frontend/config.toml` from its env file so the frontend binary reads the mounted config explicitly.
 - Config mount paths are restart-safe and are the only supported path for service-specific runtime configuration.
@@ -90,9 +90,16 @@ Operator procedures for bring-up, emergency stop, recycle, evidence capture, and
 
 - `control-plane` launches `qemu-system-x86_64` directly from the container image and must not delegate launch, reset, or recycle to Bash, Python, libvirt, or unpublished host wrappers.
 - The canonical container-path for that binary is `/usr/bin/qemu-system-x86_64`, and the runtime image must include it before the service may report ready.
+- `runtime.limits.max_vcpu_count`, `max_memory_mib`, `max_overlay_size_mib`, and `max_stop_timeout_secs` are hard limits, not advisory defaults.
+  The control plane must fail closed if the checked-in QEMU launch settings exceed those bounds, and it must reject any lease whose base image would create an overlay beyond the configured disk limit.
 - Each leased VM gets a unique `vm_lease_id`, a dedicated overlay path under `/var/lib/honeypot/leases/<lease_id>/overlay.qcow2`, a dedicated QMP socket under `/run/honeypot/qmp/<lease_id>.sock`, and an optional QGA socket under `/run/honeypot/qga/<lease_id>.sock`.
+- Every QEMU launch must keep networking on the documented user-mode `-netdev` path with `restrict=on`, loopback-only host forwarding for the guest RDP port, and no alternate bridge, tap, or public host bind path.
+- Every QEMU launch must keep control channels on per-lease Unix-domain QMP and optional QGA sockets only.
+  TCP QMP, VNC, monitor consoles, and other undeclared control sockets are forbidden.
 - Any runtime temp files, display artifacts, or per-lease metadata must stay inside control-plane-owned paths tied to `vm_lease_id`.
 - A lease is reusable only after QEMU exit is confirmed, sockets are removed, the overlay and tempdirs are deleted, and the base-image chain still passes integrity and provenance checks.
+- Emergency stop and recycle must use a bounded shutdown path.
+  The control plane first sends `SIGTERM`, waits only up to `runtime.stop_timeout_secs`, then escalates to `SIGKILL` and still must remove the pid file, QMP socket, optional QGA socket, and lease runtime directory before the lease may return to the ready pool.
 - Failure at boot, reset, recycle, socket cleanup, or integrity verification moves the affected lease and related artifacts to `/var/lib/honeypot/quarantine` and marks the host state degraded or unsafe until operator review.
 
 ## Control-Plane Least-Privilege Contract
@@ -106,6 +113,7 @@ Operator procedures for bring-up, emergency stop, recycle, evidence capture, and
 - `control-plane` may attach only to `honeypot-control` plus any explicitly documented host bridge needed for guest networking.
 - Extra Linux capabilities are forbidden unless a later deployment revision documents the exact need and scope.
 - Guest egress controls belong to the host bridge and QEMU networking policy, not to an unrestricted container capability set.
+  The checked-in contract uses user-mode networking with `restrict=on` and loopback-only host forwards until a later decision record approves another constrained egress model.
 
 ## Service Ports And Healthchecks
 

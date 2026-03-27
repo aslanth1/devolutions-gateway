@@ -91,6 +91,7 @@ pub struct RuntimeConfig {
     pub enable_guest_agent: bool,
     pub lifecycle_driver: VmLifecycleDriver,
     pub stop_timeout_secs: u64,
+    pub limits: RuntimeLimitsConfig,
     pub qemu: QemuConfig,
 }
 
@@ -100,7 +101,36 @@ impl Default for RuntimeConfig {
             enable_guest_agent: false,
             lifecycle_driver: VmLifecycleDriver::Process,
             stop_timeout_secs: 5,
+            limits: RuntimeLimitsConfig::default(),
             qemu: QemuConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct RuntimeLimitsConfig {
+    pub max_vcpu_count: u8,
+    pub max_memory_mib: u32,
+    pub max_overlay_size_mib: u64,
+    pub max_stop_timeout_secs: u64,
+}
+
+impl RuntimeLimitsConfig {
+    pub fn max_overlay_size_bytes(&self) -> anyhow::Result<u64> {
+        self.max_overlay_size_mib
+            .checked_mul(1024 * 1024)
+            .context("runtime.limits.max_overlay_size_mib is too large")
+    }
+}
+
+impl Default for RuntimeLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_vcpu_count: 8,
+            max_memory_mib: 16 * 1024,
+            max_overlay_size_mib: 64 * 1024,
+            max_stop_timeout_secs: 15,
         }
     }
 }

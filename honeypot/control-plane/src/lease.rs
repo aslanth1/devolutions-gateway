@@ -152,7 +152,7 @@ impl LeaseRegistry {
         };
 
         let mut snapshot = snapshot;
-        create_vm(&snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
+        create_vm(config, &snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
         start_vm(config, &snapshot.launch_plan).map_err(LeaseError::host_unavailable)?;
         snapshot.runtime_state = LeaseRuntimeState::Running;
 

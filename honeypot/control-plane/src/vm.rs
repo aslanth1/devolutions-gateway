@@ -10,10 +10,19 @@ use crate::lease::LeaseLaunchPlanSnapshot;
 
 const PROCESS_START_TIMEOUT_SECS: u64 = 5;
 
-pub(crate) fn create_vm(plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
+pub(crate) fn create_vm(config: &ControlPlaneConfig, plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
     cleanup_artifacts(plan)?;
     fs::create_dir_all(&plan.runtime_dir)
         .with_context(|| format!("create runtime dir {}", plan.runtime_dir.display()))?;
+    let max_overlay_size_bytes = config.runtime.limits.max_overlay_size_bytes()?;
+    let base_image_size = fs::metadata(&plan.base_image_path)
+        .with_context(|| format!("stat base image {}", plan.base_image_path.display()))?
+        .len();
+    anyhow::ensure!(
+        base_image_size <= max_overlay_size_bytes,
+        "base image {} exceeds runtime.limits.max_overlay_size_mib",
+        plan.base_image_path.display(),
+    );
     fs::copy(&plan.base_image_path, &plan.overlay_path).with_context(|| {
         format!(
             "copy base image {} to lease overlay {}",
@@ -21,6 +30,14 @@ pub(crate) fn create_vm(plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
             plan.overlay_path.display()
         )
     })?;
+    let overlay_size = fs::metadata(&plan.overlay_path)
+        .with_context(|| format!("stat overlay {}", plan.overlay_path.display()))?
+        .len();
+    anyhow::ensure!(
+        overlay_size <= max_overlay_size_bytes,
+        "overlay {} exceeds runtime.limits.max_overlay_size_mib",
+        plan.overlay_path.display(),
+    );
     Ok(())
 }
 
@@ -40,7 +57,7 @@ pub(crate) fn stop_vm(config: &ControlPlaneConfig, plan: &LeaseLaunchPlanSnapsho
 
 pub(crate) fn reset_vm(config: &ControlPlaneConfig, plan: &LeaseLaunchPlanSnapshot) -> anyhow::Result<()> {
     stop_vm(config, plan)?;
-    create_vm(plan)?;
+    create_vm(config, plan)?;
     start_vm(config, plan)
 }
 
@@ -126,10 +143,19 @@ fn stop_process_vm(config: &ControlPlaneConfig, plan: &LeaseLaunchPlanSnapshot) 
     let deadline = Instant::now() + Duration::from_secs(config.runtime.stop_timeout_secs);
     while !wait_for_process_exit(pid)? {
         if Instant::now() >= deadline {
-            anyhow::bail!(
-                "qemu pid {pid} did not exit within {} seconds",
-                config.runtime.stop_timeout_secs
-            );
+            signal_process(pid, libc::SIGKILL)?;
+            let kill_deadline = Instant::now() + Duration::from_secs(1);
+            while !wait_for_process_exit(pid)? {
+                if Instant::now() >= kill_deadline {
+                    anyhow::bail!(
+                        "qemu pid {pid} did not exit within {} seconds and could not be stopped with SIGKILL",
+                        config.runtime.stop_timeout_secs
+                    );
+                }
+
+                thread::sleep(Duration::from_millis(50));
+            }
+            break;
         }
 
         thread::sleep(Duration::from_millis(50));
@@ -329,7 +355,7 @@ mod tests {
         config.runtime.lifecycle_driver = VmLifecycleDriver::Simulated;
         let plan = test_plan(tempdir.path());
 
-        create_vm(&plan).expect("create simulated vm");
+        create_vm(&config, &plan).expect("create simulated vm");
         assert!(plan.runtime_dir.is_dir());
         assert!(plan.overlay_path.is_file());
         assert!(!plan.pid_file_path.exists());
@@ -353,6 +379,21 @@ mod tests {
         destroy_vm(&plan).expect("destroy simulated vm");
         assert!(!plan.runtime_dir.exists());
         assert!(!plan.qmp_socket_path.exists());
+    }
+
+    #[test]
+    fn create_vm_rejects_base_images_that_exceed_the_overlay_limit() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let mut config = test_config(tempdir.path());
+        config.runtime.lifecycle_driver = VmLifecycleDriver::Simulated;
+        config.runtime.limits.max_overlay_size_mib = 1;
+        let plan = test_plan(tempdir.path());
+
+        fs::write(&plan.base_image_path, vec![0u8; 2 * 1024 * 1024]).expect("write oversized base image");
+
+        let error = create_vm(&config, &plan).expect_err("oversized base images should fail");
+
+        assert!(format!("{error:#}").contains("max_overlay_size_mib"), "{error:#}");
     }
 
     fn test_config(root: &Path) -> ControlPlaneConfig {

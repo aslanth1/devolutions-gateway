@@ -89,6 +89,14 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_release.rs` adds supporting POSIX host depth by checking the three-service runtime artifact, permission, and redaction contract in `posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted`.
 - `testsuite/tests/honeypot_control_plane.rs` includes `control_plane_external_client_interoperability_smoke_uses_xfreerdp` as an optional supplemental Rust `lab-e2e` lane when explicit external-client lab inputs are configured.
 
+## Host Resource And Network Control Evidence
+
+- `AGENTS.md` pass row `Add host-side resource and network controls.` is satisfied by the combined control-plane unit coverage and contract-tier integration coverage.
+- `honeypot/control-plane/src/qemu.rs` proves the checked-in launch contract fails closed when QEMU CPU, memory, or stop-time settings exceed `runtime.limits`, keeps the guest on loopback-forwarded user-mode networking with `restrict=on`, and rejects TCP QMP or other exposed control-channel regressions.
+- `testsuite/tests/honeypot_control_plane.rs` proves the service fails closed when the configured QEMU vCPU count exceeds the configured runtime ceiling in `control_plane_fails_closed_when_qemu_resource_limits_are_exceeded`.
+- `testsuite/tests/honeypot_control_plane.rs` proves acquire fails before lease use when a trusted base image would exceed the configured overlay-size ceiling in `control_plane_rejects_base_images_that_exceed_overlay_size_limit`.
+- `testsuite/tests/honeypot_control_plane.rs` proves the process driver escalates recycle shutdown from `SIGTERM` to bounded `SIGKILL` cleanup, then returns the lease to the ready pool without leaving runtime artifacts behind in `control_plane_recycle_escalates_to_emergency_stop_after_stop_timeout`.
+
 ## Teardown Safety Evidence
 
 - `AGENTS.md` pass row `Normal and failure-path teardown leave no orphaned QEMU processes, exposed control sockets, leaked overlays, stale containers, stale networks, stale volumes, or unredacted sensitive logs.` is satisfied by the combined Rust `lab-e2e`, `host-smoke`, and contract-tier teardown evidence.

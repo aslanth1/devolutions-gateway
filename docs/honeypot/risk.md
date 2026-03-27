@@ -12,7 +12,7 @@ This document must not be read as permission to add a fourth runtime service or 
 - This fork is for authorized defensive research only.
 - Written authorization from the owner of the target environment, network, credentials, and storage is required before the stack is exposed to untrusted traffic.
 - Unauthorized deployment, credential harvesting, or use against third-party systems is out of scope.
-- Public internet deployment remains out of scope until the Windows image pipeline, gold-image acceptance path, host resource and network controls, and kill-switch controls are complete and verified.
+- Public internet deployment remains out of scope until the Windows image pipeline, gold-image acceptance path, and kill-switch controls are complete and verified.
 - This repository policy is not a substitute for legal review by the operator’s organization.
 
 ## Operator Authorization
@@ -31,6 +31,8 @@ This document must not be read as permission to add a fourth runtime service or 
 - `frontend` is an operator surface and must not be treated as an anonymous public dashboard.
 - Direct guest RDP exposure outside the `proxy` path is prohibited for the honeypot workflow.
 - No deployment may expose host control channels, image stores, or mounted secrets to untrusted networks.
+- Per-VM host controls must cap QEMU CPU, memory, overlay size, and bounded stop time through checked-in control-plane config rather than ad hoc operator judgment.
+- The checked-in guest-networking contract must keep QEMU on loopback-forwarded user-mode networking with `restrict=on`, and emergency stop must escalate from `SIGTERM` to `SIGKILL` within the configured stop window.
 - Public listener rollout requires explicit allowlists, rate controls, and a documented emergency stop before use.
 - The deployment gate for that path is `Honeypot.Exposure.PublicInternetEnabled = true` together with a non-empty `Honeypot.Exposure.AllowCidrs` list and a positive `Honeypot.Exposure.IntakeLimitRate`.
 - `Honeypot.Exposure.DenyCidrs` may narrow the public allowlist further, but it does not waive the allowlist requirement.
