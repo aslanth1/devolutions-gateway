@@ -29,6 +29,8 @@ pub struct HoneypotFrontendTestConfig {
     pub proxy_events_path: String,
     #[builder(default = "/jet/honeypot/session/{session_id}/stream-token".to_owned(), setter(into))]
     pub proxy_stream_token_path_template: String,
+    #[builder(default = "/jet/session/{session_id}/keyboard".to_owned(), setter(into))]
+    pub proxy_keyboard_path_template: String,
     #[builder(default = "/jet/session/{session_id}/propose".to_owned(), setter(into))]
     pub proxy_propose_path_template: String,
     #[builder(default = "/jet/session/{session_id}/vote".to_owned(), setter(into))]
@@ -72,6 +74,7 @@ pub fn write_honeypot_frontend_config(path: &Path, config: &HoneypotFrontendTest
          bootstrap_path = \"{}\"\n\
          events_path = \"{}\"\n\
          stream_token_path_template = \"{}\"\n\n\
+         keyboard_path_template = \"{}\"\n\
          propose_path_template = \"{}\"\n\
          vote_path_template = \"{}\"\n\
          terminate_path_template = \"{}\"\n\
@@ -84,6 +87,7 @@ pub fn write_honeypot_frontend_config(path: &Path, config: &HoneypotFrontendTest
         config.proxy_bootstrap_path,
         config.proxy_events_path,
         config.proxy_stream_token_path_template,
+        config.proxy_keyboard_path_template,
         config.proxy_propose_path_template,
         config.proxy_vote_path_template,
         config.proxy_terminate_path_template,

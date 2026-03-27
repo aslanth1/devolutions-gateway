@@ -114,6 +114,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_frontend.rs` proves the HTMX-facing frontend proposal and vote routes relay to the proxy placeholders, render deferred or rejected outcomes, and keep execution disabled.
 - `honeypot/contracts/src/tests.rs` proves the typed proposal and vote request or response shapes are versioned and reject unsupported schema versions.
 
+## Keyboard Placeholder Evidence
+
+- `AGENTS.md` pass row `Add a keyboard capture placeholder behind explicit policy checks.` is satisfied by the current contract-tier placeholder coverage.
+- `testsuite/tests/cli/dgw/honeypot.rs` proves the proxy keyboard placeholder route stays disabled by default, requires the explicit placeholder-approval scope when enabled, and returns a typed `disabled_by_policy` response without execution.
+- `testsuite/tests/honeypot_frontend.rs` proves the HTMX-facing frontend keyboard placeholder route relays to the proxy, renders the disabled outcome, and does not echo the submitted keyboard payload back into the UI.
+- `honeypot/contracts/src/tests.rs` proves the typed keyboard placeholder request or response shapes are versioned and reject unsupported schema versions.
+
 ## Audit Logging Evidence
 
 - `AGENTS.md` pass row `Add audit logging for control-plane actions, session kills, and frontend vote actions.` is satisfied by the existing typed control-plane envelopes, honeypot lifecycle events, and the typed non-executing proposal or vote placeholders.

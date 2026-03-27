@@ -511,7 +511,7 @@ Pass when: a command can be proposed, recorded, and rejected or deferred without
 - [x] Add a command voting skeleton for future state-messing features.
 Pass when: proposed commands can be voted on, but execution stays policy-gated.
 
-- [ ] Add a keyboard capture placeholder behind explicit policy checks.
+- [x] Add a keyboard capture placeholder behind explicit policy checks.
 Pass when: the endpoint exists as a stub and returns a structured `disabled_by_policy` response until intentionally enabled.
 
 - [ ] Add a clipboard capture placeholder behind explicit policy checks.

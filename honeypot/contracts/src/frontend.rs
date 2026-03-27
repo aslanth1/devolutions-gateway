@@ -87,10 +87,38 @@ pub struct CommandVoteResponse {
     pub executed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyboardCaptureState {
+    DisabledByPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyboardCaptureRequest {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub key_sequence: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeyboardCaptureResponse {
+    pub schema_version: u32,
+    pub correlation_id: String,
+    pub capture_id: String,
+    pub recorded_at: String,
+    pub session_id: String,
+    pub requested_key_count: u32,
+    pub capture_state: KeyboardCaptureState,
+    pub decision_reason: String,
+    pub executed: bool,
+}
+
 impl_versioned!(
     BootstrapResponse,
     CommandProposalRequest,
     CommandProposalResponse,
     CommandVoteRequest,
-    CommandVoteResponse
+    CommandVoteResponse,
+    KeyboardCaptureRequest,
+    KeyboardCaptureResponse
 );

@@ -46,6 +46,7 @@ pub struct ProxyConfig {
     pub bootstrap_path: String,
     pub events_path: String,
     pub stream_token_path_template: String,
+    pub keyboard_path_template: String,
     pub propose_path_template: String,
     pub vote_path_template: String,
     pub terminate_path_template: String,
@@ -68,6 +69,12 @@ impl ProxyConfig {
 
     pub fn stream_token_url(&self, session_id: &str) -> anyhow::Result<Url> {
         let path = self.stream_token_path_template.replace("{session_id}", session_id);
+
+        self.url_for_path(&path)
+    }
+
+    pub fn keyboard_url(&self, session_id: &str) -> anyhow::Result<Url> {
+        let path = self.keyboard_path_template.replace("{session_id}", session_id);
 
         self.url_for_path(&path)
     }
@@ -123,6 +130,7 @@ impl Default for ProxyConfig {
             bootstrap_path: "/jet/honeypot/bootstrap".to_owned(),
             events_path: "/jet/honeypot/events".to_owned(),
             stream_token_path_template: "/jet/honeypot/session/{session_id}/stream-token".to_owned(),
+            keyboard_path_template: "/jet/session/{session_id}/keyboard".to_owned(),
             propose_path_template: "/jet/session/{session_id}/propose".to_owned(),
             vote_path_template: "/jet/session/{session_id}/vote".to_owned(),
             terminate_path_template: "/jet/session/{session_id}/terminate".to_owned(),

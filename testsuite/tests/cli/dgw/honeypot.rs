@@ -8,7 +8,8 @@ use base64::prelude::*;
 use honeypot_contracts::control_plane::{HealthResponse as ControlPlaneHealthResponse, ServiceState};
 use honeypot_contracts::frontend::{
     BootstrapResponse, CommandProposalRequest, CommandProposalResponse, CommandProposalState, CommandVoteChoice,
-    CommandVoteRequest, CommandVoteResponse, CommandVoteState,
+    CommandVoteRequest, CommandVoteResponse, CommandVoteState, KeyboardCaptureRequest, KeyboardCaptureResponse,
+    KeyboardCaptureState,
 };
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{DgwConfig, HoneypotConfig};
@@ -945,6 +946,142 @@ async fn honeypot_command_vote_route_returns_typed_rejection_when_enabled() -> a
     assert_eq!(response.vote, CommandVoteChoice::Reject);
     assert_eq!(response.vote_state, CommandVoteState::Rejected);
     assert_eq!(response.decision_reason, "rejected_by_operator");
+    assert!(!response.executed);
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_keyboard_capture_route_is_disabled_by_default() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let request = serde_json::to_vec(&KeyboardCaptureRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: "keyboard-default-disabled".to_owned(),
+        key_sequence: "abc".to_owned(),
+    })
+    .context("serialize keyboard request")?;
+    let (status_line, _body) = send_http_request(
+        config_handle.http_port(),
+        "POST",
+        format!("/jet/session/{}/keyboard", Uuid::new_v4()).as_str(),
+        HONEYPOT_COMMAND_APPROVE_SCOPE_TOKEN,
+        Some("application/json"),
+        &request,
+    )
+    .await?;
+
+    assert!(status_line.contains("404"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_keyboard_capture_route_requires_approve_scope() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let request = serde_json::to_vec(&KeyboardCaptureRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: "keyboard-forbidden".to_owned(),
+        key_sequence: "abc".to_owned(),
+    })
+    .context("serialize keyboard request")?;
+    let (status_line, _body) = send_http_request(
+        config_handle.http_port(),
+        "POST",
+        format!("/jet/session/{}/keyboard", Uuid::new_v4()).as_str(),
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+        Some("application/json"),
+        &request,
+    )
+    .await?;
+
+    assert!(status_line.contains("403"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_keyboard_capture_route_returns_typed_disabled_placeholder_when_enabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let session_id = Uuid::new_v4();
+    let request = serde_json::to_vec(&KeyboardCaptureRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: "keyboard-disabled".to_owned(),
+        key_sequence: "abc123".to_owned(),
+    })
+    .context("serialize keyboard request")?;
+    let (status_line, body) = send_http_request(
+        config_handle.http_port(),
+        "POST",
+        format!("/jet/session/{session_id}/keyboard").as_str(),
+        HONEYPOT_COMMAND_APPROVE_SCOPE_TOKEN,
+        Some("application/json"),
+        &request,
+    )
+    .await?;
+    let response: KeyboardCaptureResponse = serde_json::from_slice(&body).context("parse keyboard capture response")?;
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(response.schema_version, honeypot_contracts::SCHEMA_VERSION);
+    assert_eq!(response.session_id, session_id.to_string());
+    assert_eq!(response.requested_key_count, 6);
+    assert_eq!(response.capture_state, KeyboardCaptureState::DisabledByPolicy);
+    assert_eq!(response.decision_reason, "disabled_by_policy");
     assert!(!response.executed);
 
     let _ = process.start_kill();

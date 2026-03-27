@@ -4,7 +4,7 @@ use axum::{Json, Router};
 use honeypot_contracts::Versioned;
 use honeypot_contracts::frontend::{
     CommandProposalRequest, CommandProposalResponse, CommandProposalState, CommandVoteChoice, CommandVoteRequest,
-    CommandVoteResponse, CommandVoteState,
+    CommandVoteResponse, CommandVoteState, KeyboardCaptureRequest, KeyboardCaptureResponse, KeyboardCaptureState,
 };
 use uuid::Uuid;
 
@@ -17,6 +17,7 @@ use crate::token::AccessScope;
 pub fn make_router<S>(state: DgwState) -> Router<S> {
     Router::new()
         .route("/system/terminate", post(terminate_all_sessions))
+        .route("/{id}/keyboard", post(capture_keyboard))
         .route("/{id}/propose", post(propose_command))
         .route("/{id}/vote", post(vote_command))
         .route("/{id}/quarantine", post(quarantine_session))
@@ -231,6 +232,52 @@ async fn vote_command(
     Ok(Json(response))
 }
 
+async fn capture_keyboard(
+    State(state): State<DgwState>,
+    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
+    scope_token: ScopeToken,
+    Json(request): Json<KeyboardCaptureRequest>,
+) -> Result<Json<KeyboardCaptureResponse>, HttpError> {
+    if !state.honeypot.is_enabled() {
+        return Err(HttpError::not_found().msg("honeypot mode is disabled"));
+    }
+
+    authorize_keyboard_scope(&scope_token)?;
+    request.ensure_supported_schema().map_err(
+        HttpError::bad_request()
+            .with_msg("unsupported honeypot schema_version")
+            .err(),
+    )?;
+
+    let requested_key_count = u32::try_from(request.key_sequence.chars().count()).unwrap_or(u32::MAX);
+    let response = KeyboardCaptureResponse {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        correlation_id: format!("honeypot-keyboard-capture-{}", Uuid::new_v4()),
+        capture_id: format!("keyboard-{}", Uuid::new_v4()),
+        recorded_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
+        session_id: session_id.to_string(),
+        requested_key_count,
+        capture_state: KeyboardCaptureState::DisabledByPolicy,
+        decision_reason: "disabled_by_policy".to_owned(),
+        executed: false,
+    };
+
+    tracing::info!(
+        session_id = %response.session_id,
+        capture_id = %response.capture_id,
+        correlation_id = %response.correlation_id,
+        requested_key_count = response.requested_key_count,
+        capture_state = ?response.capture_state,
+        decision_reason = %response.decision_reason,
+        executed = response.executed,
+        "honeypot keyboard capture placeholder recorded"
+    );
+
+    Ok(Json(response))
+}
+
 async fn terminate_all_sessions(
     State(state): State<DgwState>,
     scope_token: ScopeToken,
@@ -322,6 +369,13 @@ fn authorize_proposal_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
 }
 
 fn authorize_vote_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
+    match scope_token.0.scope {
+        AccessScope::Wildcard | AccessScope::HoneypotCommandApprove => Ok(()),
+        _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+    }
+}
+
+fn authorize_keyboard_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
     match scope_token.0.scope {
         AccessScope::Wildcard | AccessScope::HoneypotCommandApprove => Ok(()),
         _ => Err(HttpError::forbidden().msg("invalid scope for route")),
