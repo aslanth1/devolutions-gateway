@@ -678,7 +678,7 @@ Pass when: the lab proves the guest accepts a non-project RDP client path as an 
 - [x] Add an operator runbook for lab startup, emergency stop, VM recycle, evidence collection, and session kill procedures.
 Pass when: another engineer can operate the lab without tribal knowledge and the documented steps match the Rust-validated lifecycle.
 
-- [ ] Add exposure guards for public-internet deployment.
+- [x] Add exposure guards for public-internet deployment.
 Pass when: public listeners require explicit allowlists, rate controls, and a documented kill switch.
 
 - [ ] Add retention and forensic boundaries for recordings, streams, operator actions, and vote history.

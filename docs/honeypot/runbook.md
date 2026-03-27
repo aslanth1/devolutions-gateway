@@ -14,6 +14,15 @@ It does not by itself approve public deployment or exposure to untrusted traffic
 - Do not expose the checked-in compose stack to the public internet until the remaining exposure, retention, audit, and content-handling hardening rows are complete.
 - Treat the checked-in compose and frontend config as local-lab defaults only, because the checked-in frontend config disables operator token validation for local bring-up.
 
+## Public Deployment Gate
+
+- Treat public-internet exposure as a separate deployment profile from the checked-in local compose stack.
+- Before exposing attacker traffic to the public internet, set `Honeypot.Exposure.PublicInternetEnabled = true` in the proxy config and confirm the gateway still starts cleanly.
+- Confirm `Honeypot.Exposure.AllowCidrs` is non-empty and `Honeypot.Exposure.IntakeLimitRate` is positive.
+- If `Honeypot.Exposure.DenyCidrs` is used, confirm it only narrows the required allowlist and does not replace it.
+- Confirm `Honeypot.KillSwitch.EnableSessionKill = true`, `Honeypot.KillSwitch.EnableSystemKill = true`, and `Honeypot.KillSwitch.HaltNewSessionsOnSystemKill = true` before enabling public intake.
+- Keep `frontend` behind loopback or an operator-scoped ingress path even when public attacker intake is enabled for `proxy`.
+
 ## Required Inputs
 
 - Non-secret env files live at `honeypot/docker/env/control-plane.env`, `honeypot/docker/env/proxy.env`, and `honeypot/docker/env/frontend.env`.

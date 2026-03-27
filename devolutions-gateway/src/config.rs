@@ -249,6 +249,7 @@ pub struct HoneypotConf {
     pub stream: HoneypotStreamConf,
     pub operator_auth: HoneypotOperatorAuthConf,
     pub kill_switch: HoneypotKillSwitchConf,
+    pub exposure: HoneypotExposureConf,
     pub frontend: HoneypotFrontendConf,
 }
 
@@ -299,6 +300,14 @@ pub struct HoneypotKillSwitchConf {
     pub enable_session_kill: bool,
     pub enable_system_kill: bool,
     pub halt_new_sessions_on_system_kill: bool,
+}
+
+#[derive(PartialEq, Eq, Debug, Clone, Default)]
+pub struct HoneypotExposureConf {
+    pub public_internet_enabled: bool,
+    pub allow_cidrs: Vec<String>,
+    pub deny_cidrs: Vec<String>,
+    pub intake_limit_rate: u16,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -470,6 +479,11 @@ impl HoneypotConf {
                 .as_ref()
                 .map(HoneypotKillSwitchConf::from_dto)
                 .unwrap_or_default(),
+            exposure: value
+                .exposure
+                .as_ref()
+                .map(HoneypotExposureConf::from_dto)
+                .unwrap_or_default(),
             frontend: value
                 .frontend
                 .as_ref()
@@ -586,6 +600,17 @@ impl Default for HoneypotKillSwitchConf {
             enable_session_kill: true,
             enable_system_kill: true,
             halt_new_sessions_on_system_kill: true,
+        }
+    }
+}
+
+impl HoneypotExposureConf {
+    fn from_dto(value: &dto::HoneypotExposureConf) -> Self {
+        Self {
+            public_internet_enabled: value.public_internet_enabled.unwrap_or(false),
+            allow_cidrs: value.allow_cidrs.clone(),
+            deny_cidrs: value.deny_cidrs.clone(),
+            intake_limit_rate: value.intake_limit_rate.unwrap_or(0),
         }
     }
 }
@@ -1139,7 +1164,7 @@ impl Conf {
             );
         }
 
-        Ok(Conf {
+        let conf = Conf {
             id: conf_file.id,
             hostname,
             listeners,
@@ -1176,7 +1201,11 @@ impl Conf {
                 .unwrap_or_default(),
             proxy: conf_file.proxy.clone().unwrap_or_default(),
             debug: conf_file.debug.clone().unwrap_or_default(),
-        })
+        };
+
+        validate_honeypot_public_exposure(&conf)?;
+
+        Ok(conf)
     }
 
     pub fn get_lib_xmf_path(&self) -> Option<Utf8PathBuf> {
@@ -1197,6 +1226,67 @@ impl Conf {
             None
         }
     }
+}
+
+fn validate_honeypot_public_exposure(conf: &Conf) -> anyhow::Result<()> {
+    if !conf.honeypot.enabled {
+        return Ok(());
+    }
+
+    validate_honeypot_cidrs(&conf.honeypot.exposure.allow_cidrs, "Honeypot.Exposure.AllowCidrs")?;
+    validate_honeypot_cidrs(&conf.honeypot.exposure.deny_cidrs, "Honeypot.Exposure.DenyCidrs")?;
+
+    if !conf.honeypot.exposure.public_internet_enabled {
+        return Ok(());
+    }
+
+    anyhow::ensure!(
+        !conf.honeypot.exposure.allow_cidrs.is_empty(),
+        "public honeypot deployment requires Honeypot.Exposure.AllowCidrs to be non-empty"
+    );
+    anyhow::ensure!(
+        conf.honeypot.exposure.intake_limit_rate > 0,
+        "public honeypot deployment requires Honeypot.Exposure.IntakeLimitRate to be greater than zero"
+    );
+    anyhow::ensure!(
+        conf.honeypot.kill_switch.enable_session_kill,
+        "public honeypot deployment requires Honeypot.KillSwitch.EnableSessionKill = true"
+    );
+    anyhow::ensure!(
+        conf.honeypot.kill_switch.enable_system_kill,
+        "public honeypot deployment requires Honeypot.KillSwitch.EnableSystemKill = true"
+    );
+    anyhow::ensure!(
+        conf.honeypot.kill_switch.halt_new_sessions_on_system_kill,
+        "public honeypot deployment requires Honeypot.KillSwitch.HaltNewSessionsOnSystemKill = true"
+    );
+
+    Ok(())
+}
+
+fn validate_honeypot_cidrs(cidrs: &[String], field_name: &str) -> anyhow::Result<()> {
+    for cidr in cidrs {
+        validate_honeypot_cidr(cidr).with_context(|| format!("invalid {field_name} entry `{cidr}`"))?;
+    }
+
+    Ok(())
+}
+
+fn validate_honeypot_cidr(cidr: &str) -> anyhow::Result<()> {
+    let (address, prefix) = cidr.split_once('/').context("missing `/` separator")?;
+    let address: std::net::IpAddr = address.parse().context("invalid IP address")?;
+    let prefix: u8 = prefix.parse().context("invalid prefix length")?;
+    let max_prefix = match address {
+        std::net::IpAddr::V4(_) => 32,
+        std::net::IpAddr::V6(_) => 128,
+    };
+
+    anyhow::ensure!(
+        prefix <= max_prefix,
+        "prefix length {prefix} exceeds the maximum for {address}"
+    );
+
+    Ok(())
 }
 
 impl WebAppConf {
@@ -2570,6 +2660,9 @@ pub mod dto {
         /// Kill-switch settings.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub kill_switch: Option<HoneypotKillSwitchConf>,
+        /// Explicit public-internet exposure guards.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub exposure: Option<HoneypotExposureConf>,
         /// Frontend-facing settings.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub frontend: Option<HoneypotFrontendConf>,
@@ -2674,6 +2767,23 @@ pub mod dto {
         /// Whether a system kill halts new honeypot sessions.
         #[serde(skip_serializing_if = "Option::is_none")]
         pub halt_new_sessions_on_system_kill: Option<bool>,
+    }
+
+    #[derive(PartialEq, Eq, Debug, Clone, Default, Serialize, Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    pub struct HoneypotExposureConf {
+        /// Whether this deployment intentionally exposes honeypot listeners to the public internet.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub public_internet_enabled: Option<bool>,
+        /// CIDR allowlist for attacker-facing intake when public exposure is enabled.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub allow_cidrs: Vec<String>,
+        /// Optional CIDR denylist layered on top of the public allowlist.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub deny_cidrs: Vec<String>,
+        /// Maximum number of intake attempts allowed per source over one minute.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub intake_limit_rate: Option<u16>,
     }
 
     #[derive(PartialEq, Eq, Debug, Clone, Default, Serialize, Deserialize)]
@@ -2810,6 +2920,10 @@ mod tests {
         assert!(conf.honeypot.kill_switch.enable_session_kill);
         assert!(conf.honeypot.kill_switch.enable_system_kill);
         assert!(conf.honeypot.kill_switch.halt_new_sessions_on_system_kill);
+        assert!(!conf.honeypot.exposure.public_internet_enabled);
+        assert!(conf.honeypot.exposure.allow_cidrs.is_empty());
+        assert!(conf.honeypot.exposure.deny_cidrs.is_empty());
+        assert_eq!(conf.honeypot.exposure.intake_limit_rate, 0);
         assert_eq!(conf.honeypot.frontend.bootstrap_path, HONEYPOT_FRONTEND_BOOTSTRAP_PATH);
         assert_eq!(conf.honeypot.frontend.events_path, HONEYPOT_FRONTEND_EVENTS_PATH);
     }
@@ -2840,6 +2954,12 @@ mod tests {
                     "EnableSessionKill": false,
                     "EnableSystemKill": true,
                     "HaltNewSessionsOnSystemKill": false
+                },
+                "Exposure": {
+                    "PublicInternetEnabled": false,
+                    "AllowCidrs": ["203.0.113.0/24"],
+                    "DenyCidrs": ["203.0.113.128/25"],
+                    "IntakeLimitRate": 12
                 },
                 "Frontend": {
                     "PublicUrl": "https://frontend.internal",
@@ -2892,12 +3012,97 @@ mod tests {
         assert!(!conf.honeypot.kill_switch.enable_session_kill);
         assert!(conf.honeypot.kill_switch.enable_system_kill);
         assert!(!conf.honeypot.kill_switch.halt_new_sessions_on_system_kill);
+        assert!(!conf.honeypot.exposure.public_internet_enabled);
+        assert_eq!(conf.honeypot.exposure.allow_cidrs, vec!["203.0.113.0/24".to_owned()]);
+        assert_eq!(conf.honeypot.exposure.deny_cidrs, vec!["203.0.113.128/25".to_owned()]);
+        assert_eq!(conf.honeypot.exposure.intake_limit_rate, 12);
         assert_eq!(
             conf.honeypot.frontend.public_url.as_ref().map(Url::as_str),
             Some("https://frontend.internal/")
         );
         assert_eq!(conf.honeypot.frontend.bootstrap_path, "/custom/bootstrap");
         assert_eq!(conf.honeypot.frontend.events_path, "/custom/events");
+    }
+
+    #[test]
+    fn honeypot_config_rejects_public_internet_enablement_without_allowlist() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "Enabled": true,
+                "Exposure": {
+                    "PublicInternetEnabled": true,
+                    "IntakeLimitRate": 12
+                }
+            }
+        }))) {
+            Ok(_) => panic!("public honeypot deployment must require an allowlist"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("Honeypot.Exposure.AllowCidrs"), "{rendered}");
+    }
+
+    #[test]
+    fn honeypot_config_rejects_public_internet_enablement_without_intake_limit() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "Enabled": true,
+                "Exposure": {
+                    "PublicInternetEnabled": true,
+                    "AllowCidrs": ["203.0.113.0/24"]
+                }
+            }
+        }))) {
+            Ok(_) => panic!("public honeypot deployment must require an intake limit"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("Honeypot.Exposure.IntakeLimitRate"), "{rendered}");
+    }
+
+    #[test]
+    fn honeypot_config_rejects_public_internet_enablement_without_kill_switches() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "Enabled": true,
+                "KillSwitch": {
+                    "EnableSessionKill": false,
+                    "EnableSystemKill": true,
+                    "HaltNewSessionsOnSystemKill": true
+                },
+                "Exposure": {
+                    "PublicInternetEnabled": true,
+                    "AllowCidrs": ["203.0.113.0/24"],
+                    "IntakeLimitRate": 12
+                }
+            }
+        }))) {
+            Ok(_) => panic!("public honeypot deployment must require kill switches"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("Honeypot.KillSwitch.EnableSessionKill"), "{rendered}");
+    }
+
+    #[test]
+    fn honeypot_config_rejects_invalid_exposure_cidr() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "Enabled": true,
+                "Exposure": {
+                    "AllowCidrs": ["not-a-cidr"]
+                }
+            }
+        }))) {
+            Ok(_) => panic!("invalid exposure CIDR must be rejected"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("Honeypot.Exposure.AllowCidrs"), "{rendered}");
     }
 
     #[test]

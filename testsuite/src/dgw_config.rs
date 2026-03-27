@@ -87,6 +87,18 @@ pub struct HoneypotConfig {
     /// Optional intake halt on system kill.
     #[builder(default, setter(strip_option))]
     pub halt_new_sessions_on_system_kill: Option<bool>,
+    /// Whether public-internet exposure is intentionally enabled.
+    #[builder(default, setter(strip_option))]
+    pub exposure_public_internet_enabled: Option<bool>,
+    /// Optional attacker CIDR allowlist for public deployment.
+    #[builder(default)]
+    pub exposure_allow_cidrs: Vec<String>,
+    /// Optional attacker CIDR denylist for public deployment.
+    #[builder(default)]
+    pub exposure_deny_cidrs: Vec<String>,
+    /// Optional intake rate cap for public deployment.
+    #[builder(default, setter(strip_option))]
+    pub exposure_intake_limit_rate: Option<u16>,
     /// Optional public frontend URL.
     #[builder(default, setter(into))]
     pub frontend_public_url: Option<String>,
@@ -322,6 +334,23 @@ fn build_honeypot_config_json(honeypot_config: HoneypotConfig) -> Value {
     }
     if !kill_switch.is_empty() {
         honeypot.insert("KillSwitch".to_owned(), Value::Object(kill_switch));
+    }
+
+    let mut exposure = Map::new();
+    if let Some(public_internet_enabled) = honeypot_config.exposure_public_internet_enabled {
+        exposure.insert("PublicInternetEnabled".to_owned(), json!(public_internet_enabled));
+    }
+    if !honeypot_config.exposure_allow_cidrs.is_empty() {
+        exposure.insert("AllowCidrs".to_owned(), json!(honeypot_config.exposure_allow_cidrs));
+    }
+    if !honeypot_config.exposure_deny_cidrs.is_empty() {
+        exposure.insert("DenyCidrs".to_owned(), json!(honeypot_config.exposure_deny_cidrs));
+    }
+    if let Some(intake_limit_rate) = honeypot_config.exposure_intake_limit_rate {
+        exposure.insert("IntakeLimitRate".to_owned(), json!(intake_limit_rate));
+    }
+    if !exposure.is_empty() {
+        honeypot.insert("Exposure".to_owned(), Value::Object(exposure));
     }
 
     let mut frontend = Map::new();

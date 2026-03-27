@@ -134,6 +134,16 @@ Operator procedures for bring-up, emergency stop, recycle, evidence capture, and
 - The default local compose path binds `frontend` to `127.0.0.1` only.
 - If a remote operator ingress is later added, it must remain operator-scoped and must not place `frontend` directly on an untrusted edge network.
 
+## Public Internet Exposure Guards
+
+- The checked-in compose stack is a local-lab deployment profile and is not by itself a public-internet profile.
+- Any deployment that intentionally exposes the honeypot to untrusted public traffic must set `Honeypot.Exposure.PublicInternetEnabled = true` in the proxy config.
+- Public deployment must also set a non-empty `Honeypot.Exposure.AllowCidrs` allowlist and a positive `Honeypot.Exposure.IntakeLimitRate`.
+- `Honeypot.Exposure.DenyCidrs` is optional and may narrow the public allowlist further, but it does not replace the required allowlist.
+- Public deployment must keep `Honeypot.KillSwitch.EnableSessionKill = true`, `Honeypot.KillSwitch.EnableSystemKill = true`, and `Honeypot.KillSwitch.HaltNewSessionsOnSystemKill = true`.
+- If those exposure or kill-switch prerequisites are missing, the gateway config must fail closed instead of starting a public honeypot listener.
+- Remote operator ingress for `frontend` remains out of scope for the checked-in compose profile and must stay behind an operator-scoped allowlist or trusted reverse proxy path rather than direct anonymous exposure.
+
 ## Bring-Up Flow
 
 - Resolve the `current` digests for all three services from `honeypot/docker/images.lock`.

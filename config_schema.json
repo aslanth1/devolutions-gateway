@@ -673,6 +673,10 @@
           "$ref": "#/definitions/HoneypotKillSwitchConf",
           "description": "Kill-switch settings."
         },
+        "Exposure": {
+          "$ref": "#/definitions/HoneypotExposureConf",
+          "description": "Explicit public-internet exposure guard settings."
+        },
         "Frontend": {
           "$ref": "#/definitions/HoneypotFrontendConf",
           "description": "Frontend-facing settings."
@@ -793,6 +797,36 @@
           "type": "boolean",
           "default": true,
           "description": "Whether a system kill halts new honeypot sessions."
+        }
+      },
+      "additionalProperties": false
+    },
+    "HoneypotExposureConf": {
+      "type": "object",
+      "properties": {
+        "PublicInternetEnabled": {
+          "type": "boolean",
+          "description": "Whether this deployment intentionally exposes honeypot listeners to the public internet."
+        },
+        "AllowCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "CIDR allowlist required for public honeypot exposure."
+        },
+        "DenyCidrs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Optional CIDR denylist layered on top of the honeypot allowlist."
+        },
+        "IntakeLimitRate": {
+          "type": "integer",
+          "description": "Maximum number of intake attempts allowed per source over one minute when public exposure is enabled."
         }
       },
       "additionalProperties": false

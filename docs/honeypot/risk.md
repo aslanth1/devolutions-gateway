@@ -32,6 +32,9 @@ This document must not be read as permission to add a fourth runtime service or 
 - Direct guest RDP exposure outside the `proxy` path is prohibited for the honeypot workflow.
 - No deployment may expose host control channels, image stores, or mounted secrets to untrusted networks.
 - Public listener rollout requires explicit allowlists, rate controls, and a documented emergency stop before use.
+- The deployment gate for that path is `Honeypot.Exposure.PublicInternetEnabled = true` together with a non-empty `Honeypot.Exposure.AllowCidrs` list and a positive `Honeypot.Exposure.IntakeLimitRate`.
+- `Honeypot.Exposure.DenyCidrs` may narrow the public allowlist further, but it does not waive the allowlist requirement.
+- Public rollout is prohibited if `Honeypot.KillSwitch.EnableSessionKill`, `Honeypot.KillSwitch.EnableSystemKill`, or `Honeypot.KillSwitch.HaltNewSessionsOnSystemKill` is disabled.
 
 ## Windows And Tiny11 Provenance
 
