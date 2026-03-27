@@ -1919,6 +1919,111 @@ async fn frontend_rollback_drill_restores_the_stack_through_images_lock_selectio
 }
 
 #[tokio::test]
+async fn rollback_failure_keeps_the_current_stack_running_and_reports_the_error() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping rollback-failure host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let project_name = format!("dgw-honeypot-rollback-fail-{}", Uuid::new_v4().simple());
+    let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build control-plane rollback-failure image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image)
+            .context("build current proxy rollback-failure image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image)
+            .context("build frontend rollback-failure image")?;
+
+        fixture
+            .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+            .context("write compose selection for current/current/current")?;
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "docker compose up failed for current/current/current before rollback failure drill\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should be healthy before inducing rollback failure")?;
+        let before_states = capture_compose_service_states(&fixture.compose_path, &project_name)
+            .context("capture baseline compose states")?;
+
+        let rolled_back_selection = ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Previous,
+            frontend: ImageSlot::Current,
+        };
+        fixture
+            .write_compose_selection(&resources, &lockfile, rolled_back_selection)
+            .context("write compose selection for current/previous/current")?;
+
+        let rollback_error = run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .expect_err("rollback should fail when the previous proxy image is unavailable");
+        let rollback_error = format!("{rollback_error:#}");
+        assert!(
+            rollback_error.contains(resources.proxy_previous_image.as_str())
+                || rollback_error.contains("No such image")
+                || rollback_error.contains("not found"),
+            "{rollback_error}"
+        );
+
+        let after_states = capture_compose_service_states(&fixture.compose_path, &project_name)
+            .context("capture compose states after failed rollback")?;
+        for service in ["control-plane", "proxy", "frontend"] {
+            assert_eq!(
+                before_states[service].container_id, after_states[service].container_id,
+                "{service} should keep the same container after failed rollback"
+            );
+            assert_eq!(
+                before_states[service].configured_image, after_states[service].configured_image,
+                "{service} should keep the same configured image after failed rollback"
+            );
+        }
+
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should remain healthy after failed rollback attempt")?;
+
+        Ok(())
+    }
+    .await;
+
+    let cleanup_errors = cleanup_compose_project(&fixture.compose_path, &project_name, &resources);
+
+    match (result, cleanup_errors.is_empty()) {
+        (Ok(()), true) => {}
+        (Ok(()), false) => panic!("rollback-failure cleanup failed: {}", cleanup_errors.join("; ")),
+        (Err(test_error), true) => panic!("{test_error:#}"),
+        (Err(test_error), false) => panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; ")),
+    }
+}
+
+#[tokio::test]
 async fn downgraded_service_rejoin_health_recovery() {
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
         eprintln!("skipping downgraded-service rejoin host-smoke test: {error:#}");

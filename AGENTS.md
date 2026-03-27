@@ -664,7 +664,7 @@ Pass when: the proxy and frontend expose control-plane-unavailable state cleanly
 - [x] Add a snapshot-corruption detection test.
 Pass when: the lab detects qcow2 corruption and stale backing chains without silently reusing a dirty VM.
 
-- [ ] Add a rollback-failure handling test.
+- [x] Add a rollback-failure handling test.
 Pass when: failed recycle or rollback attempts are surfaced clearly and do not silently return a dirty VM to service.
 
 - [x] Add host-side control-socket isolation checks.

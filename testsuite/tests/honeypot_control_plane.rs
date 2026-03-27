@@ -1827,7 +1827,7 @@ async fn control_plane_process_driver_reports_qemu_startup_failures() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn control_plane_process_driver_reports_stop_timeout_and_preserves_the_lease() {
+async fn control_plane_recycle_failure_is_surfaced_and_keeps_the_lease_out_of_service() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
     let config_path = tempdir.path().join("control-plane.toml");
@@ -1861,6 +1861,9 @@ async fn control_plane_process_driver_reports_stop_timeout_and_preserves_the_lea
         post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-process-timeout"))
             .await
             .expect("acquire lease");
+    let active_snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    let active_runtime_dir = fixture.lease_store.join(&acquire.vm_lease_id);
+    let qmp_socket_path = fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id));
 
     let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
         port,
@@ -1903,6 +1906,41 @@ async fn control_plane_process_driver_reports_stop_timeout_and_preserves_the_lea
 
     let health = read_authed_health_response(port).await.expect("read health response");
     assert_eq!(health.active_lease_count, 1);
+    assert_eq!(health.quarantined_lease_count, 0);
+    assert!(
+        active_snapshot_path.is_file(),
+        "failed recycle should preserve the active lease snapshot",
+    );
+    assert!(
+        active_runtime_dir.is_dir(),
+        "failed recycle should preserve the active runtime dir",
+    );
+    assert!(
+        qmp_socket_path.exists(),
+        "failed recycle should preserve the live qmp socket",
+    );
+
+    let second_request_body = serde_json::to_vec(&acquire_request("session-process-timeout-second"))
+        .expect("serialize second acquire request");
+    let (second_status_line, second_body) = send_http_request(
+        port,
+        "POST",
+        "/api/v1/vm/acquire",
+        Some(CONTROL_PLANE_SCOPE_TOKEN),
+        Some(&second_request_body),
+    )
+    .await
+    .expect("send second acquire request");
+    let second_error: ErrorResponse =
+        serde_json::from_slice(&second_body).expect("parse second acquire error response");
+
+    assert!(second_status_line.contains("503"), "{second_status_line}");
+    assert_eq!(second_error.error_code, ErrorCode::NoCapacity);
+    assert!(
+        second_error.message.contains("currently assigned"),
+        "{}",
+        second_error.message
+    );
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
