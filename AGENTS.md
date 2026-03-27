@@ -565,7 +565,7 @@ Pass when: tests fail if `control-plane`, `proxy`, or `frontend` is missing, if 
 - [ ] Add a Rust Docker smoke-test tier for the three service images.
 Pass when: Rust tests can build or pull `control-plane`, `proxy`, and `frontend`, start them in dependency order, and verify their health endpoints without the full QEMU lab.
 
-- [ ] Add a Rust pull-by-digest smoke test for the three service images.
+- [x] Add a Rust pull-by-digest smoke test for the three service images.
 Pass when: Rust tests can pull or resolve each service by pinned digest rather than floating tag, and fail if compose or release inputs bypass `honeypot/docker/images.lock` before bring-up or rollback verification.
 
 ### Milestone 5b: Compose Bring-Up And Mixed-Version Checks

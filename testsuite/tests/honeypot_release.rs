@@ -2,13 +2,13 @@ use testsuite::honeypot_release::{
     HONEYPOT_COMPOSE_PATH, HONEYPOT_CONTROL_PLANE_CONFIG_PATH, HONEYPOT_CONTROL_PLANE_ENV_PATH,
     HONEYPOT_FRONTEND_CONFIG_PATH, HONEYPOT_FRONTEND_ENV_PATH, HONEYPOT_IMAGES_LOCK_PATH, HONEYPOT_PROXY_CONFIG_PATH,
     HONEYPOT_PROXY_ENV_PATH, HoneypotImagesLock, HoneypotService, ImageSlot, ServiceSchemaVersions,
-    ServiceVersionSelection, load_honeypot_images_lock, repo_relative_path, validate_honeypot_compose_document,
-    validate_honeypot_compose_document_for_selection, validate_honeypot_control_plane_compose_runtime_document,
-    validate_honeypot_control_plane_env_document, validate_honeypot_control_plane_runtime_contract,
-    validate_honeypot_frontend_compose_runtime_document, validate_honeypot_frontend_env_document,
-    validate_honeypot_frontend_runtime_contract, validate_honeypot_images_lock_document,
-    validate_honeypot_proxy_compose_runtime_document, validate_honeypot_proxy_env_document,
-    validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
+    ServiceVersionSelection, load_honeypot_images_lock, repo_relative_path, resolve_honeypot_images_for_selection,
+    validate_honeypot_compose_document, validate_honeypot_compose_document_for_selection,
+    validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
+    validate_honeypot_control_plane_runtime_contract, validate_honeypot_frontend_compose_runtime_document,
+    validate_honeypot_frontend_env_document, validate_honeypot_frontend_runtime_contract,
+    validate_honeypot_images_lock_document, validate_honeypot_proxy_compose_runtime_document,
+    validate_honeypot_proxy_env_document, validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
     validate_mixed_version_contract_compatibility, validate_restored_service_contract_compatibility,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
@@ -331,6 +331,20 @@ fn compose_lockfile_conformance_rejects_service_image_bypass_when_alias_stays_pi
         format!("{error:#}").contains("compose service frontend image must match images.lock current digest"),
         "{error:#}"
     );
+}
+
+#[test]
+fn pull_by_digest_host_smoke_resolves_current_service_images() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping host-smoke pull-by-digest test: {error:#}");
+        return;
+    }
+
+    resolve_honeypot_images_for_selection(
+        &repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH),
+        ServiceVersionSelection::default(),
+    )
+    .expect("host-smoke tier should resolve each current honeypot image by pinned digest");
 }
 
 #[test]

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use anyhow::Context as _;
 use devolutions_gateway::config::{Conf as GatewayConf, dto as gateway_dto};
@@ -302,6 +303,27 @@ pub fn validate_honeypot_release_inputs(lock_path: &Path, compose_path: &Path) -
     let compose_data = std::fs::read_to_string(compose_path)
         .with_context(|| format!("read compose file at {}", compose_path.display()))?;
     validate_honeypot_compose_document(&compose_data, &lockfile)
+}
+
+pub fn resolve_honeypot_images_for_selection(
+    lock_path: &Path,
+    selection: ServiceVersionSelection,
+) -> anyhow::Result<()> {
+    let lockfile = load_honeypot_images_lock(lock_path)?;
+
+    for service in SERVICE_NAMES {
+        let slot = service_selection_slot(selection, service);
+        let entry = lockfile.service_entry(service);
+        let revision = match slot {
+            ImageSlot::Current => &entry.current,
+            ImageSlot::Previous => &entry.previous,
+        };
+
+        ensure_promoted_revision(service, slot.name(), revision)?;
+        resolve_image_ref_with_docker(service, &image_ref(entry, slot))?;
+    }
+
+    Ok(())
 }
 
 pub fn validate_mixed_version_contract_compatibility(
@@ -617,6 +639,16 @@ fn validate_revision(service: &str, slot: &str, revision: &HoneypotImageRevision
     Ok(())
 }
 
+fn ensure_promoted_revision(service: &str, slot: &str, revision: &HoneypotImageRevision) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !revision.tag.contains("placeholder"),
+        "{service} {slot}.tag still uses placeholder value {}; promote a real image before host-smoke resolution",
+        revision.tag,
+    );
+
+    Ok(())
+}
+
 fn validate_tag(service: &str, slot: &str, tag: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!tag.trim().is_empty(), "{service} {slot}.tag must not be empty");
     anyhow::ensure!(
@@ -657,6 +689,40 @@ fn image_ref(entry: &HoneypotImageLockEntry, slot: ImageSlot) -> String {
         image = entry.image,
         digest = digest
     )
+}
+
+fn resolve_image_ref_with_docker(service: &str, image_ref: &str) -> anyhow::Result<()> {
+    if run_docker_command(&["image", "inspect", image_ref]).is_ok() {
+        return Ok(());
+    }
+
+    run_docker_command(&["manifest", "inspect", image_ref])
+        .with_context(|| format!("resolve {service} image by pinned digest {image_ref}"))?;
+
+    Ok(())
+}
+
+fn run_docker_command(args: &[&str]) -> anyhow::Result<()> {
+    let output = Command::new("docker")
+        .args(args)
+        .output()
+        .with_context(|| format!("run docker {}", args.join(" ")))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let detail = if !stderr.is_empty() {
+        stderr
+    } else if !stdout.is_empty() {
+        stdout
+    } else {
+        format!("exit status {}", output.status)
+    };
+
+    anyhow::bail!("docker {} failed: {detail}", args.join(" "));
 }
 
 impl HoneypotService {
