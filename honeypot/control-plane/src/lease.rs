@@ -592,7 +592,26 @@ fn reconcile_loaded_snapshot(
     snapshot: LeaseSnapshot,
 ) -> anyhow::Result<Option<LeaseSnapshot>> {
     match runtime_looks_active(&snapshot.launch_plan) {
-        Ok(true) => Ok(Some(snapshot)),
+        Ok(true) => {
+            let vm_lease_id = snapshot.vm_lease_id.clone();
+            match validate_trusted_image_identity(
+                &config.paths,
+                &snapshot.pool_name,
+                &snapshot.vm_name,
+                &snapshot.attestation_ref,
+                &snapshot.launch_plan.base_image_path,
+            ) {
+                Ok(()) => Ok(Some(snapshot)),
+                Err(error) => {
+                    quarantine_orphaned_snapshot(config, backend_credentials, snapshot).with_context(|| {
+                        format!(
+                            "quarantine restarted lease {vm_lease_id} after trusted image revalidation failure: {error:#}"
+                        )
+                    })?;
+                    Ok(None)
+                }
+            }
+        }
         Ok(false) => {
             quarantine_orphaned_snapshot(config, backend_credentials, snapshot)?;
             Ok(None)

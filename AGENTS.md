@@ -661,7 +661,7 @@ Pass when: abandoned VM and container artifacts are reclaimed deterministically 
 - [x] Add a control-plane outage degradation test.
 Pass when: the proxy and frontend expose control-plane-unavailable state cleanly and recover without manual data repair when connectivity returns.
 
-- [ ] Add a snapshot-corruption detection test.
+- [x] Add a snapshot-corruption detection test.
 Pass when: the lab detects qcow2 corruption and stale backing chains without silently reusing a dirty VM.
 
 - [ ] Add a rollback-failure handling test.

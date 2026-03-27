@@ -1029,6 +1029,196 @@ async fn control_plane_quarantines_orphaned_leases_on_restart() {
 }
 
 #[tokio::test]
+async fn control_plane_fails_closed_on_restart_when_base_image_corrupts() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let first_port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let first_config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{first_port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &first_config).expect("write first config");
+
+    let mut first_child = honeypot_control_plane_tokio_cmd();
+    first_child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut first_child = first_child.spawn().expect("spawn first control-plane");
+
+    wait_for_tcp_port(first_port)
+        .await
+        .expect("wait for first control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        first_port,
+        "/api/v1/vm/acquire",
+        &acquire_request("session-corrupt-restart"),
+    )
+    .await
+    .expect("acquire lease");
+    let active_snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    let active_runtime_dir = fixture.lease_store.join(&acquire.vm_lease_id);
+    let pid_file_path = active_runtime_dir.join("qemu.pid");
+    let qmp_socket_path = fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id));
+
+    first_child.kill().await.expect("kill first control-plane");
+    let _ = first_child.wait().await.expect("wait for first control-plane exit");
+
+    assert!(
+        active_snapshot_path.is_file(),
+        "expected active snapshot before restart"
+    );
+    assert!(active_runtime_dir.is_dir(), "expected runtime dir before restart");
+    assert!(qmp_socket_path.exists(), "expected qmp socket before restart");
+
+    fs::write(&pid_file_path, std::process::id().to_string()).expect("rewrite live pid marker");
+    fs::write(&fixture.base_image_paths[0], b"tampered-base-image").expect("tamper base image");
+
+    let output = honeypot_control_plane_assert_cmd()
+        .env(CONTROL_PLANE_CONFIG_ENV, &config_path)
+        .assert()
+        .failure();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr);
+    assert!(stderr.contains("validate control-plane startup contract"), "{stderr}");
+    assert!(stderr.contains("base_image.sha256 mismatch"), "{stderr}");
+}
+
+#[tokio::test]
+async fn control_plane_quarantines_active_looking_lease_when_backing_path_drifts_on_restart() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let first_port = find_unused_port();
+    let second_port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let first_config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{first_port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &first_config).expect("write first config");
+
+    let mut first_child = honeypot_control_plane_tokio_cmd();
+    first_child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut first_child = first_child.spawn().expect("spawn first control-plane");
+
+    wait_for_tcp_port(first_port)
+        .await
+        .expect("wait for first control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        first_port,
+        "/api/v1/vm/acquire",
+        &acquire_request("session-stale-backing-restart"),
+    )
+    .await
+    .expect("acquire lease");
+    let active_snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    let active_runtime_dir = fixture.lease_store.join(&acquire.vm_lease_id);
+    let pid_file_path = active_runtime_dir.join("qemu.pid");
+    let qmp_socket_path = fixture.qmp_dir.join(format!("{}.sock", acquire.vm_lease_id));
+
+    first_child.kill().await.expect("kill first control-plane");
+    let _ = first_child.wait().await.expect("wait for first control-plane exit");
+
+    assert!(
+        active_snapshot_path.is_file(),
+        "expected active snapshot before restart"
+    );
+    assert!(active_runtime_dir.is_dir(), "expected runtime dir before restart");
+    assert!(qmp_socket_path.exists(), "expected qmp socket before restart");
+
+    let stale_backing_path = fixture.image_store.join("stale-backing.qcow2");
+    fs::write(&stale_backing_path, b"stale-backing-image").expect("write stale backing image");
+    fs::write(&pid_file_path, std::process::id().to_string()).expect("rewrite live pid marker");
+    rewrite_snapshot_base_image_path(&active_snapshot_path, &stale_backing_path);
+
+    let second_config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{second_port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &second_config).expect("write second config");
+
+    let mut second_child = honeypot_control_plane_tokio_cmd();
+    second_child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut second_child = second_child.spawn().expect("spawn second control-plane");
+
+    wait_for_tcp_port(second_port)
+        .await
+        .expect("wait for second control-plane port");
+
+    let health = read_authed_health_response(second_port)
+        .await
+        .expect("read restart health response");
+    assert_eq!(health.active_lease_count, 0);
+    assert_eq!(health.quarantined_lease_count, 1);
+    assert_eq!(health.service_state, ServiceState::Ready);
+
+    assert!(
+        fixture
+            .quarantine_store
+            .join(format!("{}.json", acquire.vm_lease_id))
+            .is_file(),
+        "expected stale backing snapshot to move to quarantine",
+    );
+    assert!(
+        fixture
+            .quarantine_store
+            .join(format!("{}-runtime", acquire.vm_lease_id))
+            .is_dir(),
+        "expected stale backing runtime dir to move to quarantine",
+    );
+    assert!(
+        !active_snapshot_path.exists(),
+        "expected active snapshot removal after stale backing restart reconciliation"
+    );
+    assert!(
+        !active_runtime_dir.exists(),
+        "expected active runtime dir removal after stale backing restart reconciliation"
+    );
+    assert!(
+        !qmp_socket_path.exists(),
+        "expected qmp socket removal after stale backing restart reconciliation"
+    );
+
+    let (_, reacquire): (String, AcquireVmResponse) =
+        post_authed_json_response(second_port, "/api/v1/vm/acquire", &acquire_request("session-recovered"))
+            .await
+            .expect("reacquire cleaned lease");
+    assert_eq!(reacquire.vm_name, "honeypot-image-0");
+
+    second_child.kill().await.expect("kill second control-plane");
+    let _ = second_child.wait().await.expect("wait for second control-plane exit");
+}
+
+#[tokio::test]
 async fn control_plane_removes_untracked_runtime_artifacts_on_startup() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
@@ -1888,6 +2078,18 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
+}
+
+fn rewrite_snapshot_base_image_path(snapshot_path: &std::path::Path, base_image_path: &std::path::Path) {
+    let mut snapshot: serde_json::Value =
+        serde_json::from_slice(&fs::read(snapshot_path).expect("read active lease snapshot"))
+            .expect("parse active lease snapshot");
+    snapshot["launch_plan"]["base_image_path"] = serde_json::Value::String(base_image_path.display().to_string());
+    fs::write(
+        snapshot_path,
+        serde_json::to_vec_pretty(&snapshot).expect("serialize active lease snapshot"),
+    )
+    .expect("write active lease snapshot");
 }
 
 #[cfg(unix)]
