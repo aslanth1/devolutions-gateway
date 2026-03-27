@@ -14,6 +14,14 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - No honeypot runtime service may carry a hand-written duplicate of a JSON contract that already belongs in `honeypot/contracts`.
 - The crate may expose modules named `auth`, `control_plane`, `events`, `frontend`, and `stream`, but it does not become a runtime service.
 
+## No-Parallel-Surface Rule
+
+- The contract families in this document extend the existing Gateway seam owners from `OM-02` and `OM-03` instead of authorizing a second session bus, subscriber bus, credential API, or stream API.
+- Session lifecycle and replay contracts are layered onto `session.rs`, `subscriber.rs`, `api/sessions.rs`, and `api/session.rs`.
+- Credential-substitution contracts are layered onto `api/preflight.rs` and its `provision-credentials` flow.
+- Stream bootstrap, token, and replay contracts are layered onto the existing recording and streaming seam family described in [architecture.md](architecture.md).
+- Any future contract family that replaces one of those seams must first record the replaced seam and the reason reuse failed under `DF-03` or `DF-04` in [decisions.md](decisions.md).
+
 ## Versioning Rules
 
 - Every contract payload carries `schema_version`.

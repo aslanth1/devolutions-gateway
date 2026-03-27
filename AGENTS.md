@@ -40,7 +40,7 @@ Pass when: every `DF-*` row below is resolved in `docs/honeypot/decisions.md` an
 - [ ] Keep the `Decision Freeze Matrix` and `Ownership Matrix` authoritative.
 Pass when: later milestones reference `DF-*` and `OM-*` rows instead of restating the same policy or inventing a second owner for the same seam.
 
-- [ ] Do not introduce a parallel honeypot session bus, subscriber bus, credential API, or stream API unless the replaced Gateway seam and the reason reuse is insufficient are documented first.
+- [x] Do not introduce a parallel honeypot session bus, subscriber bus, credential API, or stream API unless the replaced Gateway seam and the reason reuse is insufficient are documented first.
 Pass when: every new surface explicitly extends or replaces an existing seam in `rdp_proxy.rs`, `api/preflight.rs`, `session.rs`, `subscriber.rs`, `api/sessions.rs`, `api/session.rs`, or the current streaming path.
 
 ## Decision Freeze Matrix
@@ -128,22 +128,22 @@ Reuse anchor: reuse Gateway auth patterns where they fit, but keep the owning co
 
 ## Reuse-First Map
 
-- [ ] Keep `devolutions-gateway/src/rdp_proxy.rs` as the primary RDP MiTM data-plane foundation.
+- [x] Keep `devolutions-gateway/src/rdp_proxy.rs` as the primary RDP MiTM data-plane foundation.
 Pass when: the proxy design doc says "extend" or "wrap" this path rather than "replace".
 
-- [ ] Do not create a parallel session, subscriber, credential-mapping, or stream control stack unless `docs/honeypot/architecture.md` names the replaced Gateway seam and why reuse is insufficient.
+- [x] Do not create a parallel session, subscriber, credential-mapping, or stream control stack unless `docs/honeypot/architecture.md` names the replaced Gateway seam and why reuse is insufficient.
 Pass when: any new surface explicitly extends or replaces `session.rs`, `subscriber.rs`, `api/preflight.rs`, `api/sessions.rs`, `api/session.rs`, or the existing streaming path.
 
-- [ ] Reuse `devolutions-gateway/src/api/preflight.rs` for short-lived credential mapping instead of inventing a second credential provisioning API.
+- [x] Reuse `devolutions-gateway/src/api/preflight.rs` for short-lived credential mapping instead of inventing a second credential provisioning API.
 Pass when: the control-plane and proxy contracts explicitly reference `provision-credentials`.
 
 - [x] Extend `devolutions-gateway/src/session.rs` and `devolutions-gateway/src/subscriber.rs` to publish honeypot session state and frontend event payloads.
 Pass when: the event schema covers start, assignment, stream ready, disconnect, kill, recycle requested, and recycled outcomes.
 
-- [ ] Review `devolutions-gateway/src/api/sessions.rs` and `devolutions-gateway/src/api/session.rs` before inventing new session-management APIs.
+- [x] Review `devolutions-gateway/src/api/sessions.rs` and `devolutions-gateway/src/api/session.rs` before inventing new session-management APIs.
 Pass when: the plan either reuses `/jet/sessions` and `/jet/session/{id}/terminate` or documents replacement endpoints and why they are necessary.
 
-- [ ] Review `devolutions-gateway/src/recording.rs`, `devolutions-gateway/src/streaming.rs`, `devolutions-gateway/src/ws.rs`, `crates/transport/src/ws.rs`, `crates/video-streamer`, and `crates/terminal-streamer` before building new browser-stream code.
+- [x] Review `devolutions-gateway/src/recording.rs`, `devolutions-gateway/src/streaming.rs`, `devolutions-gateway/src/ws.rs`, `crates/transport/src/ws.rs`, `crates/video-streamer`, and `crates/terminal-streamer` before building new browser-stream code.
 Pass when: the stream plan names the reuse points or explains why they are insufficient.
 
 - [x] Review `devolutions-gateway/src/api/webapp.rs` for token issuance and auth ideas only.

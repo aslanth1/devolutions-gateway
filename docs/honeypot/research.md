@@ -35,6 +35,15 @@ It must not be read as permission to introduce a fourth runtime service, a paral
 - `devolutions-gateway/src/config.rs`: `adapt`. It is the right place to add honeypot mode, control-plane endpoint, stream, and operator settings.
 - `testsuite/src/dgw_config.rs`: `adapt`. It is the right helper to extend for honeypot-mode integration tests before any second bootstrap path is considered.
 
+## Reuse Guardrail Crosswalk
+
+- `rdp_proxy.rs` remains the primary honeypot data-plane foundation, so the proxy design must keep saying `extend` or `wrap` instead of `replace`.
+- `session.rs` and `subscriber.rs` remain the only approved live session and event backbone for honeypot state.
+- `api/preflight.rs` remains the only approved short-lived credential-mapping seam because it already exposes `provision-credentials`.
+- `api/sessions.rs` and `api/session.rs` remain the approved bootstrap and terminate surfaces because they already expose `/jet/sessions` and `/jet/session/{id}/terminate`.
+- `recording.rs`, `streaming.rs`, `ws.rs`, `video-streamer`, and `terminal-streamer` remain the approved starting points for browser-stream reuse under `DF-04`.
+- Any future second session bus, subscriber bus, credential API, or stream API requires an explicit replacement note in `DF-03` or `DF-04` before implementation starts.
+
 ## In-Tree Package Evaluation
 
 - `devolutions-session`: `do not use`. It is the session host application for Devolutions Agent and its Windows and DVC focus puts it out of scope for the Linux-hosted control-plane runtime, although its lifecycle patterns may still be informative.

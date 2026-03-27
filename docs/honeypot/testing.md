@@ -58,6 +58,14 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The `testsuite::honeypot_tiers` module is the current enforcement point for future `host-smoke` and `lab-e2e` additions.
 - Later milestones may add more granular test modules, but they must keep the same tier names and fail-closed gate behavior.
 
+## Reuse Guardrail Evidence
+
+- `AGENTS.md` pass rows around no-parallel honeypot session, credential, and stream stacks are satisfied by the combined architecture and research crosswalks plus the current contract-tier evidence below.
+- [architecture.md](architecture.md) and [research.md](research.md) now map each approved honeypot surface directly onto `rdp_proxy.rs`, `session.rs`, `subscriber.rs`, `api/preflight.rs`, `api/sessions.rs`, `api/session.rs`, `recording.rs`, `streaming.rs`, `ws.rs`, `video-streamer`, and `terminal-streamer`.
+- `testsuite/tests/honeypot_visibility.rs` proves the proxy still owns session lifecycle, credential substitution, replay, and stream identity without a parallel session or credential API.
+- `testsuite/tests/cli/dgw/honeypot.rs` proves the operator control path still uses `/jet/sessions` and `/jet/session/{id}/terminate` rather than a second session-management surface.
+- `testsuite/tests/honeypot_frontend.rs` proves the browser path still consumes proxy bootstrap, event, and stream-token routes rather than a separate stream-control service.
+
 ## Credential Replacement And Redaction Evidence
 
 - `AGENTS.md` pass row `The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.` is satisfied by the current `contract` tier.

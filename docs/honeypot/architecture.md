@@ -31,6 +31,16 @@ This document must not be read as permission to introduce a fourth runtime servi
 - `frontend` owns presentation, bootstrap, fullscreen viewing, and policy-gated interaction stubs.
 - Session, event, and stream ownership must follow `OM-01` through `OM-05` in `AGENTS.md`.
 
+## Reuse Guardrails
+
+- `OM-02` and `OM-03` are authoritative for attacker session lifecycle, credential substitution, session discovery, replay bootstrap, and stream-token ownership.
+- The honeypot proxy must extend `devolutions-gateway/src/rdp_proxy.rs` for the RDP MiTM data plane instead of introducing a parallel RDP stack.
+- Session state and lifecycle fan-out must extend `devolutions-gateway/src/session.rs` and `devolutions-gateway/src/subscriber.rs` instead of creating a second session or subscriber bus.
+- Short-lived backend credential mapping must stay on `devolutions-gateway/src/api/preflight.rs` through `provision-credentials` instead of introducing a second credential API.
+- Operator bootstrap and kill workflows must stay rooted in `devolutions-gateway/src/api/sessions.rs` and `devolutions-gateway/src/api/session.rs` instead of introducing a second session-management API family.
+- Browser stream delivery must start from the existing `devolutions-gateway/src/recording.rs`, `devolutions-gateway/src/streaming.rs`, `devolutions-gateway/src/ws.rs`, `crates/video-streamer`, and `crates/terminal-streamer` seams instead of creating a parallel stream service.
+- If a future milestone replaces any of those seams, the replacement and the reason reuse failed must be recorded first under `DF-03` or `DF-04` in [decisions.md](decisions.md).
+
 ## Gold Image And Lease Boundary
 
 - `control-plane` may lease only base images that pair an official Microsoft Windows 11 Pro x64 ISO record with a Tiny11-derived transformation manifest and a verified base-image digest.
