@@ -6,9 +6,9 @@ use crate::control_plane::{
 use crate::error::{ErrorCode, ErrorResponse};
 use crate::events::{EventEnvelope, EventPayload, KillScope, SessionState, StreamState, TerminalOutcome};
 use crate::frontend::{
-    BootstrapResponse, BootstrapSession, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
-    CommandVoteChoice, CommandVoteRequest, CommandVoteResponse, CommandVoteState, KeyboardCaptureRequest,
-    KeyboardCaptureResponse, KeyboardCaptureState,
+    BootstrapResponse, BootstrapSession, ClipboardCaptureRequest, ClipboardCaptureResponse, ClipboardCaptureState,
+    CommandProposalRequest, CommandProposalResponse, CommandProposalState, CommandVoteChoice, CommandVoteRequest,
+    CommandVoteResponse, CommandVoteState, KeyboardCaptureRequest, KeyboardCaptureResponse, KeyboardCaptureState,
 };
 use crate::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
 
@@ -212,6 +212,45 @@ fn keyboard_capture_response_round_trips_placeholder_state() {
         .expect("schema_version 1 should be supported");
     let json = serde_json::to_string(&response).expect("serialize keyboard capture response");
     let decoded: KeyboardCaptureResponse = serde_json::from_str(&json).expect("deserialize keyboard capture response");
+
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn clipboard_capture_request_rejects_unsupported_schema() {
+    let request = ClipboardCaptureRequest {
+        schema_version: crate::SCHEMA_VERSION + 1,
+        request_id: "clipboard-req-1".to_owned(),
+        clipboard_text: "secret".to_owned(),
+    };
+
+    let error = request
+        .ensure_supported_schema()
+        .expect_err("schema_version 2 should be rejected");
+
+    assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
+}
+
+#[test]
+fn clipboard_capture_response_round_trips_placeholder_state() {
+    let response = ClipboardCaptureResponse {
+        schema_version: crate::SCHEMA_VERSION,
+        correlation_id: "corr-clipboard-1".to_owned(),
+        capture_id: "clipboard-1".to_owned(),
+        recorded_at: "2026-03-26T00:01:15Z".to_owned(),
+        session_id: "session-1".to_owned(),
+        requested_byte_count: 6,
+        capture_state: ClipboardCaptureState::DisabledByPolicy,
+        decision_reason: "disabled_by_policy".to_owned(),
+        executed: false,
+    };
+
+    response
+        .ensure_supported_schema()
+        .expect("schema_version 1 should be supported");
+    let json = serde_json::to_string(&response).expect("serialize clipboard capture response");
+    let decoded: ClipboardCaptureResponse =
+        serde_json::from_str(&json).expect("deserialize clipboard capture response");
 
     assert_eq!(decoded, response);
 }

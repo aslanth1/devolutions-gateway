@@ -14,9 +14,9 @@ use axum::{Json, Router};
 use futures::StreamExt as _;
 use honeypot_contracts::events::{SessionState, StreamState};
 use honeypot_contracts::frontend::{
-    BootstrapResponse, BootstrapSession, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
-    CommandVoteChoice, CommandVoteRequest, CommandVoteResponse, CommandVoteState, KeyboardCaptureRequest,
-    KeyboardCaptureResponse, KeyboardCaptureState,
+    BootstrapResponse, BootstrapSession, ClipboardCaptureRequest, ClipboardCaptureResponse, ClipboardCaptureState,
+    CommandProposalRequest, CommandProposalResponse, CommandProposalState, CommandVoteChoice, CommandVoteRequest,
+    CommandVoteResponse, CommandVoteState, KeyboardCaptureRequest, KeyboardCaptureResponse, KeyboardCaptureState,
 };
 use honeypot_contracts::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
 use tokio::net::TcpListener;
@@ -283,6 +283,39 @@ impl FrontendRuntime {
         }
     }
 
+    async fn capture_clipboard(
+        &self,
+        session_id: &str,
+        request: &ClipboardCaptureRequest,
+    ) -> Result<ClipboardCaptureResponse, FrontendClipboardError> {
+        use reqwest::StatusCode as ReqwestStatusCode;
+
+        let clipboard_url = self
+            .config
+            .proxy
+            .clipboard_url(session_id)
+            .map_err(FrontendClipboardError::Proxy)?;
+        let response = self
+            .authorized(self.client.post(clipboard_url))
+            .json(request)
+            .send()
+            .await
+            .with_context(|| format!("request proxy clipboard placeholder for {session_id}"))
+            .map_err(FrontendClipboardError::Proxy)?;
+
+        match response.status() {
+            ReqwestStatusCode::OK | ReqwestStatusCode::ACCEPTED => response
+                .json::<ClipboardCaptureResponse>()
+                .await
+                .with_context(|| format!("decode proxy clipboard placeholder for {session_id}"))
+                .map_err(FrontendClipboardError::Proxy),
+            ReqwestStatusCode::NOT_FOUND => Err(FrontendClipboardError::NotFound),
+            status => Err(FrontendClipboardError::Proxy(anyhow::anyhow!(
+                "proxy clipboard placeholder failed with {status}"
+            ))),
+        }
+    }
+
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(token) = &self.config.auth.proxy_bearer_token {
             request.bearer_auth(token)
@@ -389,6 +422,12 @@ enum FrontendKeyboardError {
     Proxy(anyhow::Error),
 }
 
+#[derive(Debug)]
+enum FrontendClipboardError {
+    NotFound,
+    Proxy(anyhow::Error),
+}
+
 pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
     let runtime = Arc::new(FrontendRuntime::new(config)?);
     let bind_addr = runtime.bind_addr();
@@ -402,6 +441,7 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
         .route("/events", get(events_handler))
         .route("/tile/{id}", get(tile_handler))
         .route("/session/{id}", get(session_handler))
+        .route("/session/{id}/clipboard", post(clipboard_handler))
         .route("/session/{id}/keyboard", post(keyboard_handler))
         .route("/session/{id}/propose", post(propose_handler))
         .route("/session/{id}/vote", post(vote_handler))
@@ -596,6 +636,11 @@ async fn kill_handler(
 }
 
 #[derive(serde::Deserialize)]
+struct ClipboardCaptureForm {
+    clipboard_text: String,
+}
+
+#[derive(serde::Deserialize)]
 struct KeyboardCaptureForm {
     key_sequence: String,
 }
@@ -638,6 +683,37 @@ async fn keyboard_handler(
         Err(FrontendKeyboardError::Proxy(error)) => frontend_error(
             StatusCode::BAD_GATEWAY,
             &format!("keyboard placeholder failed: {error:#}"),
+        ),
+    }
+}
+
+async fn clipboard_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<OperatorTokenQuery>,
+    Form(form): Form<ClipboardCaptureForm>,
+) -> Response {
+    let access = match state
+        .runtime
+        .authorize_operator(&headers, query.token.as_deref(), RequiredScope::CommandApprove)
+    {
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
+
+    let request = ClipboardCaptureRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: format!("frontend-clipboard-capture-{session_id}-{}", proposal_nonce()),
+        clipboard_text: form.clipboard_text,
+    };
+
+    match state.runtime.capture_clipboard(&session_id, &request).await {
+        Ok(response) => Html(render_clipboard_capture_notice(&response, access.raw_token())).into_response(),
+        Err(FrontendClipboardError::NotFound) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
+        Err(FrontendClipboardError::Proxy(error)) => frontend_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("clipboard placeholder failed: {error:#}"),
         ),
     }
 }
@@ -1465,6 +1541,41 @@ fn render_keyboard_capture_notice(response: &KeyboardCaptureResponse, operator_t
         capture_id = escape_html(&response.capture_id),
         recorded_at = escape_html(&response.recorded_at),
         requested_key_count = response.requested_key_count,
+        decision_reason = escape_html(&response.decision_reason),
+        guidance = escape_html(guidance),
+        auth_query = auth_query,
+    )
+}
+
+fn render_clipboard_capture_notice(response: &ClipboardCaptureResponse, operator_token: &str) -> String {
+    let auth_query = operator_token_query(operator_token);
+    let state_label = match response.capture_state {
+        ClipboardCaptureState::DisabledByPolicy => "Clipboard capture disabled",
+    };
+    let guidance = match response.capture_state {
+        ClipboardCaptureState::DisabledByPolicy => {
+            "The placeholder recorded only request metadata and kept clipboard injection disabled."
+        }
+    };
+
+    format!(
+        r#"<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>{state_label}</strong>
+      <p>Session <code>{session_id}</code> recorded clipboard placeholder <code>{capture_id}</code> at <code>{recorded_at}</code>.</p>
+      <p><strong>Requested byte count</strong><br><code>{requested_byte_count}</code></p>
+      <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
+      <p>{guidance}</p>
+      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>"#,
+        state_label = escape_html(state_label),
+        session_id = escape_html(&response.session_id),
+        capture_id = escape_html(&response.capture_id),
+        recorded_at = escape_html(&response.recorded_at),
+        requested_byte_count = response.requested_byte_count,
         decision_reason = escape_html(&response.decision_reason),
         guidance = escape_html(guidance),
         auth_query = auth_query,

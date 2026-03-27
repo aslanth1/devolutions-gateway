@@ -3,8 +3,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use honeypot_contracts::Versioned;
 use honeypot_contracts::frontend::{
-    CommandProposalRequest, CommandProposalResponse, CommandProposalState, CommandVoteChoice, CommandVoteRequest,
-    CommandVoteResponse, CommandVoteState, KeyboardCaptureRequest, KeyboardCaptureResponse, KeyboardCaptureState,
+    ClipboardCaptureRequest, ClipboardCaptureResponse, ClipboardCaptureState, CommandProposalRequest,
+    CommandProposalResponse, CommandProposalState, CommandVoteChoice, CommandVoteRequest, CommandVoteResponse,
+    CommandVoteState, KeyboardCaptureRequest, KeyboardCaptureResponse, KeyboardCaptureState,
 };
 use uuid::Uuid;
 
@@ -17,6 +18,7 @@ use crate::token::AccessScope;
 pub fn make_router<S>(state: DgwState) -> Router<S> {
     Router::new()
         .route("/system/terminate", post(terminate_all_sessions))
+        .route("/{id}/clipboard", post(capture_clipboard))
         .route("/{id}/keyboard", post(capture_keyboard))
         .route("/{id}/propose", post(propose_command))
         .route("/{id}/vote", post(vote_command))
@@ -278,6 +280,52 @@ async fn capture_keyboard(
     Ok(Json(response))
 }
 
+async fn capture_clipboard(
+    State(state): State<DgwState>,
+    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
+    scope_token: ScopeToken,
+    Json(request): Json<ClipboardCaptureRequest>,
+) -> Result<Json<ClipboardCaptureResponse>, HttpError> {
+    if !state.honeypot.is_enabled() {
+        return Err(HttpError::not_found().msg("honeypot mode is disabled"));
+    }
+
+    authorize_clipboard_scope(&scope_token)?;
+    request.ensure_supported_schema().map_err(
+        HttpError::bad_request()
+            .with_msg("unsupported honeypot schema_version")
+            .err(),
+    )?;
+
+    let requested_byte_count = u32::try_from(request.clipboard_text.len()).unwrap_or(u32::MAX);
+    let response = ClipboardCaptureResponse {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        correlation_id: format!("honeypot-clipboard-capture-{}", Uuid::new_v4()),
+        capture_id: format!("clipboard-{}", Uuid::new_v4()),
+        recorded_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
+        session_id: session_id.to_string(),
+        requested_byte_count,
+        capture_state: ClipboardCaptureState::DisabledByPolicy,
+        decision_reason: "disabled_by_policy".to_owned(),
+        executed: false,
+    };
+
+    tracing::info!(
+        session_id = %response.session_id,
+        capture_id = %response.capture_id,
+        correlation_id = %response.correlation_id,
+        requested_byte_count = response.requested_byte_count,
+        capture_state = ?response.capture_state,
+        decision_reason = %response.decision_reason,
+        executed = response.executed,
+        "honeypot clipboard capture placeholder recorded"
+    );
+
+    Ok(Json(response))
+}
+
 async fn terminate_all_sessions(
     State(state): State<DgwState>,
     scope_token: ScopeToken,
@@ -376,6 +424,13 @@ fn authorize_vote_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
 }
 
 fn authorize_keyboard_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
+    match scope_token.0.scope {
+        AccessScope::Wildcard | AccessScope::HoneypotCommandApprove => Ok(()),
+        _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+    }
+}
+
+fn authorize_clipboard_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
     match scope_token.0.scope {
         AccessScope::Wildcard | AccessScope::HoneypotCommandApprove => Ok(()),
         _ => Err(HttpError::forbidden().msg("invalid scope for route")),

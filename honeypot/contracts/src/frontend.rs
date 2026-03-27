@@ -113,6 +113,32 @@ pub struct KeyboardCaptureResponse {
     pub executed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardCaptureState {
+    DisabledByPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardCaptureRequest {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub clipboard_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardCaptureResponse {
+    pub schema_version: u32,
+    pub correlation_id: String,
+    pub capture_id: String,
+    pub recorded_at: String,
+    pub session_id: String,
+    pub requested_byte_count: u32,
+    pub capture_state: ClipboardCaptureState,
+    pub decision_reason: String,
+    pub executed: bool,
+}
+
 impl_versioned!(
     BootstrapResponse,
     CommandProposalRequest,
@@ -120,5 +146,7 @@ impl_versioned!(
     CommandVoteRequest,
     CommandVoteResponse,
     KeyboardCaptureRequest,
-    KeyboardCaptureResponse
+    KeyboardCaptureResponse,
+    ClipboardCaptureRequest,
+    ClipboardCaptureResponse
 );

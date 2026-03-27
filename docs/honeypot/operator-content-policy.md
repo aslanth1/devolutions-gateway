@@ -30,7 +30,7 @@ It must not be read as approval to enable deferred interactive features before t
 - `kill` maps to `gateway.honeypot.session.kill` for single-session kill and quarantine.
 - `kill` also maps to `gateway.honeypot.system.kill` for global emergency stop.
 - `propose` maps to `gateway.honeypot.command.propose`, but that scope may record only deferred or rejected placeholder commands.
-- `approve` maps to `gateway.honeypot.command.approve`, but that scope may record only deferred or rejected placeholder votes plus disabled keyboard placeholder requests.
+- `approve` maps to `gateway.honeypot.command.approve`, but that scope may record only deferred or rejected placeholder votes plus disabled keyboard and clipboard placeholder requests.
 - No operator may use `propose` or `approve` for real command execution until the deferred voting and command rows are implemented and explicitly enabled.
 
 ## Allowed Actions
@@ -42,7 +42,7 @@ It must not be read as approval to enable deferred interactive features before t
 - `kill` may terminate a live honeypot session, quarantine a suspicious guest, and invoke the global emergency stop when the matching scope is present.
 - `kill` may trigger evidence capture only as part of an authorized defensive workflow that preserves audit context and follows the export limits below.
 - `propose` may record only a deferred or rejected placeholder command in MVP and must not execute anything.
-- `approve` may record only a deferred or rejected placeholder vote plus disabled keyboard placeholder requests in MVP and must not execute anything.
+- `approve` may record only a deferred or rejected placeholder vote plus disabled keyboard and clipboard placeholder requests in MVP and must not execute anything.
 
 ## Sensitive Content Classes
 

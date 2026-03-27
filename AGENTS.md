@@ -514,7 +514,7 @@ Pass when: proposed commands can be voted on, but execution stays policy-gated.
 - [x] Add a keyboard capture placeholder behind explicit policy checks.
 Pass when: the endpoint exists as a stub and returns a structured `disabled_by_policy` response until intentionally enabled.
 
-- [ ] Add a clipboard capture placeholder behind explicit policy checks.
+- [x] Add a clipboard capture placeholder behind explicit policy checks.
 Pass when: the endpoint exists as a stub and returns a structured `disabled_by_policy` response until intentionally enabled.
 
 - [x] Add frontend container health and readiness checks.
