@@ -604,7 +604,7 @@ Pass when: the lab tears down without orphaned QEMU processes, sockets, overlays
 - [ ] Add an end-to-end credential replacement test.
 Pass when: the test provisions a VM, posts a credential mapping, opens an attacker-facing RDP connection, and proves the VM received the backend credentials instead of the attacker credentials.
 
-- [ ] Add a session visibility and replay test.
+- [x] Add a session visibility and replay test.
 Pass when: the test sees the session in `/jet/sessions`, receives the frontend bootstrap and event payloads, and observes stream metadata.
 
 ### Milestone 5e: Frontend And Session Stream End-To-End Flows

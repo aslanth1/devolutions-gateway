@@ -6768,6 +6768,7 @@ dependencies = [
  "axum 0.8.8",
  "base64 0.22.1",
  "devolutions-gateway",
+ "devolutions-gateway-task",
  "dynosaur",
  "escargot",
  "expect-test",
@@ -6775,6 +6776,7 @@ dependencies = [
  "honeypot-contracts",
  "honeypot-control-plane",
  "honeypot-frontend",
+ "http-body-util",
  "libc",
  "libsql",
  "mcp-proxy",
@@ -6793,6 +6795,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite 0.26.2",
  "toml 0.8.23",
+ "tower 0.5.3",
  "typed-builder",
  "uuid",
 ]

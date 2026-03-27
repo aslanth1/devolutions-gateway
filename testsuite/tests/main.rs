@@ -7,5 +7,6 @@ mod honeypot_control_plane;
 mod honeypot_frontend;
 mod honeypot_release;
 mod honeypot_tiers;
+mod honeypot_visibility;
 mod mcp_proxy;
 mod sysevent;
