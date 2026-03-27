@@ -128,6 +128,12 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_frontend.rs` proves the HTMX-facing frontend clipboard placeholder route relays to the proxy, renders the disabled outcome, and does not echo the submitted clipboard payload back into the UI.
 - `honeypot/contracts/src/tests.rs` proves the typed clipboard placeholder request or response shapes are versioned and reject unsupported schema versions.
 
+## Matrix Authority Evidence
+
+- `AGENTS.md` pass row `Keep the Decision Freeze Matrix and Ownership Matrix authoritative.` is satisfied by the current docs-governance coverage.
+- `testsuite/tests/honeypot_docs.rs` proves the core honeypot docs still route frozen policy through `DF-*` rows, route seam ownership through `OM-*` rows, and keep the replacement-note requirement on any future seam change.
+- `docs/honeypot/decisions.md`, `docs/honeypot/architecture.md`, and `docs/honeypot/contracts.md` are the canonical authority chain enforced by that test.
+
 ## Audit Logging Evidence
 
 - `AGENTS.md` pass row `Add audit logging for control-plane actions, session kills, and frontend vote actions.` is satisfied by the existing typed control-plane envelopes, honeypot lifecycle events, and the typed non-executing proposal or vote placeholders.

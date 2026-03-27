@@ -37,7 +37,7 @@ Pass when: the baseline test path is green, the workspace boundaries are documen
 - [x] Treat Milestone 0.5 as a hard design freeze before Milestone 1 through Milestone 6 implementation starts.
 Pass when: every `DF-*` row below is resolved in `docs/honeypot/decisions.md` and the owning docs it names before Milestone 1 through Milestone 6 work starts.
 
-- [ ] Keep the `Decision Freeze Matrix` and `Ownership Matrix` authoritative.
+- [x] Keep the `Decision Freeze Matrix` and `Ownership Matrix` authoritative.
 Pass when: later milestones reference `DF-*` and `OM-*` rows instead of restating the same policy or inventing a second owner for the same seam.
 
 - [x] Do not introduce a parallel honeypot session bus, subscriber bus, credential API, or stream API unless the replaced Gateway seam and the reason reuse is insufficient are documented first.

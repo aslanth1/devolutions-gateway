@@ -6,6 +6,7 @@ This document fixes the service boundaries and reuse seams for the honeypot fork
 It is the architecture companion to the `DF-*` and `OM-*` rows in `AGENTS.md`.
 Detailed contract fields belong in `docs/honeypot/contracts.md`.
 Detailed frozen choices belong in `docs/honeypot/decisions.md`.
+Later milestone work must cite the relevant `DF-*` or `OM-*` rows instead of redefining owners or policy locally.
 This document must not be read as permission to introduce a fourth runtime service or a parallel session or stream control stack.
 
 ## Runtime Domains

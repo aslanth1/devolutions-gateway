@@ -10,6 +10,7 @@ Detailed schemas, Docker topology, and release mechanics belong in the owning do
 ## Freeze Status
 
 - These decisions are frozen for Milestone 0.5 and block Milestone 1 through Milestone 6 implementation.
+- The `Decision Freeze Matrix` and `Ownership Matrix` in `AGENTS.md` remain authoritative, so later milestone docs must cite the relevant `DF-*` or `OM-*` rows instead of inventing a second owner or restating frozen policy.
 - This ledger must not be read as permission to introduce a fourth runtime service, a parallel session bus, or a parallel stream service.
 - If a later milestone needs to replace one of these choices, it must update this file first and then update the owning docs.
 
