@@ -200,11 +200,19 @@ impl FrontendRuntime {
     async fn health_snapshot(&self) -> (StatusCode, FrontendHealthResponse) {
         match self.fetch_bootstrap().await {
             Ok(bootstrap) => {
-                let live_session_count = bootstrap.sessions.len();
+                let live_session_count = bootstrap
+                    .sessions
+                    .iter()
+                    .filter(|session| session_is_live_for_dashboard(session.state))
+                    .count();
                 let ready_tile_count = bootstrap
                     .sessions
                     .iter()
-                    .filter(|session| session.stream_state == StreamState::Ready && session.stream_preview.is_some())
+                    .filter(|session| {
+                        session_is_live_for_dashboard(session.state)
+                            && session.stream_state == StreamState::Ready
+                            && session.stream_preview.is_some()
+                    })
                     .count();
 
                 (
@@ -365,7 +373,10 @@ async fn tile_handler(
     };
 
     match state.runtime.fetch_session(&session_id).await {
-        Ok(Some(session)) => Html(render_session_tile(&session, &access)).into_response(),
+        Ok(Some(session)) if session_is_live_for_dashboard(session.state) => {
+            Html(render_session_tile(&session, &access)).into_response()
+        }
+        Ok(Some(_)) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
         Ok(None) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
         Err(error) => frontend_error(StatusCode::BAD_GATEWAY, &format!("session lookup failed: {error:#}")),
     }
@@ -386,7 +397,8 @@ async fn session_handler(
     };
 
     let session = match state.runtime.fetch_session(&session_id).await {
-        Ok(Some(session)) => session,
+        Ok(Some(session)) if session_is_live_for_dashboard(session.state) => session,
+        Ok(Some(_)) => return frontend_error(StatusCode::NOT_FOUND, "session not found"),
         Ok(None) => return frontend_error(StatusCode::NOT_FOUND, "session not found"),
         Err(error) => {
             return frontend_error(StatusCode::BAD_GATEWAY, &format!("session lookup failed: {error:#}"));
@@ -537,11 +549,15 @@ fn auth_error(error: AuthError) -> Response {
 fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse, access: &OperatorAccess) -> String {
     let operator_token = access.raw_token();
     let system_kill_button = render_system_kill_button(access);
-    let tiles = if bootstrap.sessions.is_empty() {
+    let live_sessions = bootstrap
+        .sessions
+        .iter()
+        .filter(|session| session_is_live_for_dashboard(session.state))
+        .collect::<Vec<_>>();
+    let tiles = if live_sessions.is_empty() {
         "<div class=\"empty-state\">No live sessions are visible yet.</div>".to_owned()
     } else {
-        bootstrap
-            .sessions
+        live_sessions
             .iter()
             .map(|session| render_session_tile(session, access))
             .collect::<Vec<_>>()
@@ -550,7 +566,11 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
 
     let title = escape_html(&config.ui.title);
     let replay_cursor = escape_html(&bootstrap.replay_cursor);
-    let session_count = bootstrap.sessions.len();
+    let session_count = bootstrap
+        .sessions
+        .iter()
+        .filter(|session| session_is_live_for_dashboard(session.state))
+        .count();
     let operator_token_json = serde_json::to_string(operator_token).unwrap_or_else(|_| "\"invalid-token\"".to_owned());
 
     format!(
@@ -1165,6 +1185,13 @@ fn render_focus_action_buttons(session: &BootstrapSession, access: &OperatorAcce
 }
 
 fn session_can_be_killed(state: SessionState) -> bool {
+    matches!(
+        state,
+        SessionState::Connected | SessionState::Assigned | SessionState::Ready
+    )
+}
+
+fn session_is_live_for_dashboard(state: SessionState) -> bool {
     matches!(
         state,
         SessionState::Connected | SessionState::Assigned | SessionState::Ready

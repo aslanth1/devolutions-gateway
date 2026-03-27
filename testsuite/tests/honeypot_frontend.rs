@@ -309,7 +309,7 @@ async fn frontend_focus_fragment_uses_stream_token_when_preview_is_missing() {
     let (
         proxy_addr,
         proxy_handle,
-        _observed_tokens,
+        observed_tokens,
         _terminated_sessions,
         _quarantined_sessions,
         _system_terminate_requests,
@@ -364,6 +364,284 @@ async fn frontend_focus_fragment_uses_stream_token_when_preview_is_missing() {
     assert!(body.contains("<iframe"), "{body}");
     assert!(body.contains("/jet/honeypot/session/"), "{body}");
     assert!(body.contains("stream_id=stream-2&amp;token="), "{body}");
+    assert!(
+        observed_tokens
+            .lock()
+            .await
+            .iter()
+            .any(|entry| entry == &format!("STREAM_TOKEN:{session_id}"))
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_focus_fragment_renders_bootstrap_preview_and_renews_stream_token() {
+    let session_id = Uuid::new_v4().to_string();
+    let (
+        proxy_addr,
+        proxy_handle,
+        observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-preview".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "12".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: session_id.clone(),
+                vm_lease_id: Some("lease-preview".to_owned()),
+                state: SessionState::Ready,
+                last_event_id: "event-preview".to_owned(),
+                last_session_seq: 2,
+                stream_state: StreamState::Ready,
+                stream_preview: Some(StreamPreview {
+                    stream_id: "stream-preview".to_owned(),
+                    transport: StreamTransport::Websocket,
+                    stream_endpoint: format!("/jet/honeypot/session/{session_id}/stream?stream_id=stream-preview"),
+                    token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
+                }),
+            }],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let path = authed_path(
+        format!("/session/{session_id}").as_str(),
+        HONEYPOT_STREAM_READ_SCOPE_TOKEN,
+    );
+    let (status_line, _headers, body) = read_http_response(port, &path).await.expect("read focus fragment");
+    let body = String::from_utf8(body).expect("decode focus fragment");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("stream-preview"), "{body}");
+    assert!(body.contains("<iframe"), "{body}");
+    assert!(body.contains("stream_id=stream-preview&amp;token="), "{body}");
+    assert!(
+        observed_tokens
+            .lock()
+            .await
+            .iter()
+            .any(|entry| entry == &format!("STREAM_TOKEN:{session_id}"))
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_dashboard_filters_terminal_sessions_from_bootstrap() {
+    let live_session_id = Uuid::new_v4().to_string();
+    let disconnected_session_id = Uuid::new_v4().to_string();
+    let recycled_session_id = Uuid::new_v4().to_string();
+    let (
+        proxy_addr,
+        proxy_handle,
+        _observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-live-only".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "14".to_owned(),
+            sessions: vec![
+                BootstrapSession {
+                    session_id: live_session_id.clone(),
+                    vm_lease_id: Some("lease-live".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-live".to_owned(),
+                    last_session_seq: 2,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-live".to_owned(),
+                        transport: StreamTransport::Websocket,
+                        stream_endpoint: format!(
+                            "/jet/honeypot/session/{live_session_id}/stream?stream_id=stream-live"
+                        ),
+                        token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
+                    }),
+                },
+                BootstrapSession {
+                    session_id: disconnected_session_id.clone(),
+                    vm_lease_id: Some("lease-disconnected".to_owned()),
+                    state: SessionState::Disconnected,
+                    last_event_id: "event-disconnected".to_owned(),
+                    last_session_seq: 3,
+                    stream_state: StreamState::Failed,
+                    stream_preview: None,
+                },
+                BootstrapSession {
+                    session_id: recycled_session_id.clone(),
+                    vm_lease_id: Some("lease-recycled".to_owned()),
+                    state: SessionState::Recycled,
+                    last_event_id: "event-recycled".to_owned(),
+                    last_session_seq: 4,
+                    stream_state: StreamState::Failed,
+                    stream_preview: None,
+                },
+            ],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let (status_line, _headers, body) = read_http_response(port, &authed_path("/", HONEYPOT_WATCH_SCOPE_TOKEN))
+        .await
+        .expect("read dashboard");
+    let body = String::from_utf8(body).expect("decode dashboard html");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains(&live_session_id), "{body}");
+    assert!(!body.contains(&disconnected_session_id), "{body}");
+    assert!(!body.contains(&recycled_session_id), "{body}");
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_tile_route_rejects_terminal_sessions() {
+    let disconnected_session_id = Uuid::new_v4().to_string();
+    let recycled_session_id = Uuid::new_v4().to_string();
+    let recycle_requested_session_id = Uuid::new_v4().to_string();
+    let killed_session_id = Uuid::new_v4().to_string();
+    let (
+        proxy_addr,
+        proxy_handle,
+        _observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-terminal-tiles".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "15".to_owned(),
+            sessions: vec![
+                BootstrapSession {
+                    session_id: disconnected_session_id.clone(),
+                    vm_lease_id: Some("lease-disconnected".to_owned()),
+                    state: SessionState::Disconnected,
+                    last_event_id: "event-disconnected".to_owned(),
+                    last_session_seq: 3,
+                    stream_state: StreamState::Failed,
+                    stream_preview: None,
+                },
+                BootstrapSession {
+                    session_id: recycled_session_id.clone(),
+                    vm_lease_id: Some("lease-recycled".to_owned()),
+                    state: SessionState::Recycled,
+                    last_event_id: "event-recycled".to_owned(),
+                    last_session_seq: 4,
+                    stream_state: StreamState::Failed,
+                    stream_preview: None,
+                },
+                BootstrapSession {
+                    session_id: recycle_requested_session_id.clone(),
+                    vm_lease_id: Some("lease-recycle-requested".to_owned()),
+                    state: SessionState::RecycleRequested,
+                    last_event_id: "event-recycle-requested".to_owned(),
+                    last_session_seq: 5,
+                    stream_state: StreamState::Failed,
+                    stream_preview: None,
+                },
+                BootstrapSession {
+                    session_id: killed_session_id.clone(),
+                    vm_lease_id: Some("lease-killed".to_owned()),
+                    state: SessionState::Killed,
+                    last_event_id: "event-killed".to_owned(),
+                    last_session_seq: 6,
+                    stream_state: StreamState::Failed,
+                    stream_preview: None,
+                },
+            ],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    for session_id in [
+        &disconnected_session_id,
+        &recycled_session_id,
+        &recycle_requested_session_id,
+        &killed_session_id,
+    ] {
+        let path = authed_path(format!("/tile/{session_id}").as_str(), HONEYPOT_WATCH_SCOPE_TOKEN);
+        let (status_line, _headers, _body) = read_http_response(port, &path).await.expect("read tile response");
+        assert!(status_line.contains("404"), "{session_id}: {status_line}");
+    }
 
     let _ = child.start_kill();
     let _ = child.wait().await;
@@ -1009,6 +1287,11 @@ async fn mock_stream_token(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     record_token(&state, &headers).await;
+    state
+        .observed_tokens
+        .lock()
+        .await
+        .push(format!("STREAM_TOKEN:{session_id}"));
 
     match state.stream_tokens.get(&session_id) {
         Some(response) => (StatusCode::OK, Json(response.clone())).into_response(),

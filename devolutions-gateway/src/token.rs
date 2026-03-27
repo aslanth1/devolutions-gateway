@@ -1685,3 +1685,68 @@ mod serde_impl {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use picky::jose::jws::RawJws;
+    use picky::key::PrivateKey;
+    use time::{Duration, OffsetDateTime};
+    use uuid::Uuid;
+
+    use super::{ContentType, JrecTokenClaims, RecordingOperation, generate_jrec_pull_token};
+
+    const TEST_PRIVATE_KEY_PEM: &str = r#"-----BEGIN PRIVATE KEY-----
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQDHpBlyRgUx/V9c
+QGw/eqDFc6odxB2hvnbudi67LvEjcNIWOU79R1e/NswME4oecqT9W05n4UyxkABf
+m2qjODO0nDf47W0DsgbEA87qE715RWg8AtC529CZAazqTV3gqYyRMsCuVKzPVxgW
+a8rhPc7E6In1uDRak0lWKQPQSBbc34nxMOVIusZNlkAEar8/aYPr/YWvdEqkobEv
+Xp+g9WsuMaU913ecacWDjyWDkf80pPPtf+uet7WMysKMhzGQtpbgilT8XCo8uTsg
+UbK+TMWvkF9bcxAQDnJsrZRL7JfhofsFfQbTIvbvpn+4J4kmHN36BTohlNL8TX1j
+rU3cPA7dAgMBAAECggEAKh7KK5zwTaq6atlAvWfe8anEk4EkC1MG/qq6k02FHMgZ
+2wx+SNu7fKFQDaA1vNTNUJLqCOq05qWOHp3IsuURq6JmAMP/Aw+Vc9el2ScPC74E
+Dt09MmlZKl77H3fxPYwoFx5RHrbIuvoSH/DgHgOPU2YIbWpOyWlXyLDgmBoNkM3N
+fXYLXJONpStPHeQLhh7LcHO3CZgn6kycJyByEO2NtcchS5zITiJuwL+qR5/QIlvD
+Yo7jdCjelJat38MZ9dE1us8xlIjQtsYF/acZZtcpYho+7ZpDCNcb+xF8KStKei+B
+MMpWISsa+Zh9g7lPYTnG/i1dSMMT100XCEw8o4rBoQKBgQDnptz8acp7DB2wJH4L
+c0xuw8IlrSl3BGUEj8H+RyFlpH3+//i6/fE9MrtF8b4FSYUp5AG4NVFGcRbwJVGW
+jeL13YwIKMdXjmx8fDIylCgBB1tzBS9T/0ws3HS8avxhKvjgoXIZm6D3XDcBslrH
+c9/LojT8YGI1wx7jWI2qKj8yeQKBgQDcn+kQ1QjzgIz6bAVWY3t1jr5uHHyaS+5G
+ihY/mx4Mn3DURgPXZHz/HrN9rZkax0zuq9wuIlqgZ2KI37iCF49M4aZxC788LyDo
+Hp0Cak3wt3g0Tj6J7SJiQe8h/6VBS4R5dRD2vhEc3xPAOf7WIFdlLYBOOvE/LmOt
+N6ChkfgGhQKBgQDSiDqLRPJ7BjXtIh1T9sPeXxeR+mCXBG1yydx7ZtYZdHf2S1kZ
+STX4cqT1GpGiaIEX41sUuZBWPu2j76bI98bvwRxFRhp1nsFGGfHdOf1pgfBBBtNO
+udXXZ7zIiUs6XD24mcIDOAgBB9QOPLR4VP1uKsuRG1/mkKD/6jlGEANDsQKBgQDC
+AoEygxQnBVFz2c/rwvnLS+Zb8AMGsGTtdPrRnjeThBX1JUi1fbGJq1bN2v27Fa2q
+aEjr7NvjGGcG1C1tgQhL5Fa4LEtTwmHenSUW/aJiXwR+gpvuMDC/VRnTvPp2a9En
++XEcedGUoPq+XIGjjLctyxB8Osrw83tF1JgV3MXN/QKBgQC83B54rYDd4QmVH5nL
+WLw834fgr+Z1hA6UqJIaahlD/bDwzbbJEv0pHCBxe01ywQFivqWBdVbuoy9YSeLS
+KKEklzh+L0SorrYoBA5F63qx0zy05bba0ASplgDUEUNZn7oIFi7x5pVsNNaNxZpR
+bQGM8UrNQvWQ+tutRmp7PM6VuQ==
+-----END PRIVATE KEY-----"#;
+
+    #[test]
+    fn generate_jrec_pull_token_binds_session_and_pull_operation() {
+        let key = PrivateKey::from_pem_str(TEST_PRIVATE_KEY_PEM).expect("parse test key");
+        let session_id = Uuid::new_v4();
+        let expires_at = OffsetDateTime::now_utc() + Duration::minutes(2);
+
+        let token = generate_jrec_pull_token(&key, session_id, expires_at).expect("generate jrec pull token");
+        let raw_jws = RawJws::decode(&token).expect("decode jrec token");
+        let claims: JrecTokenClaims = serde_json::from_slice(raw_jws.peek_payload()).expect("parse jwt claims");
+
+        assert_eq!(raw_jws.header.cty, Some(ContentType::Jrec.to_string()));
+        assert_eq!(claims.jet_aid, session_id);
+        assert_eq!(claims.jet_rop, RecordingOperation::Pull);
+        assert_eq!(claims.exp, expires_at.unix_timestamp());
+    }
+
+    #[test]
+    fn generate_jrec_pull_token_rejects_expired_deadline() {
+        let key = PrivateKey::from_pem_str(TEST_PRIVATE_KEY_PEM).expect("parse test key");
+        let expired_at = OffsetDateTime::now_utc() - Duration::seconds(1);
+
+        let error = generate_jrec_pull_token(&key, Uuid::new_v4(), expired_at).expect_err("expired token must fail");
+
+        assert!(error.to_string().contains("already expired"));
+    }
+}

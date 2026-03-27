@@ -85,7 +85,7 @@ pub struct ApiDoc;
 
 /// Information about an ongoing Gateway session
 #[allow(dead_code)]
-#[derive(utoipa::ToSchema)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct SessionInfo {
     /// Unique ID for this session
     association_id: Uuid,
@@ -109,7 +109,7 @@ struct SessionInfo {
 }
 
 #[allow(dead_code)]
-#[derive(utoipa::ToSchema)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct HoneypotSessionInfo {
     state: SessionState,
     attacker_source: Option<HoneypotAttackerSource>,
@@ -119,14 +119,14 @@ struct HoneypotSessionInfo {
 }
 
 #[allow(dead_code)]
-#[derive(utoipa::ToSchema)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct HoneypotAttackerSource {
     attacker_addr: String,
     listener_id: String,
 }
 
 #[allow(dead_code)]
-#[derive(utoipa::ToSchema)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct HoneypotAssignment {
     vm_lease_id: String,
     vm_name: String,
@@ -136,7 +136,7 @@ struct HoneypotAssignment {
 }
 
 #[allow(dead_code)]
-#[derive(utoipa::ToSchema)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct HoneypotStream {
     state: StreamState,
     stream_id: Option<String>,
@@ -146,7 +146,7 @@ struct HoneypotStream {
 }
 
 #[allow(dead_code)]
-#[derive(utoipa::ToSchema)]
+#[derive(Serialize, utoipa::ToSchema)]
 struct HoneypotTerminal {
     outcome: TerminalOutcome,
     disconnect_reason: Option<String>,

@@ -534,10 +534,10 @@ Pass when: the MVP browser delivery path is wired end to end without inventing a
 - [x] Bind every live stream to `session_id`, `vm_lease_id`, and a short-lived stream token.
 Pass when: the frontend cannot confuse one attacker tile with another after reconnects or rapid lease churn.
 
-- [ ] Validate stream startup and replay behavior.
+- [x] Validate stream startup and replay behavior.
 Pass when: tiles can open from bootstrap state and survive expected update ordering.
 
-- [ ] Validate stream shutdown behavior.
+- [x] Validate stream shutdown behavior.
 Pass when: tiles close cleanly on disconnect or recycle.
 
 - [x] Reuse or explicitly reject existing Gateway streaming and media code.
