@@ -104,10 +104,12 @@ disconnect / kill / timeout
 
 - Browser-visible stream discovery belongs to `proxy`, even if the underlying capture source is frozen later by `DF-04`.
 - The MVP stream path must evaluate reuse of `devolutions-gateway/src/recording.rs`, `devolutions-gateway/src/streaming.rs`, `crates/video-streamer`, `crates/terminal-streamer`, and `devolutions-gateway/src/ws.rs` before any alternate capture or transport stack is introduced.
+- The chosen MVP media path reuses `devolutions-gateway/src/api/jrec.rs` for `/jet/jrec/play` and `/jet/jrec/shadow/{session_id}`, with `streaming.rs`, `ws.rs`, `video-streamer`, and `terminal-streamer` as the live-delivery seam behind that player route.
 - The `frontend` bootstraps already-running sessions first and then consumes live updates through an HTMX-compatible transport chosen by `DF-04`.
 - Every browser stream must be bound to `session_id`, `vm_lease_id`, and a short-lived token.
 - `frontend` never reaches into host files, QMP, or guest display sockets directly.
 - The stream source of truth is a design-freeze decision, but the browser control plane is not.
+- The frontend focus view uses a proxy-owned bridge such as `/jet/honeypot/session/{session_id}/stream?stream_id={stream_id}`, and that bridge redirects into `/jet/jrec/play?isActive=true` so live refresh reconnects near the active tail through the existing shadow websocket path.
 
 ## Kill Switch And Recycle
 

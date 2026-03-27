@@ -522,13 +522,16 @@ Pass when: compose and Rust tests can detect successful startup, bootstrap API r
 
 ## Milestone 4: Stream Delivery Path
 
-- [ ] Implement the chosen live-stream source adapter for the frontend.
+- Live-stream note: the MVP media path reuses the existing Gateway JREC player and shadow websocket seam rather than WebRTC.
+Pass when: active observation uses `/jet/jrec/play?isActive=true` plus `/jet/jrec/shadow/{session_id}`, browser refresh during an active session reconnects near the live tail instead of replaying the full recording from the beginning, and only the post-disconnect fallback may return to static playback from the start.
+
+- [x] Implement the chosen live-stream source adapter for the frontend.
 Pass when: the MVP stream source is wired into the stack without inventing an unreviewed second capture path.
 
-- [ ] Implement the chosen frontend stream transport adapter.
+- [x] Implement the chosen frontend stream transport adapter.
 Pass when: the MVP browser delivery path is wired end to end without inventing an unreviewed second browser-transport stack.
 
-- [ ] Bind every live stream to `session_id`, `vm_lease_id`, and a short-lived stream token.
+- [x] Bind every live stream to `session_id`, `vm_lease_id`, and a short-lived stream token.
 Pass when: the frontend cannot confuse one attacker tile with another after reconnects or rapid lease churn.
 
 - [ ] Validate stream startup and replay behavior.
@@ -537,7 +540,7 @@ Pass when: tiles can open from bootstrap state and survive expected update order
 - [ ] Validate stream shutdown behavior.
 Pass when: tiles close cleanly on disconnect or recycle.
 
-- [ ] Reuse or explicitly reject existing Gateway streaming and media code.
+- [x] Reuse or explicitly reject existing Gateway streaming and media code.
 Pass when: the implementation names the reuse points in `recording.rs`, `streaming.rs`, `ws.rs`, `crates/transport`, `video-streamer`, and `terminal-streamer`, or explains why they are insufficient.
 
 - [ ] Add stream provenance and isolation tests.

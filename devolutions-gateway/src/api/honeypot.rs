@@ -3,10 +3,13 @@ use std::convert::Infallible;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::Redirect;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use futures::StreamExt as _;
 use honeypot_contracts::error::ErrorCode;
 use serde::Deserialize;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio_stream::wrappers::BroadcastStream;
 use uuid::Uuid;
 
@@ -30,6 +33,7 @@ pub fn make_router<S>(state: DgwState) -> axum::Router<S> {
             "/jet/honeypot/session/{id}/stream-token",
             axum::routing::post(post_stream_token),
         )
+        .route("/jet/honeypot/session/{id}/stream", axum::routing::get(get_stream))
         .with_state(state)
 }
 
@@ -118,6 +122,75 @@ pub(crate) async fn post_stream_token(
             Err(map_stream_error(error))
         }
     }
+}
+
+#[derive(Deserialize)]
+pub(crate) struct HoneypotStreamQuery {
+    stream_id: String,
+}
+
+pub(crate) async fn get_stream(
+    State(state): State<DgwState>,
+    Path(session_id): Path<Uuid>,
+    Query(query): Query<HoneypotStreamQuery>,
+    _watch_scope: HoneypotWatchScope,
+    _stream_scope: HoneypotStreamReadScope,
+) -> Result<Redirect, HttpError> {
+    let HoneypotMode::Enabled(_) = &state.honeypot else {
+        return Err(HttpError::not_found().msg("honeypot mode is disabled"));
+    };
+
+    let session = state
+        .sessions
+        .get_session_info(session_id)
+        .await
+        .map_err(HttpError::internal().err())?
+        .ok_or_else(|| HttpError::not_found().msg("session not found"))?;
+    let stream = session
+        .honeypot
+        .as_ref()
+        .and_then(|metadata| metadata.stream.as_ref())
+        .ok_or_else(|| HttpError::conflict().msg("no active honeypot stream"))?;
+    if stream.state != honeypot_contracts::events::StreamState::Ready {
+        return Err(HttpError::conflict().msg("honeypot stream is not ready"));
+    }
+    let expected_stream_id = stream
+        .stream_id
+        .as_deref()
+        .ok_or_else(|| HttpError::conflict().msg("no active honeypot stream"))?;
+
+    if expected_stream_id != query.stream_id {
+        return Err(HttpError::not_found().msg("honeypot stream not found"));
+    }
+
+    let token_expires_at = stream
+        .token_expires_at
+        .as_deref()
+        .ok_or_else(|| HttpError::conflict().msg("honeypot stream token is unavailable"))?;
+    let token_expires_at = OffsetDateTime::parse(token_expires_at, &Rfc3339)
+        .map_err(HttpError::internal().with_msg("invalid honeypot stream expiry").err())?;
+
+    if token_expires_at <= OffsetDateTime::now_utc() {
+        return Err(HttpError::conflict().msg("honeypot stream token expired"));
+    }
+
+    let conf = state.conf_handle.get_conf();
+    let provisioner_key = conf
+        .provisioner_private_key
+        .as_ref()
+        .ok_or_else(|| HttpError::internal().msg("missing provisioner private key"))?;
+    let jrec_token = crate::token::generate_jrec_pull_token(provisioner_key, session_id, token_expires_at)
+        .map_err(HttpError::internal().with_msg("sign honeypot stream token").err())?;
+
+    let mut query_string = url::form_urlencoded::Serializer::new(String::new());
+    query_string.append_pair("sessionId", &session_id.to_string());
+    query_string.append_pair("token", &jrec_token);
+    query_string.append_pair("isActive", "true");
+
+    Ok(Redirect::temporary(&format!(
+        "/jet/jrec/play?{}",
+        query_string.finish()
+    )))
 }
 
 fn map_cursor_error(_: HoneypotCursorError) -> HttpError {

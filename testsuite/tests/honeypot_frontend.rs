@@ -63,8 +63,8 @@ async fn frontend_dashboard_renders_bootstrap_sessions() {
                 stream_state: StreamState::Ready,
                 stream_preview: Some(StreamPreview {
                     stream_id: "stream-1".to_owned(),
-                    transport: StreamTransport::Sse,
-                    stream_endpoint: "https://streams.example/session-1".to_owned(),
+                    transport: StreamTransport::Websocket,
+                    stream_endpoint: format!("/jet/honeypot/session/{session_id}/stream?stream_id=stream-1"),
                     token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
                 }),
             }],
@@ -143,8 +143,8 @@ async fn frontend_health_reports_ready_when_bootstrap_is_reachable() {
                 stream_state: StreamState::Ready,
                 stream_preview: Some(StreamPreview {
                     stream_id: "stream-health".to_owned(),
-                    transport: StreamTransport::Sse,
-                    stream_endpoint: "https://streams.example/health".to_owned(),
+                    transport: StreamTransport::Websocket,
+                    stream_endpoint: "/jet/honeypot/session/session-health/stream?stream_id=stream-health".to_owned(),
                     token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
                 }),
             }],
@@ -299,8 +299,8 @@ async fn frontend_focus_fragment_uses_stream_token_when_preview_is_missing() {
             session_id: session_id.clone(),
             vm_lease_id: "lease-2".to_owned(),
             stream_id: "stream-2".to_owned(),
-            stream_endpoint: "https://streams.example/focus".to_owned(),
-            transport: StreamTransport::Sse,
+            stream_endpoint: format!("/jet/honeypot/session/{session_id}/stream?stream_id=stream-2"),
+            transport: StreamTransport::Websocket,
             issued_at: "2026-03-26T12:00:00Z".to_owned(),
             expires_at: "2026-03-26T12:05:00Z".to_owned(),
         },
@@ -360,9 +360,10 @@ async fn frontend_focus_fragment_uses_stream_token_when_preview_is_missing() {
     let body = String::from_utf8(body).expect("decode focus fragment");
 
     assert!(status_line.contains("200"), "{status_line}");
-    assert!(body.contains("stream-2"));
-    assert!(body.contains("https://streams.example/focus"));
-    assert!(body.contains("Player shell only"));
+    assert!(body.contains("stream-2"), "{body}");
+    assert!(body.contains("<iframe"), "{body}");
+    assert!(body.contains("/jet/honeypot/session/"), "{body}");
+    assert!(body.contains("stream_id=stream-2&amp;token="), "{body}");
 
     let _ = child.start_kill();
     let _ = child.wait().await;

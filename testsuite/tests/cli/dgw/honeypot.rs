@@ -650,6 +650,83 @@ async fn honeypot_stream_token_route_rejects_mismatched_session_id() -> anyhow::
 }
 
 #[tokio::test]
+async fn honeypot_stream_route_is_disabled_by_default() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let session_id = Uuid::new_v4();
+    let path = format!("/jet/honeypot/session/{session_id}/stream?stream_id=stream-1");
+    let (status_line, _body) = send_http_request_with_retry(
+        config_handle.http_port(),
+        "GET",
+        &path,
+        HONEYPOT_WILDCARD_SCOPE_TOKEN,
+        None,
+        &[],
+    )
+    .await?;
+
+    assert!(status_line.contains("404"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_stream_route_rejects_unknown_session_when_enabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let session_id = Uuid::new_v4();
+    let path = format!("/jet/honeypot/session/{session_id}/stream?stream_id=stream-1");
+    let (status_line, _body) = send_http_request_with_retry(
+        config_handle.http_port(),
+        "GET",
+        &path,
+        HONEYPOT_WILDCARD_SCOPE_TOKEN,
+        None,
+        &[],
+    )
+    .await?;
+
+    assert!(status_line.contains("404"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn honeypot_session_terminate_route_accepts_honeypot_kill_scope_when_enabled() -> anyhow::Result<()> {
     let config_handle = DgwConfig::builder()
         .disable_token_validation(true)

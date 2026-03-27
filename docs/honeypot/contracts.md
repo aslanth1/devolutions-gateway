@@ -180,6 +180,10 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Stream tokens are short-lived and must not exceed `60` seconds.
 - The frontend may renew a stream token while the session is live without reconnecting the attacker.
 - The MVP stream source of truth is Gateway recording and streaming reuse because it preserves the existing streamer seam and avoids introducing a fourth runtime service.
+- The proxy-owned `stream_endpoint` is a browser-facing route such as `/jet/honeypot/session/{session_id}/stream?stream_id={stream_id}` rather than a raw capture-source reference.
+- That route must mint a just-in-time JREC pull token and redirect into `/jet/jrec/play?isActive=true`, which then connects to `/jet/jrec/shadow/{session_id}` for live observation.
+- For the Gateway recording-backed MVP, `transport = websocket` because the JREC player reaches live media through the existing shadow websocket seam while SSE remains only the session-state update transport.
+- Opening or refreshing the frontend focus view while the attacker session is still active should reconnect near the live tail rather than replaying the full recording from the beginning.
 - The tradeoff is higher latency and less capture flexibility than direct QEMU display capture, which is acceptable for the MVP freeze.
 
 ## `/jet/preflight` Credential Mapping Contract

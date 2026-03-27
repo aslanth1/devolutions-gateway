@@ -121,7 +121,7 @@ fn bootstrap_and_stream_token_round_trip() {
             stream_preview: Some(StreamPreview {
                 stream_id: "stream-1".to_owned(),
                 transport: StreamTransport::Websocket,
-                stream_endpoint: "/jet/honeypot/session/session-1/stream".to_owned(),
+                stream_endpoint: "/jet/honeypot/session/session-1/stream?stream_id=stream-1".to_owned(),
                 token_expires_at: "2026-03-26T00:01:00Z".to_owned(),
             }),
         }],
@@ -133,7 +133,7 @@ fn bootstrap_and_stream_token_round_trip() {
         session_id: "session-1".to_owned(),
         vm_lease_id: "lease-1".to_owned(),
         stream_id: "stream-1".to_owned(),
-        stream_endpoint: "/jet/honeypot/session/session-1/stream".to_owned(),
+        stream_endpoint: "/jet/honeypot/session/session-1/stream?stream_id=stream-1".to_owned(),
         transport: StreamTransport::Websocket,
         issued_at: "2026-03-26T00:00:00Z".to_owned(),
         expires_at: "2026-03-26T00:01:00Z".to_owned(),

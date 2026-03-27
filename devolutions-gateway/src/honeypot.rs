@@ -20,8 +20,8 @@ use time::format_description::well_known::Rfc3339;
 use tokio::sync::broadcast;
 
 use crate::config::{
-    Conf, HoneypotBrowserTransport, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotKillSwitchConf,
-    HoneypotStreamConf, HoneypotStreamSourceKind,
+    Conf, HoneypotControlPlaneConf, HoneypotFrontendConf, HoneypotKillSwitchConf, HoneypotStreamConf,
+    HoneypotStreamSourceKind,
 };
 use crate::credential::{AppCredentialMapping, CredentialBinding, CredentialProvisionRequest, CredentialStoreHandle};
 use crate::session::{
@@ -588,10 +588,10 @@ impl HoneypotRuntime {
         }
 
         let issued_at = now_rfc3339();
-        let stream_binding =
-            self.events
-                .lock()
-                .store_stream_binding(&session_id, endpoint.capture_source_ref, endpoint.expires_at);
+        let stream_binding = self
+            .events
+            .lock()
+            .store_stream_binding(&session_id, endpoint.expires_at);
 
         let response = StreamTokenResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -699,8 +699,8 @@ struct HoneypotStreamRuntime {
 
 impl HoneypotStreamRuntime {
     fn from_conf(conf: &HoneypotStreamConf) -> Self {
-        let transport = match conf.browser_transport {
-            HoneypotBrowserTransport::Sse => StreamTransport::Sse,
+        let transport = match conf.source_kind {
+            HoneypotStreamSourceKind::GatewayRecording => StreamTransport::Websocket,
         };
 
         Self {
@@ -1307,18 +1307,13 @@ impl HoneypotEventJournal {
         self.session_bindings.remove(session_id)
     }
 
-    fn store_stream_binding(
-        &mut self,
-        session_id: &str,
-        stream_endpoint: String,
-        token_expires_at: String,
-    ) -> HoneypotStreamBinding {
+    fn store_stream_binding(&mut self, session_id: &str, token_expires_at: String) -> HoneypotStreamBinding {
         let binding = self
             .session_bindings
             .get_mut(session_id)
             .expect("stream binding requires an active session lease");
         let stream = binding.stream.get_or_insert_with(HoneypotStreamBinding::new);
-        stream.stream_endpoint = stream_endpoint;
+        stream.stream_endpoint = honeypot_stream_endpoint(session_id, &stream.stream_id);
         stream.token_expires_at = token_expires_at;
         stream.clone()
     }
@@ -1424,6 +1419,13 @@ impl HoneypotStreamBinding {
             token_expires_at: String::new(),
         }
     }
+}
+
+fn honeypot_stream_endpoint(session_id: &str, stream_id: &str) -> String {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("stream_id", stream_id);
+
+    format!("/jet/honeypot/session/{session_id}/stream?{}", query.finish())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1989,6 +1991,14 @@ mod tests {
             .issue_stream_token(&session)
             .await
             .expect("issue stream token");
+        assert_eq!(token.transport, StreamTransport::Websocket);
+        assert_eq!(
+            token.stream_endpoint,
+            format!(
+                "/jet/honeypot/session/{}/stream?stream_id={}",
+                session.id, token.stream_id
+            )
+        );
 
         let session = SessionInfo {
             honeypot: harness.runtime.session_metadata_patch(session.id).map(|patch| {
@@ -2027,6 +2037,35 @@ mod tests {
                 .map(|preview| preview.stream_endpoint.as_str()),
             Some(token.stream_endpoint.as_str())
         );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn issue_stream_token_returns_proxy_owned_websocket_endpoint() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+        let token = harness
+            .runtime
+            .issue_stream_token(&session)
+            .await
+            .expect("issue stream token");
+
+        assert_eq!(token.transport, StreamTransport::Websocket);
+        assert_eq!(
+            token.stream_endpoint,
+            format!(
+                "/jet/honeypot/session/{}/stream?stream_id={}",
+                session.id, token.stream_id
+            )
+        );
+        assert_eq!(token.vm_lease_id, format!("lease-{}", session.id));
 
         harness.shutdown().await;
     }
@@ -2127,8 +2166,10 @@ mod tests {
                 stream: Some(HoneypotStreamMetadata {
                     state: StreamState::Ready,
                     stream_id: Some("stream-bootstrap".to_owned()),
-                    transport: Some(StreamTransport::Sse),
-                    stream_endpoint: Some("https://streams.example/bootstrap".to_owned()),
+                    transport: Some(StreamTransport::Websocket),
+                    stream_endpoint: Some(
+                        "/jet/honeypot/session/session-bootstrap/stream?stream_id=stream-bootstrap".to_owned(),
+                    ),
                     token_expires_at: Some("2030-01-01T00:00:00Z".to_owned()),
                 }),
                 terminal: None,

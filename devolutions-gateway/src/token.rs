@@ -10,7 +10,8 @@ use async_trait::async_trait;
 use devolutions_gateway_task::{ShutdownSignal, Task};
 use nonempty::NonEmpty;
 use parking_lot::Mutex;
-use picky::jose::jws::RawJws;
+use picky::jose::jws::{JwsAlg, RawJws};
+use picky::jose::jwt::CheckedJwtSig;
 use picky::key::{PrivateKey, PublicKey};
 use smol_str::SmolStr;
 use thiserror::Error;
@@ -557,7 +558,7 @@ fn jrec_default_reuse() -> ReconnectionPolicy {
     }
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct JrecTokenClaims {
     /// Association ID (= Session ID)
     pub jet_aid: Uuid,
@@ -579,6 +580,34 @@ pub struct JrecTokenClaims {
 
     /// JWT "JWT ID" claim, the unique ID for this token
     jti: Uuid,
+}
+
+pub fn generate_jrec_pull_token(
+    key: &PrivateKey,
+    session_id: Uuid,
+    expires_at: time::OffsetDateTime,
+) -> anyhow::Result<String> {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let exp = expires_at.unix_timestamp();
+
+    anyhow::ensure!(exp > now, "jrec pull token is already expired");
+
+    let claims = JrecTokenClaims {
+        jet_aid: session_id,
+        jet_rop: RecordingOperation::Pull,
+        jet_reuse: jrec_default_reuse(),
+        exp,
+        jti: Uuid::new_v4(),
+    };
+    let mut claims = serde_json::to_value(claims).context("serialize jrec pull token claims")?;
+    if let Some(claims) = claims.as_object_mut() {
+        claims.insert("iat".to_owned(), serde_json::json!(now));
+        claims.insert("nbf".to_owned(), serde_json::json!(now));
+    }
+
+    let jwt_sig = CheckedJwtSig::new_with_cty(JwsAlg::RS256, ContentType::Jrec.to_string(), claims);
+
+    jwt_sig.encode(key).context("sign jrec pull token")
 }
 
 // ----- KDC claims ----- //

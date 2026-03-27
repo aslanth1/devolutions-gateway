@@ -89,6 +89,13 @@ impl FrontendRuntime {
             .with_context(|| format!("decode proxy stream-token response for session {session_id}"))
     }
 
+    fn stream_player_url(&self, preview: &StreamPreview, operator_token: &str) -> anyhow::Result<String> {
+        let mut url = self.config.proxy.resolve_stream_url(&preview.stream_endpoint)?;
+        url.query_pairs_mut().append_pair("token", operator_token);
+
+        Ok(url.to_string())
+    }
+
     async fn open_events(&self, cursor: &str) -> anyhow::Result<reqwest::Response> {
         self.authorized(self.client.get(self.config.proxy.events_url(cursor)?))
             .send()
@@ -386,9 +393,10 @@ async fn session_handler(
         }
     };
 
-    let stream_preview = if let Some(preview) = &session.stream_preview {
-        Some(preview.clone())
-    } else {
+    let stream_preview = if matches!(session.state, SessionState::Assigned | SessionState::Ready)
+        || session.stream_state == StreamState::Ready
+        || session.stream_preview.is_some()
+    {
         match state.runtime.fetch_stream_token(&session.session_id).await {
             Ok(response) => Some(StreamPreview {
                 stream_id: response.stream_id,
@@ -398,12 +406,30 @@ async fn session_handler(
             }),
             Err(error) => {
                 tracing::warn!(session_id = %session.session_id, error = %error, "stream token request failed");
-                None
+                session.stream_preview.clone()
             }
         }
+    } else {
+        None
     };
+    let player_url =
+        stream_preview.as_ref().and_then(|preview| {
+            state.runtime.stream_player_url(preview, access.raw_token()).map_or_else(
+            |error| {
+                tracing::warn!(session_id = %session.session_id, error = %error, "stream player url build failed");
+                None
+            },
+            Some,
+        )
+        });
 
-    Html(render_focus_panel(&session, stream_preview.as_ref(), &access)).into_response()
+    Html(render_focus_panel(
+        &session,
+        stream_preview.as_ref(),
+        player_url.as_deref(),
+        &access,
+    ))
+    .into_response()
 }
 
 async fn kill_handler(
@@ -715,12 +741,20 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
     .stream-stage {{
       min-height: 18rem;
       display: grid;
-      place-items: center;
+      gap: 1rem;
       border-radius: 1rem;
       background: linear-gradient(135deg, rgba(13, 106, 115, 0.12), rgba(197, 77, 32, 0.14));
       border: 1px solid rgba(13, 106, 115, 0.2);
       text-align: center;
       padding: 1.5rem;
+    }}
+    .stream-frame {{
+      width: 100%;
+      min-height: 34rem;
+      border: 0;
+      border-radius: 1rem;
+      background: #17130f;
+      box-shadow: 0 1.2rem 2.4rem rgba(23, 19, 15, 0.18);
     }}
     .focus-note {{
       margin: 0;
@@ -902,7 +936,7 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
             format!(
                 "<div class=\"tile-meta\"><strong>Stream</strong><code>{}</code><span>{}</span></div>",
                 escape_html(&preview.stream_id),
-                escape_html(&preview.stream_endpoint)
+                escape_html(stream_transport_label(preview.transport))
             )
         })
         .unwrap_or_else(|| {
@@ -938,6 +972,7 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
 fn render_focus_panel(
     session: &BootstrapSession,
     stream_preview: Option<&StreamPreview>,
+    player_url: Option<&str>,
     access: &OperatorAccess,
 ) -> String {
     let session_id = escape_html(&session.session_id);
@@ -945,20 +980,32 @@ fn render_focus_panel(
     let stream_label = escape_html(stream_state_label(session.stream_state));
     let focus_actions = render_focus_action_buttons(session, access);
     let body = if let Some(preview) = stream_preview {
+        let player = player_url.map_or_else(
+            || {
+                "<div class=\"focus-note\">The frontend could not resolve a live player URL for this session yet.</div>"
+                    .to_owned()
+            },
+            |url| {
+                format!(
+                    "<iframe class=\"stream-frame\" src=\"{}\" loading=\"lazy\"></iframe>",
+                    escape_html(url)
+                )
+            },
+        );
         format!(
             r#"<div class="stream-stage">
+  {player}
   <div>
     <div class="badge">{transport}</div>
     <h2>Session {session_id}</h2>
-    <p class="focus-note">Player shell only for now. The stream transport endpoint is ready for later Milestone 4 integration.</p>
+    <p class="focus-note">Refresh reconnects near the live tail while the attacker session is still active.</p>
     <p><strong>Stream ID</strong><br><code>{stream_id}</code></p>
-    <p><strong>Endpoint</strong><br><code>{stream_endpoint}</code></p>
     <p><strong>Token expires</strong><br><code>{token_expires_at}</code></p>
   </div>
 </div>"#,
+            player = player,
             transport = escape_html(stream_transport_label(preview.transport)),
             stream_id = escape_html(&preview.stream_id),
-            stream_endpoint = escape_html(&preview.stream_endpoint),
             token_expires_at = escape_html(&preview.token_expires_at),
         )
     } else {
@@ -1223,20 +1270,22 @@ mod tests {
         };
         let preview = StreamPreview {
             stream_id: "stream-1".to_owned(),
-            transport: StreamTransport::Sse,
-            stream_endpoint: "https://streams.example/session-1".to_owned(),
+            transport: StreamTransport::Websocket,
+            stream_endpoint: "/jet/honeypot/session/session-1/stream?stream_id=stream-1".to_owned(),
             token_expires_at: "2026-03-26T12:00:00Z".to_owned(),
         };
 
         let html = render_focus_panel(
             &session,
             Some(&preview),
+            Some("http://127.0.0.1:7171/jet/honeypot/session/session-1/stream?stream_id=stream-1&token=operator-token"),
             &test_access("operator-token", AccessScope::Wildcard),
         );
 
         assert!(html.contains("stream-1"));
-        assert!(html.contains("https://streams.example/session-1"));
-        assert!(html.contains("Player shell only"));
+        assert!(html.contains("iframe"));
+        assert!(html.contains("stream_id=stream-1&amp;token=operator-token"));
+        assert!(html.contains("Refresh reconnects near the live tail"));
         assert!(html.contains("Kill session"));
     }
 }

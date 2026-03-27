@@ -70,6 +70,14 @@ impl ProxyConfig {
         self.url_for_path(&path)
     }
 
+    pub fn resolve_stream_url(&self, endpoint: &str) -> anyhow::Result<Url> {
+        if let Ok(url) = Url::parse(endpoint) {
+            return Ok(url);
+        }
+
+        self.url_for_path(endpoint)
+    }
+
     pub fn terminate_url(&self, session_id: &str) -> anyhow::Result<Url> {
         let path = self.terminate_path_template.replace("{session_id}", session_id);
 
