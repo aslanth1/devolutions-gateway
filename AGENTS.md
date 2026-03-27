@@ -411,7 +411,7 @@ Pass when: CPU, memory, disk, outbound routing, control sockets, and emergency s
 - [x] Add secret storage for backend credentials with a replaceable adapter.
 Pass when: credentials are never printed to logs and the adapter boundary is testable.
 
-- [ ] Add a gold-image acceptance test.
+- [x] Add a gold-image acceptance test.
 Pass when: a newly produced image boots, reaches a known-ready signal, accepts RDP, exposes any required control channels, and tears down without leaked host artifacts.
 
 ## Milestone 2: Proxy Honeypot Mode

@@ -89,6 +89,22 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_release.rs` adds supporting POSIX host depth by checking the three-service runtime artifact, permission, and redaction contract in `posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted`.
 - `testsuite/tests/honeypot_control_plane.rs` includes `control_plane_external_client_interoperability_smoke_uses_xfreerdp` as an optional supplemental Rust `lab-e2e` lane when explicit external-client lab inputs are configured.
 
+## Gold Image Acceptance Evidence
+
+- `AGENTS.md` pass row `Add a gold-image acceptance test.` is satisfied by the Rust `lab-e2e` acceptance lane in `testsuite/tests/honeypot_control_plane.rs`.
+- `control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly` validates one attested Windows 11 Pro x64 image from the configured interop image store, acquires a lease, verifies live RDP readiness with `xfreerdp +auth-only`, confirms required runtime control-channel artifacts, and then proves recycle removes the active snapshot, runtime dir, overlay, pid file, and QMP socket.
+- This acceptance lane is intentionally explicit and fail-closed behind the `lab-e2e` gate plus interop env prerequisites, so it does not run accidentally in the default contract-tier suite.
+
+## Tiny11 Production And Recycle Evidence
+
+- `AGENTS.md` row `The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.` is stricter than a compile-only or skipped lane.
+- That row is only complete after the Rust `lab-e2e` path runs without skip against a prepared Tiny11-derived interop image store and produces live evidence on the current workstation or lab host.
+- The positive-path proof anchor is `control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly`, which acquires one attested image-backed lease, verifies live RDP readiness with `xfreerdp +auth-only`, and proves recycle removes lease-scoped runtime artifacts.
+- The repeatability proof anchor is `control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_leaking_runtime_artifacts`, which runs that same acquire, RDP, recycle, and cleanup cycle twice against one control-plane instance and requires the pool to return to `Ready` after each cycle.
+- The independent-client proof anchor is `control_plane_external_client_interoperability_smoke_uses_xfreerdp`, which exercises the same prepared image store through an external RDP client flow instead of relying only on control-plane-local readiness checks.
+- The fail-closed negative control is `control_plane_reports_host_unavailable_when_base_image_digest_mismatches_on_acquire`, which proves acquire rejects a tampered trusted-image digest before lease use.
+- If the local machine does not have a prepared Tiny11-derived interop image store plus the explicit `DGW_HONEYPOT_INTEROP_*` inputs, this row must remain unchecked even when the gated tests compile and skip cleanly.
+
 ## Host Resource And Network Control Evidence
 
 - `AGENTS.md` pass row `Add host-side resource and network controls.` is satisfied by the combined control-plane unit coverage and contract-tier integration coverage.

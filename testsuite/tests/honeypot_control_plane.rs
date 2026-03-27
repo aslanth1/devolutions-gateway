@@ -1,5 +1,6 @@
 use std::fs;
 
+use anyhow::Context as _;
 use honeypot_contracts::control_plane::{
     AcquireVmRequest, AcquireVmResponse, AttackerProtocol, PoolState, RecycleState, RecycleVmRequest,
     RecycleVmResponse, ReleaseState, ReleaseVmRequest, ReleaseVmResponse, ResetState, ResetVmRequest, ResetVmResponse,
@@ -2325,6 +2326,303 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
+        eprintln!("skipping lab-e2e gold-image acceptance test: {error:#}");
+        return;
+    }
+
+    if !external_client_interop_env_is_configured() {
+        eprintln!(
+            "skipping lab-e2e gold-image acceptance test: set {} {} and {}",
+            HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
+        );
+        return;
+    }
+
+    let interop = load_external_client_interop_config().expect("load gold-image interop config");
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let data_dir = tempdir.path().join("data");
+    let lease_store = tempdir.path().join("leases");
+    let quarantine_store = tempdir.path().join("quarantine");
+    let qmp_dir = tempdir.path().join("qmp");
+    let qga_dir = tempdir.path().join("qga");
+    let secret_dir = tempdir.path().join("secrets");
+
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    fs::create_dir_all(&lease_store).expect("create lease store");
+    fs::create_dir_all(&quarantine_store).expect("create quarantine store");
+    fs::create_dir_all(&qmp_dir).expect("create qmp dir");
+    fs::create_dir_all(&qga_dir).expect("create qga dir");
+    fs::create_dir_all(&secret_dir).expect("create secret dir");
+    write_backend_credential_store(
+        &secret_dir.join("backend-credentials.json"),
+        &interop.rdp_username,
+        &interop.rdp_password,
+        interop.rdp_domain.as_deref(),
+    );
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(data_dir)
+        .image_store(interop.image_store.clone())
+        .manifest_dir(interop.manifest_dir.clone())
+        .lease_store(lease_store.clone())
+        .quarantine_store(quarantine_store)
+        .qmp_dir(qmp_dir.clone())
+        .qga_dir(qga_dir)
+        .secret_dir(secret_dir)
+        .kvm_path(interop.kvm_path.clone())
+        .enable_guest_agent(false)
+        .lifecycle_driver("process")
+        .stop_timeout_secs(10)
+        .qemu_binary_path(interop.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    run_gold_image_acceptance_cycle(
+        port,
+        &interop,
+        &lease_store,
+        &qmp_dir,
+        "session-gold-image-acceptance",
+        "gold-image-acceptance-1",
+    )
+    .await
+    .expect("run gold-image acceptance cycle");
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_leaking_runtime_artifacts() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
+        eprintln!("skipping lab-e2e repeated gold-image acceptance test: {error:#}");
+        return;
+    }
+
+    if !external_client_interop_env_is_configured() {
+        eprintln!(
+            "skipping lab-e2e repeated gold-image acceptance test: set {} {} and {}",
+            HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
+        );
+        return;
+    }
+
+    let interop = load_external_client_interop_config().expect("load repeated gold-image interop config");
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let data_dir = tempdir.path().join("data");
+    let lease_store = tempdir.path().join("leases");
+    let quarantine_store = tempdir.path().join("quarantine");
+    let qmp_dir = tempdir.path().join("qmp");
+    let qga_dir = tempdir.path().join("qga");
+    let secret_dir = tempdir.path().join("secrets");
+
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    fs::create_dir_all(&lease_store).expect("create lease store");
+    fs::create_dir_all(&quarantine_store).expect("create quarantine store");
+    fs::create_dir_all(&qmp_dir).expect("create qmp dir");
+    fs::create_dir_all(&qga_dir).expect("create qga dir");
+    fs::create_dir_all(&secret_dir).expect("create secret dir");
+    write_backend_credential_store(
+        &secret_dir.join("backend-credentials.json"),
+        &interop.rdp_username,
+        &interop.rdp_password,
+        interop.rdp_domain.as_deref(),
+    );
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(data_dir)
+        .image_store(interop.image_store.clone())
+        .manifest_dir(interop.manifest_dir.clone())
+        .lease_store(lease_store.clone())
+        .quarantine_store(quarantine_store)
+        .qmp_dir(qmp_dir.clone())
+        .qga_dir(qga_dir)
+        .secret_dir(secret_dir)
+        .kvm_path(interop.kvm_path.clone())
+        .enable_guest_agent(false)
+        .lifecycle_driver("process")
+        .stop_timeout_secs(10)
+        .qemu_binary_path(interop.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let first_lease_id = run_gold_image_acceptance_cycle(
+        port,
+        &interop,
+        &lease_store,
+        &qmp_dir,
+        "session-gold-image-repeat-1",
+        "gold-image-repeat-1",
+    )
+    .await
+    .expect("run first repeated gold-image acceptance cycle");
+    let second_lease_id = run_gold_image_acceptance_cycle(
+        port,
+        &interop,
+        &lease_store,
+        &qmp_dir,
+        "session-gold-image-repeat-2",
+        "gold-image-repeat-2",
+    )
+    .await
+    .expect("run second repeated gold-image acceptance cycle");
+
+    assert_ne!(
+        first_lease_id, second_lease_id,
+        "each gold-image acceptance cycle should use a distinct lease id",
+    );
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+async fn run_gold_image_acceptance_cycle(
+    port: u16,
+    interop: &ExternalClientInteropConfig,
+    lease_store: &std::path::Path,
+    qmp_dir: &std::path::Path,
+    session_id: &str,
+    request_suffix: &str,
+) -> anyhow::Result<String> {
+    let acquire_request =
+        acquire_request_with_pool_and_timeout(session_id, &interop.requested_pool, interop.ready_timeout_secs);
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request)
+            .await
+            .with_context(|| format!("acquire gold-image acceptance lease for {session_id}"))?;
+    let active_snapshot_path = lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    let runtime_dir = lease_store.join(&acquire.vm_lease_id);
+    let overlay_path = runtime_dir.join("overlay.qcow2");
+    let pid_file_path = runtime_dir.join("qemu.pid");
+    let qmp_socket_path = qmp_dir.join(format!("{}.sock", acquire.vm_lease_id));
+
+    assert_eq!(acquire.guest_rdp_addr, "127.0.0.1");
+    wait_for_xfreerdp_auth_only(
+        interop,
+        &acquire.guest_rdp_addr,
+        acquire.guest_rdp_port,
+        std::time::Duration::from_secs(u64::from(interop.ready_timeout_secs)),
+    )
+    .with_context(|| format!("xfreerdp auth-only smoke for {session_id}"))?;
+
+    assert!(
+        active_snapshot_path.is_file(),
+        "expected active lease snapshot at {}",
+        active_snapshot_path.display()
+    );
+    assert!(overlay_path.is_file(), "expected overlay at {}", overlay_path.display());
+    assert!(
+        pid_file_path.is_file(),
+        "expected pid file at {}",
+        pid_file_path.display()
+    );
+    assert!(
+        qmp_socket_path.exists(),
+        "expected qmp socket at {}",
+        qmp_socket_path.display()
+    );
+    let qemu_pid = read_pid_file(&pid_file_path);
+    assert!(
+        process_is_running(qemu_pid),
+        "expected qemu process {qemu_pid} to be running before recycle",
+    );
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: format!("release-{request_suffix}"),
+            session_id: session_id.to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .with_context(|| format!("release gold-image acceptance lease for {session_id}"))?;
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let (_, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: format!("recycle-{request_suffix}"),
+            session_id: session_id.to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+            force_quarantine: false,
+        },
+    )
+    .await
+    .with_context(|| format!("recycle gold-image acceptance lease for {session_id}"))?;
+    assert_eq!(recycle.recycle_state, RecycleState::Recycled);
+    assert_eq!(recycle.pool_state, PoolState::Ready);
+
+    wait_for_process_exit(qemu_pid).await;
+
+    assert!(
+        !active_snapshot_path.exists(),
+        "active lease snapshot should be removed after recycle: {}",
+        active_snapshot_path.display()
+    );
+    assert!(
+        !runtime_dir.exists(),
+        "runtime dir should be removed after recycle: {}",
+        runtime_dir.display()
+    );
+    assert!(
+        !overlay_path.exists(),
+        "overlay should be removed after recycle: {}",
+        overlay_path.display()
+    );
+    assert!(
+        !pid_file_path.exists(),
+        "pid file should be removed after recycle: {}",
+        pid_file_path.display()
+    );
+    assert!(
+        !qmp_socket_path.exists(),
+        "qmp socket should be removed after recycle: {}",
+        qmp_socket_path.display()
+    );
+
+    let health = read_authed_health_response(port)
+        .await
+        .with_context(|| format!("read health response after recycle for {session_id}"))?;
+    assert_eq!(health.service_state, ServiceState::Ready);
+    assert_eq!(health.active_lease_count, 0);
+    assert_eq!(health.quarantined_lease_count, 0);
+
+    Ok(acquire.vm_lease_id)
 }
 
 #[cfg(unix)]
