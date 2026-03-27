@@ -627,6 +627,86 @@ pub struct Row706EvidenceEnvelope {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Row706AttemptOutcomeKind {
+    Verified,
+    BlockedPrereq,
+    FailedRuntime,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row706AttemptOutcome {
+    pub run_id: String,
+    pub kind: Row706AttemptOutcomeKind,
+    pub detail: Option<String>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Row706AttemptDisposition {
+    ReadyForVerification,
+    BlockedPrereq { detail: String },
+}
+
+#[cfg(unix)]
+impl Row706AttemptOutcome {
+    fn verified(run_id: &str) -> Self {
+        Self {
+            run_id: run_id.to_owned(),
+            kind: Row706AttemptOutcomeKind::Verified,
+            detail: None,
+        }
+    }
+
+    fn blocked_prereq(run_id: &str, detail: impl Into<String>) -> Self {
+        Self {
+            run_id: run_id.to_owned(),
+            kind: Row706AttemptOutcomeKind::BlockedPrereq,
+            detail: Some(detail.into()),
+        }
+    }
+
+    fn failed_runtime(run_id: &str, detail: impl Into<String>) -> Self {
+        Self {
+            run_id: run_id.to_owned(),
+            kind: Row706AttemptOutcomeKind::FailedRuntime,
+            detail: Some(detail.into()),
+        }
+    }
+}
+
+#[cfg(unix)]
+pub fn attempt_row706_evidence_run<F>(root: &Path, run_id: &str, execute: F) -> Row706AttemptOutcome
+where
+    F: FnOnce(&Path, &str) -> anyhow::Result<Row706AttemptDisposition>,
+{
+    if let Err(error) = row706_begin_run(root, run_id) {
+        return Row706AttemptOutcome::failed_runtime(run_id, format!("{error:#}"));
+    }
+
+    let disposition = match execute(root, run_id) {
+        Ok(disposition) => disposition,
+        Err(error) => return Row706AttemptOutcome::failed_runtime(run_id, format!("{error:#}")),
+    };
+
+    match disposition {
+        Row706AttemptDisposition::BlockedPrereq { detail } => Row706AttemptOutcome::blocked_prereq(run_id, detail),
+        Row706AttemptDisposition::ReadyForVerification => match row706_complete_run(root, run_id) {
+            Ok(true) => match verify_row706_evidence_envelope(root, run_id) {
+                Ok(_) => Row706AttemptOutcome::verified(run_id),
+                Err(error) => Row706AttemptOutcome::failed_runtime(run_id, format!("{error:#}")),
+            },
+            Ok(false) => Row706AttemptOutcome::failed_runtime(
+                run_id,
+                format!("row706 run {run_id} did not emit all required anchors"),
+            ),
+            Err(error) => Row706AttemptOutcome::failed_runtime(run_id, format!("{error:#}")),
+        },
+    }
+}
+
+#[cfg(unix)]
 pub fn row706_default_evidence_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

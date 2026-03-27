@@ -13,7 +13,8 @@ use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL,
     ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP, ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
-    ROW706_EVIDENCE_SCHEMA_VERSION, Row706AnchorResult, Row706AnchorStatus, fake_qemu_bin_path, find_unused_port,
+    ROW706_EVIDENCE_SCHEMA_VERSION, Row706AnchorResult, Row706AnchorStatus, Row706AttemptDisposition,
+    Row706AttemptOutcomeKind, attempt_row706_evidence_run, fake_qemu_bin_path, find_unused_port,
     get_json_response_with_bearer_token, honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd,
     load_honeypot_interop_store_evidence, post_json_response_with_bearer_token, read_health_response_with_bearer_token,
     row706_begin_run, row706_complete_run, row706_default_evidence_dir, send_http_request,
@@ -3374,6 +3375,130 @@ fn control_plane_row706_evidence_envelope_rejects_symlinked_run_dir() {
     let error = row706_begin_run(&evidence_dir, &run_id).expect_err("symlinked run dir should fail");
     let rendered_error = format!("{error:#}");
     assert!(rendered_error.contains("real directory"), "{rendered_error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_attempt_reports_blocked_prereq_when_required_env_is_missing() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    let outcome = attempt_row706_evidence_run(&evidence_dir, &run_id, |_root, _run_id| {
+        let required_env = [
+            HONEYPOT_INTEROP_IMAGE_STORE_ENV,
+            HONEYPOT_INTEROP_RDP_USERNAME_ENV,
+            HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
+            "DGW_HONEYPOT_INTEROP_TEST_SENTINEL",
+        ];
+        let missing = required_env
+            .into_iter()
+            .filter(|name| std::env::var_os(name).is_none())
+            .collect::<Vec<_>>();
+
+        Ok(Row706AttemptDisposition::BlockedPrereq {
+            detail: format!("missing required row706 interop env: {}", missing.join(", ")),
+        })
+    });
+
+    assert_eq!(outcome.kind, Row706AttemptOutcomeKind::BlockedPrereq);
+    let detail = outcome.detail.expect("blocked prereq should carry detail");
+    assert!(detail.contains("missing required row706 interop env"), "{detail}");
+    assert!(
+        detail.contains(HONEYPOT_INTEROP_IMAGE_STORE_ENV) || detail.contains("DGW_HONEYPOT_INTEROP_TEST_SENTINEL"),
+        "{detail}"
+    );
+
+    let error = verify_row706_evidence_envelope(&evidence_dir, &run_id)
+        .expect_err("blocked prereq attempt should not verify as complete row706 evidence");
+    let rendered_error = format!("{error:#}");
+    assert!(rendered_error.contains("must be complete"), "{rendered_error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_attempt_reports_failed_runtime_when_anchor_execution_errors() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let image_store_root = tempdir.path().join("images");
+    let base_image_path = image_store_root.join("tiny11.qcow2");
+
+    fs::create_dir_all(&image_store_root).expect("create image store root");
+    fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
+
+    let outcome = attempt_row706_evidence_run(&evidence_dir, &run_id, |root, run_id| {
+        write_row706_anchor_result(
+            root,
+            run_id,
+            &Row706AnchorResult {
+                schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+                run_id: run_id.to_owned(),
+                anchor_id: ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE.to_owned(),
+                executed: true,
+                status: Row706AnchorStatus::Passed,
+                attestation_ref: Some("attestation://gold-image-0".to_owned()),
+                base_image_path: Some(base_image_path.clone()),
+                image_store_root: Some(image_store_root.clone()),
+                detail: Some("gold image acceptance passed".to_owned()),
+            },
+        )
+        .expect("write acceptance fragment");
+
+        Err(anyhow::anyhow!("xfreerdp handshake failed during row706 attempt"))
+    });
+
+    assert_eq!(outcome.kind, Row706AttemptOutcomeKind::FailedRuntime);
+    let detail = outcome.detail.expect("failed runtime should carry detail");
+    assert!(detail.contains("xfreerdp handshake failed"), "{detail}");
+
+    let error = verify_row706_evidence_envelope(&evidence_dir, &run_id)
+        .expect_err("failed runtime attempt should not verify as complete row706 evidence");
+    let rendered_error = format!("{error:#}");
+    assert!(rendered_error.contains("must be complete"), "{rendered_error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_attempt_reports_verified_for_complete_consistent_run() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let image_store_root = tempdir.path().join("images");
+    let base_image_path = image_store_root.join("tiny11.qcow2");
+
+    fs::create_dir_all(&image_store_root).expect("create image store root");
+    fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
+
+    let outcome = attempt_row706_evidence_run(&evidence_dir, &run_id, |root, run_id| {
+        write_row706_positive_test_fragments(root, run_id, &base_image_path, &image_store_root);
+        write_row706_anchor_result(
+            root,
+            run_id,
+            &Row706AnchorResult {
+                schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+                run_id: run_id.to_owned(),
+                anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
+                executed: true,
+                status: Row706AnchorStatus::Passed,
+                attestation_ref: None,
+                base_image_path: None,
+                image_store_root: Some(image_store_root.clone()),
+                detail: Some("negative control passed".to_owned()),
+            },
+        )
+        .expect("write negative control fragment");
+
+        Ok(Row706AttemptDisposition::ReadyForVerification)
+    });
+
+    assert_eq!(outcome.kind, Row706AttemptOutcomeKind::Verified);
+    assert_eq!(outcome.detail, None);
+
+    let envelope = verify_row706_evidence_envelope(&evidence_dir, &run_id).expect("verify completed row706 attempt");
+    assert_eq!(envelope.attestation_ref, "attestation://gold-image-0");
+    assert_eq!(envelope.base_image_path, base_image_path);
+    assert_eq!(envelope.image_store_root, image_store_root);
 }
 
 #[cfg(unix)]
