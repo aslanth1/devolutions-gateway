@@ -450,6 +450,80 @@ fn downgraded_frontend_contract_compatibility_is_allowed() {
 }
 
 #[test]
+fn downgraded_frontend_compose_compatibility_is_allowed() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let selection = ServiceVersionSelection {
+        control_plane: ImageSlot::Current,
+        proxy: ImageSlot::Current,
+        frontend: ImageSlot::Previous,
+    };
+    let compose_data = compose_document_for_selection(&lockfile, selection);
+
+    validate_honeypot_compose_document_for_selection(
+        &compose_data,
+        &lockfile,
+        selection,
+        ServiceSchemaVersions::default(),
+    )
+    .expect("current/current/previous compose should stay compatible with current peers");
+}
+
+#[test]
+fn downgraded_frontend_compose_compatibility_rejects_unsupported_previous_pairings() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let selection = ServiceVersionSelection {
+        control_plane: ImageSlot::Current,
+        proxy: ImageSlot::Previous,
+        frontend: ImageSlot::Previous,
+    };
+    let compose_data = compose_document_for_selection(&lockfile, selection);
+
+    let error = validate_honeypot_compose_document_for_selection(
+        &compose_data,
+        &lockfile,
+        selection,
+        ServiceSchemaVersions::default(),
+    )
+    .expect_err("current/previous/previous compose must be rejected");
+
+    assert!(
+        format!("{error:#}").contains("frontend previous requires proxy current"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn downgraded_frontend_compose_compatibility_rejects_schema_version_drift() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let selection = ServiceVersionSelection {
+        control_plane: ImageSlot::Current,
+        proxy: ImageSlot::Current,
+        frontend: ImageSlot::Previous,
+    };
+    let compose_data = compose_document_for_selection(&lockfile, selection);
+
+    let error = validate_honeypot_compose_document_for_selection(
+        &compose_data,
+        &lockfile,
+        selection,
+        ServiceSchemaVersions {
+            control_plane: 1,
+            proxy: 1,
+            frontend: 2,
+        },
+    )
+    .expect_err("schema drift across frontend/proxy should be rejected");
+
+    assert!(
+        format!("{error:#}").contains("frontend schema_version 2 is incompatible with proxy schema_version 1"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn downgraded_service_contract_compatibility_rejects_unsupported_previous_pairings() {
     let error = validate_mixed_version_contract_compatibility(
         ServiceVersionSelection {

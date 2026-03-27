@@ -582,7 +582,7 @@ Pass when: the test boots `previous/current/current` and verifies the downgraded
 - [x] Add a downgraded `proxy` compose compatibility test.
 Pass when: the test boots `current/previous/current` and verifies the downgraded `proxy` can rejoin two current peers safely.
 
-- [ ] Add a downgraded `frontend` compose compatibility test.
+- [x] Add a downgraded `frontend` compose compatibility test.
 Pass when: the test boots `current/current/previous` and verifies the downgraded `frontend` can rejoin two current peers safely.
 
 ### Milestone 5c: Contract And Lab Harness Validation
