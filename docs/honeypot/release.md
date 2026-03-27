@@ -4,7 +4,7 @@
 
 This document is the source of truth for registry namespaces, tag policy, digest promotion, lockfile authority, and rollback behavior for the honeypot fork.
 It carries the release details required by `DF-07` in [decisions.md](decisions.md).
-It works with [deployment.md](deployment.md) and [contracts.md](contracts.md).
+It works with [deployment.md](deployment.md), [contracts.md](contracts.md), and [testing.md](testing.md).
 It must not be read as permission to add a fourth runtime service, a second release policy, or floating tags as the rollout source of truth.
 
 ## Canonical Image Families
@@ -83,6 +83,18 @@ It must not be read as permission to add a fourth runtime service, a second rele
 - A single-service rollback is preferred when the compatibility rules in [contracts.md](contracts.md) allow the mixed-version stack.
 - A full-stack rollback is required when the target downgrade would violate the allowed compatibility window.
 - After a successful rollback, the runtime stack still remains pinned by digest and does not switch to floating tags.
+
+## Mixed-Version Validation Evidence
+
+- The compatibility authority for mixed-version peers lives in [contracts.md](contracts.md) under `Compatibility Rules`.
+- The documented supported downgrade directions are `previous/current/current`, `current/previous/current`, and `current/current/previous`.
+- The documented supported restore directions are the symmetric `previous -> current` return to `current/current/current` for one adjacent release when the major `schema_version` remains compatible.
+- `testsuite/tests/honeypot_release.rs` validates those downgraded contract and compose combinations with `downgraded_control_plane_*`, `downgraded_proxy_*`, and `downgraded_frontend_*` coverage.
+- The same test file rejects unsupported mixed-version pairings and schema drift with `downgraded_service_contract_compatibility_rejects_unsupported_previous_pairings`, `downgraded_*_compose_compatibility_rejects_unsupported_previous_pairings`, and the matching `*_rejects_schema_version_drift` cases.
+- The same test file validates the restore path with `restored_control_plane_contract_compatibility_is_allowed`, `restored_proxy_contract_compatibility_is_allowed`, and `restored_frontend_contract_compatibility_is_allowed`.
+- The same test file rejects unsupported restore starting points and restore-time schema drift with `restored_service_contract_compatibility_rejects_service_that_is_not_previous`, `restored_service_contract_compatibility_rejects_unsupported_starting_point`, and `restored_service_contract_compatibility_rejects_schema_version_drift`.
+- Host-smoke rollback drills in the same file validate live mixed-version rollback and recovery for `control-plane`, `proxy`, and `frontend`.
+- Rejoin recovery tests in the same file validate that a downgraded or restored service rejoins current peers cleanly before rollback is treated as safe.
 
 ## Relationship To Future Files
 

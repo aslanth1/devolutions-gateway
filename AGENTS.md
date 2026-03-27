@@ -701,7 +701,7 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 - [x] The three honeypot services each have their own Docker image, build context, healthcheck, and runtime config contract.
 - [x] Current and previous image digests are pinned for `control-plane`, `proxy`, and `frontend`, and rollback does not require rebuilding.
 - [x] `honeypot/docker/images.lock` has a documented schema for `control-plane`, `proxy`, and `frontend`, and release or test paths reject floating tags.
-- [ ] Mixed-version `current` or `previous` service combinations are documented and validated before rollback is considered safe.
+- [x] Mixed-version `current` or `previous` service combinations are documented and validated before rollback is considered safe.
 - [x] The test plan is split into `contract`, `host-smoke`, and `lab-e2e` tiers.
 - [ ] The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.
 - [ ] The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.
