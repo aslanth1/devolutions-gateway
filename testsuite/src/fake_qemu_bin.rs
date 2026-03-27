@@ -5,6 +5,7 @@ fn main() {
 
 #[cfg(unix)]
 fn main() -> anyhow::Result<()> {
+    use std::net::TcpListener;
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -34,12 +35,18 @@ fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let qmp_socket_path = qmp_socket_path(&args).ok_or_else(|| anyhow::anyhow!("missing -qmp socket path"))?;
     let qga_socket_path = qga_socket_path(&args);
+    let rdp_listener = if mode.contains("rdp-ready") {
+        rdp_forward_listener(&args).transpose()?
+    } else {
+        None
+    };
 
     let mut listeners = Vec::new();
     listeners.push(bind_socket(&qmp_socket_path)?);
     if let Some(qga_socket_path) = &qga_socket_path {
         listeners.push(bind_socket(qga_socket_path)?);
     }
+    let _rdp_listener: Option<TcpListener> = rdp_listener;
 
     loop {
         // Exit if the control-plane parent changed so the helper never outlives the test harness.
@@ -84,6 +91,32 @@ fn qga_socket_path(args: &[String]) -> Option<std::path::PathBuf> {
             .split(',')
             .find_map(|field| field.strip_prefix("path=").map(std::path::PathBuf::from))
     })
+}
+
+#[cfg(unix)]
+fn rdp_forward_listener(args: &[String]) -> Option<anyhow::Result<std::net::TcpListener>> {
+    find_arg_value(args, "-netdev")
+        .and_then(parse_hostfwd_loopback_addr)
+        .map(bind_tcp_listener)
+}
+
+#[cfg(unix)]
+fn parse_hostfwd_loopback_addr(value: &str) -> Option<std::net::SocketAddrV4> {
+    use std::net::{Ipv4Addr, SocketAddrV4};
+
+    value.split(',').find_map(|field| {
+        let hostfwd = field.strip_prefix("hostfwd=tcp:")?;
+        let (host_bind, _guest_bind) = hostfwd.split_once("-:")?;
+        let (host, port) = host_bind.rsplit_once(':')?;
+        let host: Ipv4Addr = host.parse().ok()?;
+        let port: u16 = port.parse().ok()?;
+        Some(SocketAddrV4::new(host, port))
+    })
+}
+
+#[cfg(unix)]
+fn bind_tcp_listener(addr: std::net::SocketAddrV4) -> anyhow::Result<std::net::TcpListener> {
+    Ok(std::net::TcpListener::bind(addr)?)
 }
 
 #[cfg(unix)]

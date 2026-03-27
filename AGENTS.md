@@ -593,7 +593,7 @@ Pass when: the test layout remains discoverable and any new harness has a writte
 - [x] Add contract tests for config parsing, schema versioning, and event payloads.
 Pass when: honeypot config and event contracts fail fast on incompatible changes without requiring the QEMU lab.
 
-- [ ] Add a Rust-driven lab harness startup and readiness test for QEMU lifecycle on a POSIX host.
+- [x] Add a Rust-driven lab harness startup and readiness test for QEMU lifecycle on a POSIX host.
 Pass when: tests can start the lab and wait for RDP readiness without manual intervention.
 
 - [ ] Add a Rust-driven lab harness teardown cleanliness test.
@@ -695,7 +695,7 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 
 ## Verification Matrix
 
-- [ ] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
+- [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
 - [ ] Milestone 0 and Milestone 0.5 are complete before Milestone 1 through Milestone 6 implementation starts.
 - [x] The design-freeze docs exist before implementation starts.
 - [x] The three honeypot services each have their own Docker image, build context, healthcheck, and runtime config contract.
