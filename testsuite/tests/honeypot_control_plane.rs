@@ -10,10 +10,13 @@ use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use sha2::{Digest as _, Sha256};
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_control_plane::{
-    HoneypotControlPlaneTestConfig, fake_qemu_bin_path, find_unused_port, get_json_response_with_bearer_token,
-    honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd, load_honeypot_interop_store_evidence,
-    post_json_response_with_bearer_token, read_health_response_with_bearer_token, send_http_request,
-    validate_honeypot_interop_lease_binding, write_honeypot_control_plane_config,
+    HoneypotControlPlaneTestConfig, ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL,
+    ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP, ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
+    ROW706_EVIDENCE_SCHEMA_VERSION, Row706AnchorResult, Row706AnchorStatus, fake_qemu_bin_path, find_unused_port,
+    get_json_response_with_bearer_token, honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd,
+    load_honeypot_interop_store_evidence, post_json_response_with_bearer_token, read_health_response_with_bearer_token,
+    row706_default_evidence_dir, send_http_request, validate_honeypot_interop_lease_binding,
+    verify_row706_evidence_envelope, write_honeypot_control_plane_config, write_row706_anchor_result,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
 
@@ -1682,6 +1685,13 @@ async fn control_plane_reports_host_unavailable_when_base_image_digest_mismatche
         "{}",
         error.message
     );
+    record_row706_passed_anchor_result(
+        ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL,
+        None,
+        None,
+        Some(fixture.image_store.as_path()),
+        Some("digest mismatch negative control rejected the tampered base image before lease use".to_owned()),
+    );
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -2390,11 +2400,19 @@ async fn control_plane_lab_harness_teardown_cleans_runtime_artifacts_on_posix_ho
 #[tokio::test]
 async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
+        record_row706_skipped_anchor_result(ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP, format!("{error:#}"));
         eprintln!("skipping lab-e2e external-client interoperability test: {error:#}");
         return;
     }
 
     if !external_client_interop_env_is_configured() {
+        record_row706_skipped_anchor_result(
+            ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP,
+            format!(
+                "missing {} {} or {}",
+                HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV
+            ),
+        );
         eprintln!(
             "skipping lab-e2e external-client interoperability test: set {} {} and {}",
             HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
@@ -2474,7 +2492,8 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
         "expected active lease snapshot at {}",
         active_snapshot_path.display()
     );
-    assert_active_snapshot_matches_interop_store(&interop, &acquire.attestation_ref, &active_snapshot_path);
+    let base_image_path =
+        assert_active_snapshot_matches_interop_store(&interop, &acquire.attestation_ref, &active_snapshot_path);
 
     let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
         port,
@@ -2514,6 +2533,13 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
     assert_eq!(health.service_state, ServiceState::Ready);
     assert_eq!(health.active_lease_count, 0);
     assert_eq!(health.quarantined_lease_count, 0);
+    record_row706_passed_anchor_result(
+        ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP,
+        Some(&acquire.attestation_ref),
+        Some(base_image_path.as_path()),
+        Some(interop.evidence.image_store_root.as_path()),
+        Some("xfreerdp auth-only succeeded and recycle returned the pool to ready".to_owned()),
+    );
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -2523,11 +2549,19 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
 #[tokio::test]
 async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly() {
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
+        record_row706_skipped_anchor_result(ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, format!("{error:#}"));
         eprintln!("skipping lab-e2e gold-image acceptance test: {error:#}");
         return;
     }
 
     if !external_client_interop_env_is_configured() {
+        record_row706_skipped_anchor_result(
+            ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE,
+            format!(
+                "missing {} {} or {}",
+                HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV
+            ),
+        );
         eprintln!(
             "skipping lab-e2e gold-image acceptance test: set {} {} and {}",
             HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
@@ -2584,7 +2618,7 @@ async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_clea
 
     wait_for_tcp_port(port).await.expect("wait for control-plane port");
 
-    run_gold_image_acceptance_cycle(
+    let cycle_evidence = run_gold_image_acceptance_cycle(
         port,
         &interop,
         &lease_store,
@@ -2594,6 +2628,16 @@ async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_clea
     )
     .await
     .expect("run gold-image acceptance cycle");
+    record_row706_passed_anchor_result(
+        ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE,
+        Some(&cycle_evidence.attestation_ref),
+        Some(cycle_evidence.base_image_path.as_path()),
+        Some(interop.evidence.image_store_root.as_path()),
+        Some(format!(
+            "lease {} completed one full acquire, rdp, recycle, and cleanup cycle",
+            cycle_evidence.lease_id
+        )),
+    );
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
@@ -2603,11 +2647,19 @@ async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_clea
 #[tokio::test]
 async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_leaking_runtime_artifacts() {
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
+        record_row706_skipped_anchor_result(ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY, format!("{error:#}"));
         eprintln!("skipping lab-e2e repeated gold-image acceptance test: {error:#}");
         return;
     }
 
     if !external_client_interop_env_is_configured() {
+        record_row706_skipped_anchor_result(
+            ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
+            format!(
+                "missing {} {} or {}",
+                HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV
+            ),
+        );
         eprintln!(
             "skipping lab-e2e repeated gold-image acceptance test: set {} {} and {}",
             HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
@@ -2664,7 +2716,7 @@ async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_le
 
     wait_for_tcp_port(port).await.expect("wait for control-plane port");
 
-    let first_lease_id = run_gold_image_acceptance_cycle(
+    let first_cycle_evidence = run_gold_image_acceptance_cycle(
         port,
         &interop,
         &lease_store,
@@ -2674,7 +2726,7 @@ async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_le
     )
     .await
     .expect("run first repeated gold-image acceptance cycle");
-    let second_lease_id = run_gold_image_acceptance_cycle(
+    let second_cycle_evidence = run_gold_image_acceptance_cycle(
         port,
         &interop,
         &lease_store,
@@ -2686,8 +2738,26 @@ async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_le
     .expect("run second repeated gold-image acceptance cycle");
 
     assert_ne!(
-        first_lease_id, second_lease_id,
+        first_cycle_evidence.lease_id, second_cycle_evidence.lease_id,
         "each gold-image acceptance cycle should use a distinct lease id",
+    );
+    assert_eq!(
+        first_cycle_evidence.attestation_ref, second_cycle_evidence.attestation_ref,
+        "repeatability cycles should stay on the same attested base image lineage",
+    );
+    assert_eq!(
+        first_cycle_evidence.base_image_path, second_cycle_evidence.base_image_path,
+        "repeatability cycles should stay on the same base image path",
+    );
+    record_row706_passed_anchor_result(
+        ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
+        Some(&second_cycle_evidence.attestation_ref),
+        Some(second_cycle_evidence.base_image_path.as_path()),
+        Some(interop.evidence.image_store_root.as_path()),
+        Some(format!(
+            "leases {} and {} both completed full acquire, rdp, recycle, and cleanup cycles",
+            first_cycle_evidence.lease_id, second_cycle_evidence.lease_id
+        )),
     );
 
     child.kill().await.expect("kill control-plane");
@@ -2702,7 +2772,7 @@ async fn run_gold_image_acceptance_cycle(
     qmp_dir: &std::path::Path,
     session_id: &str,
     request_suffix: &str,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<GoldImageAcceptanceCycleEvidence> {
     let acquire_request =
         acquire_request_with_pool_and_timeout(session_id, &interop.requested_pool, interop.ready_timeout_secs);
     let (_, acquire): (String, AcquireVmResponse) =
@@ -2729,7 +2799,8 @@ async fn run_gold_image_acceptance_cycle(
         "expected active lease snapshot at {}",
         active_snapshot_path.display()
     );
-    assert_active_snapshot_matches_interop_store(interop, &acquire.attestation_ref, &active_snapshot_path);
+    let base_image_path =
+        assert_active_snapshot_matches_interop_store(interop, &acquire.attestation_ref, &active_snapshot_path);
     assert!(overlay_path.is_file(), "expected overlay at {}", overlay_path.display());
     assert!(
         pid_file_path.is_file(),
@@ -2814,7 +2885,11 @@ async fn run_gold_image_acceptance_cycle(
     assert_eq!(health.active_lease_count, 0);
     assert_eq!(health.quarantined_lease_count, 0);
 
-    Ok(acquire.vm_lease_id)
+    Ok(GoldImageAcceptanceCycleEvidence {
+        lease_id: acquire.vm_lease_id,
+        attestation_ref: acquire.attestation_ref,
+        base_image_path,
+    })
 }
 
 #[cfg(unix)]
@@ -2929,6 +3004,172 @@ fn control_plane_interop_store_evidence_rejects_unattested_base_image_binding() 
         rendered_error.contains("are not bound to a validated interop manifest"),
         "{rendered_error}"
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_accepts_complete_non_skipped_consistent_fragments() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let image_store_root = tempdir.path().join("images");
+    let base_image_path = image_store_root.join("tiny11.qcow2");
+
+    fs::create_dir_all(&image_store_root).expect("create image store root");
+    fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
+    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
+    write_row706_anchor_result(
+        &evidence_dir,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: None,
+            base_image_path: None,
+            image_store_root: Some(image_store_root.clone()),
+            detail: Some("negative control passed".to_owned()),
+        },
+    )
+    .expect("write negative control fragment");
+
+    let envelope = verify_row706_evidence_envelope(&evidence_dir).expect("verify row706 evidence envelope");
+    assert_eq!(envelope.attestation_ref, "attestation://gold-image-0");
+    assert_eq!(envelope.base_image_path, base_image_path);
+    assert_eq!(envelope.image_store_root, image_store_root);
+    assert_eq!(envelope.anchor_results.len(), 4);
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_rejects_missing_anchor() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let image_store_root = tempdir.path().join("images");
+    let base_image_path = image_store_root.join("tiny11.qcow2");
+
+    fs::create_dir_all(&image_store_root).expect("create image store root");
+    fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
+    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
+
+    let error = verify_row706_evidence_envelope(&evidence_dir).expect_err("missing anchor should fail verification");
+    let rendered_error = format!("{error:#}");
+    assert!(
+        rendered_error.contains(ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL),
+        "{rendered_error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_rejects_skipped_positive_anchor() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let image_store_root = tempdir.path().join("images");
+    let base_image_path = image_store_root.join("tiny11.qcow2");
+
+    fs::create_dir_all(&image_store_root).expect("create image store root");
+    fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
+    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
+    write_row706_anchor_result(
+        &evidence_dir,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            anchor_id: ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP.to_owned(),
+            executed: false,
+            status: Row706AnchorStatus::Skipped,
+            attestation_ref: None,
+            base_image_path: None,
+            image_store_root: None,
+            detail: Some("lab gate disabled".to_owned()),
+        },
+    )
+    .expect("overwrite positive anchor with skipped fragment");
+    write_row706_anchor_result(
+        &evidence_dir,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: None,
+            base_image_path: None,
+            image_store_root: Some(image_store_root),
+            detail: Some("negative control passed".to_owned()),
+        },
+    )
+    .expect("write negative control fragment");
+
+    let error = verify_row706_evidence_envelope(&evidence_dir)
+        .expect_err("skipped positive anchor should fail row706 verification");
+    let rendered_error = format!("{error:#}");
+    assert!(
+        rendered_error.contains(ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP),
+        "{rendered_error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_rejects_inconsistent_attestation() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+    let image_store_root = tempdir.path().join("images");
+    let base_image_path = image_store_root.join("tiny11.qcow2");
+
+    fs::create_dir_all(&image_store_root).expect("create image store root");
+    fs::write(&base_image_path, b"tiny11-base-image").expect("write base image");
+    write_row706_positive_test_fragments(&evidence_dir, &base_image_path, &image_store_root);
+    write_row706_anchor_result(
+        &evidence_dir,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            anchor_id: ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: Some("attestation://gold-image-99".to_owned()),
+            base_image_path: Some(base_image_path),
+            image_store_root: Some(image_store_root.clone()),
+            detail: Some("mismatched attestation".to_owned()),
+        },
+    )
+    .expect("overwrite repeatability anchor with mismatched attestation");
+    write_row706_anchor_result(
+        &evidence_dir,
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            anchor_id: ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: None,
+            base_image_path: None,
+            image_store_root: Some(image_store_root),
+            detail: Some("negative control passed".to_owned()),
+        },
+    )
+    .expect("write negative control fragment");
+
+    let error = verify_row706_evidence_envelope(&evidence_dir)
+        .expect_err("inconsistent attestation should fail row706 verification");
+    let rendered_error = format!("{error:#}");
+    assert!(rendered_error.contains("attestation_ref"), "{rendered_error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_row706_evidence_envelope_rejects_malformed_fragment() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let evidence_dir = tempdir.path().join("row706");
+
+    fs::create_dir_all(&evidence_dir).expect("create row706 evidence dir");
+    fs::write(
+        evidence_dir.join(format!("{ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE}.json")),
+        "{not-json",
+    )
+    .expect("write malformed fragment");
+
+    let error = verify_row706_evidence_envelope(&evidence_dir).expect_err("malformed fragment should fail parsing");
+    let rendered_error = format!("{error:#}");
+    assert!(rendered_error.contains("parse row706 fragment"), "{rendered_error}");
 }
 
 #[cfg(unix)]
@@ -3255,6 +3496,42 @@ fn rewrite_manifest_base_image_path(manifest_path: &std::path::Path, base_image_
 }
 
 #[cfg(unix)]
+fn write_row706_positive_test_fragments(
+    evidence_dir: &std::path::Path,
+    base_image_path: &std::path::Path,
+    image_store_root: &std::path::Path,
+) {
+    for anchor_id in [
+        ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE,
+        ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
+        ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP,
+    ] {
+        write_row706_anchor_result(
+            evidence_dir,
+            &Row706AnchorResult {
+                schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+                anchor_id: anchor_id.to_owned(),
+                executed: true,
+                status: Row706AnchorStatus::Passed,
+                attestation_ref: Some("attestation://gold-image-0".to_owned()),
+                base_image_path: Some(base_image_path.to_path_buf()),
+                image_store_root: Some(image_store_root.to_path_buf()),
+                detail: Some(format!("{anchor_id} passed")),
+            },
+        )
+        .expect("write positive row706 fragment");
+    }
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct GoldImageAcceptanceCycleEvidence {
+    lease_id: String,
+    attestation_ref: String,
+    base_image_path: std::path::PathBuf,
+}
+
+#[cfg(unix)]
 #[derive(Debug)]
 struct ExternalClientInteropConfig {
     image_store: std::path::PathBuf,
@@ -3269,6 +3546,48 @@ struct ExternalClientInteropConfig {
     rdp_domain: Option<String>,
     rdp_security: Option<String>,
     evidence: testsuite::honeypot_control_plane::HoneypotInteropStoreEvidence,
+}
+
+#[cfg(unix)]
+fn record_row706_skipped_anchor_result(anchor_id: &str, detail: impl Into<String>) {
+    write_row706_anchor_result(
+        &row706_default_evidence_dir(),
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            anchor_id: anchor_id.to_owned(),
+            executed: false,
+            status: Row706AnchorStatus::Skipped,
+            attestation_ref: None,
+            base_image_path: None,
+            image_store_root: None,
+            detail: Some(detail.into()),
+        },
+    )
+    .expect("write skipped row706 anchor fragment");
+}
+
+#[cfg(unix)]
+fn record_row706_passed_anchor_result(
+    anchor_id: &str,
+    attestation_ref: Option<&str>,
+    base_image_path: Option<&std::path::Path>,
+    image_store_root: Option<&std::path::Path>,
+    detail: Option<String>,
+) {
+    write_row706_anchor_result(
+        &row706_default_evidence_dir(),
+        &Row706AnchorResult {
+            schema_version: ROW706_EVIDENCE_SCHEMA_VERSION,
+            anchor_id: anchor_id.to_owned(),
+            executed: true,
+            status: Row706AnchorStatus::Passed,
+            attestation_ref: attestation_ref.map(ToOwned::to_owned),
+            base_image_path: base_image_path.map(std::path::Path::to_path_buf),
+            image_store_root: image_store_root.map(std::path::Path::to_path_buf),
+            detail,
+        },
+    )
+    .expect("write passed row706 anchor fragment");
 }
 
 #[cfg(unix)]
@@ -3324,7 +3643,7 @@ fn assert_active_snapshot_matches_interop_store(
     interop: &ExternalClientInteropConfig,
     attestation_ref: &str,
     snapshot_path: &std::path::Path,
-) {
+) -> std::path::PathBuf {
     let snapshot: serde_json::Value =
         serde_json::from_slice(&fs::read(snapshot_path).expect("read active lease snapshot"))
             .expect("parse active lease snapshot");
@@ -3340,6 +3659,8 @@ fn assert_active_snapshot_matches_interop_store(
         std::path::Path::new(base_image_path),
     )
     .expect("active lease snapshot should stay bound to the validated interop store");
+
+    std::path::PathBuf::from(base_image_path)
 }
 
 #[cfg(unix)]
