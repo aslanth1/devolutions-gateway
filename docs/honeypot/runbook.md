@@ -91,6 +91,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - If teardown ends in `explicit_failure`, record both a non-empty failure code and a non-empty failure reason before the run may be finalized.
 - For video evidence, write one machine-readable JSON artifact that records `video_sha256`, `duration_floor_secs`, `timestamp_window`, `storage_uri`, and `retention_window`.
 - Keep the timestamp window ordered, keep the retention policy and expiry explicit, and ensure the stored `session_id` and `vm_lease_id` match the runtime anchor invocation whenever those identifiers exist.
+- For headed QEMU plus Chrome observation, write one machine-readable JSON artifact that records `qemu_display_mode`, `qemu_launch_reference`, `browser_family`, `frontend_access_path`, and `correlation_snapshot`.
+- Keep `qemu_display_mode` set to `headed`, keep `browser_family` set to `chrome`, and ensure the correlation snapshot ties the observed tile or session back to the exact `session_id` and `vm_lease_id` for the run.
+- The headed-observation artifact must also agree on `vm_lease_id` with the Tiny11 RDP-ready anchor so the observed frontend tile cannot drift from the active lease identity.
 - Treat prerequisite gating, run identity setup, redaction hygiene, and artifact-storage contract setup as `preflight_only`.
 - A `preflight_only` run may end in `blocked_prereq`, but it must not be cited as completion evidence for row `735`.
 - Any artifact referenced by a manual-headed run must remain retrievable through the approved storage backend and must match the recorded digest when re-read.

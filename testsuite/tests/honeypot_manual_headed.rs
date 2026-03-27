@@ -297,6 +297,185 @@ fn manual_headed_profile_rejects_weak_video_evidence_artifact() {
 }
 
 #[test]
+fn manual_headed_profile_rejects_weak_headed_qemu_chrome_observation_artifact() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        "runtime/rdp.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        Path::new("runtime/qemu-chrome.json"),
+        br#"{"qemu_display_mode":"headed","qemu_launch_reference":"target/qemu-display.sock","browser_family":"chrome","correlation_snapshot":{"observed_surface":"tile","observed_session_id":"session-1","observed_vm_lease_id":"lease-1"}}"#,
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/interaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("weak headed QEMU plus Chrome observation artifact should fail verification");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("frontend_access_path"), "{rendered}");
+}
+
+#[test]
+fn manual_headed_profile_rejects_headed_observation_vm_lease_mismatch_with_rdp_ready() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        "runtime/rdp.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some("lease-2"),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/interaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("headed observation should bind to the same vm lease as RDP-ready evidence");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("same vm_lease_id"), "{rendered}");
+}
+
+#[test]
 fn manual_headed_profile_rejects_runtime_anchor_without_verified_row706_binding() {
     let tempdir = tempdir().expect("create tempdir");
     let evidence_root = tempdir.path().join("row706");
@@ -626,6 +805,50 @@ fn manual_headed_writer_runtime_rejects_weak_video_metadata() {
     assert!(rendered.contains("duration_floor_secs"), "{rendered}");
 }
 
+#[test]
+fn manual_headed_writer_runtime_rejects_weak_headed_qemu_chrome_observation_artifact() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("qemu-chrome.json");
+    fs::write(
+        &source_artifact,
+        br#"{"qemu_display_mode":"headed","qemu_launch_reference":"target/qemu-display.sock","browser_family":"chrome","correlation_snapshot":{"observed_surface":"tile","observed_session_id":"session-1","observed_vm_lease_id":"lease-1"}}"#,
+    )
+    .expect("write headed observation artifact");
+    write_verified_row706_run(&evidence_root, &run_id);
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "runtime",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+            "--status",
+            "passed",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "runtime/qemu-chrome.json",
+            "--session-id",
+            SESSION_ID,
+            "--vm-lease-id",
+            VM_LEASE_ID,
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(rendered.contains("frontend_access_path"), "{rendered}");
+}
+
 fn write_verified_row706_run(evidence_root: &Path, run_id: &str) {
     row706_begin_run(evidence_root, run_id).expect("begin row706 run");
     let image_store_root = evidence_root.join("interop-store");
@@ -825,6 +1048,18 @@ fn manual_anchor_artifact_body(anchor_id: &str, session_id: Option<&str>, vm_lea
                 }
             },
             "teardown_disposition": "clean_shutdown"
+        })
+        .to_string(),
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION => serde_json::json!({
+            "qemu_display_mode": "headed",
+            "qemu_launch_reference": "target/qemu-display.sock",
+            "browser_family": "chrome",
+            "frontend_access_path": "http://127.0.0.1:8080/",
+            "correlation_snapshot": {
+                "observed_surface": "tile",
+                "observed_session_id": session_id,
+                "observed_vm_lease_id": vm_lease_id
+            }
         })
         .to_string(),
         MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => serde_json::json!({

@@ -710,7 +710,7 @@ Pass when: the manual lane records health or bootstrap evidence for all three se
 - [ ] Add a Tiny11 host provisioning checklist that includes key-based setup and RDP enablement.
 Pass when: the runbook names where key material is loaded from without committing it, records the Tiny11 lineage used for the run, and captures non-skipped RDP-ready evidence for the same guest identity that the headed walkthrough uses.
 
-- [ ] Add a headed QEMU and Chrome frontend observation checklist.
+- [x] Add a headed QEMU and Chrome frontend observation checklist.
 Pass when: the run records the non-headless QEMU launch path, the Chrome frontend access path, and a correlation snapshot proving the observed tile or session matches the active Tiny11 lease.
 
 - [ ] Add a bounded manual interaction checklist.

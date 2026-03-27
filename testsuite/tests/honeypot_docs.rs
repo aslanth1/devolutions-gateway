@@ -241,6 +241,21 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         &testing,
         "the metadata artifact must carry matching values instead of detached or free-form notes",
     );
+    assert_contains(
+        testing_path,
+        &testing,
+        "The `manual_headed_qemu_chrome_observation` runtime anchor is now machine-validated in the shared verifier path rather than treated as a free-form screenshot note.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`qemu_display_mode`, `qemu_launch_reference`, `browser_family`, `frontend_access_path`, and `correlation_snapshot`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "the headed-observation anchor and the Tiny11 RDP-ready anchor to agree on the same `vm_lease_id`",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -268,6 +283,16 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         runbook_path,
         &runbook,
         "ensure the stored `session_id` and `vm_lease_id` match the runtime anchor invocation",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "write one machine-readable JSON artifact that records `qemu_display_mode`, `qemu_launch_reference`, `browser_family`, `frontend_access_path`, and `correlation_snapshot`",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The headed-observation artifact must also agree on `vm_lease_id` with the Tiny11 RDP-ready anchor",
     );
 }
 

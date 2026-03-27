@@ -1598,6 +1598,9 @@ pub fn validate_manual_headed_anchor_artifact(
         MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => {
             validate_manual_headed_stack_startup_shutdown_artifact(artifact_path)
         }
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION => {
+            validate_manual_headed_qemu_chrome_observation_artifact(artifact_path, session_id, vm_lease_id)
+        }
         MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => {
             validate_manual_headed_video_evidence_artifact(artifact_path, session_id, vm_lease_id)
         }
@@ -1803,6 +1806,31 @@ pub fn verify_manual_headed_evidence_envelope(
         }
     }
 
+    let rdp_ready = by_anchor_id
+        .get(MANUAL_HEADED_ANCHOR_TINY11_RDP_READY)
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "manual-headed anchor {} is missing",
+                MANUAL_HEADED_ANCHOR_TINY11_RDP_READY
+            )
+        })?;
+    let headed_observation = by_anchor_id
+        .get(MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION)
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "manual-headed anchor {} is missing",
+                MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+            )
+        })?;
+    anyhow::ensure!(
+        headed_observation.vm_lease_id == rdp_ready.vm_lease_id,
+        "manual-headed anchors {} and {} must bind to the same vm_lease_id",
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+    );
+
     Ok(ManualHeadedEvidenceEnvelope {
         row706_run_id: run_id.to_owned(),
         anchor_results: results,
@@ -2006,6 +2034,93 @@ fn validate_manual_headed_stack_startup_shutdown_artifact(artifact_path: &Path) 
             artifact_path.display()
         ),
     }
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_qemu_chrome_observation_artifact(
+    artifact_path: &Path,
+    session_id: Option<&str>,
+    vm_lease_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let document = read_json_document(artifact_path)?;
+    let object = document.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "headed QEMU plus Chrome observation artifact {} must be a json object",
+            artifact_path.display()
+        )
+    })?;
+
+    let qemu_display_mode = object.get("qemu_display_mode").and_then(Value::as_str).ok_or_else(|| {
+        anyhow::anyhow!(
+            "headed QEMU plus Chrome observation artifact {} must provide qemu_display_mode",
+            artifact_path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        qemu_display_mode == "headed",
+        "headed QEMU plus Chrome observation artifact {} must use qemu_display_mode headed",
+        artifact_path.display()
+    );
+    validate_manual_headed_nonempty_json_string(
+        object.get("qemu_launch_reference"),
+        "qemu_launch_reference",
+        artifact_path,
+    )?;
+
+    let browser_family = object.get("browser_family").and_then(Value::as_str).ok_or_else(|| {
+        anyhow::anyhow!(
+            "headed QEMU plus Chrome observation artifact {} must provide browser_family",
+            artifact_path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        browser_family == "chrome",
+        "headed QEMU plus Chrome observation artifact {} must use browser_family chrome",
+        artifact_path.display()
+    );
+    validate_manual_headed_nonempty_json_string(
+        object.get("frontend_access_path"),
+        "frontend_access_path",
+        artifact_path,
+    )?;
+
+    let correlation_snapshot = object
+        .get("correlation_snapshot")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "headed QEMU plus Chrome observation artifact {} must provide correlation_snapshot",
+                artifact_path.display()
+            )
+        })?;
+    let observed_surface = correlation_snapshot
+        .get("observed_surface")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "headed QEMU plus Chrome observation artifact {} must provide correlation_snapshot.observed_surface",
+                artifact_path.display()
+            )
+        })?;
+    anyhow::ensure!(
+        matches!(observed_surface, "tile" | "session"),
+        "headed QEMU plus Chrome observation artifact {} must use observed_surface tile or session",
+        artifact_path.display()
+    );
+    validate_manual_headed_optional_matching_json_string(
+        correlation_snapshot.get("observed_session_id"),
+        "correlation_snapshot.observed_session_id",
+        session_id,
+        artifact_path,
+    )?;
+    validate_manual_headed_optional_matching_json_string(
+        correlation_snapshot.get("observed_vm_lease_id"),
+        "correlation_snapshot.observed_vm_lease_id",
+        vm_lease_id,
+        artifact_path,
+    )?;
+
+    Ok(())
 }
 
 #[cfg(unix)]

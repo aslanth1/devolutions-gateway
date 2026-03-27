@@ -148,6 +148,11 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `video_sha256` must be a 64-character hex digest, `duration_floor_secs` must be greater than zero, and `timestamp_window.start_unix_secs` plus `timestamp_window.end_unix_secs` must form a valid ordered range.
 - `retention_window` must provide both a non-empty policy string and a positive `expires_at_unix_secs`, and `storage_uri` must remain non-empty so the approved artifact backend can be re-read later.
 - When the runtime video anchor is bound to a `session_id` or `vm_lease_id`, the metadata artifact must carry matching values instead of detached or free-form notes.
+- The `manual_headed_qemu_chrome_observation` runtime anchor is now machine-validated in the shared verifier path rather than treated as a free-form screenshot note.
+- Its artifact must be a JSON object with `qemu_display_mode`, `qemu_launch_reference`, `browser_family`, `frontend_access_path`, and `correlation_snapshot`.
+- `qemu_display_mode` must be `headed`, `browser_family` must be `chrome`, and both `qemu_launch_reference` and `frontend_access_path` must remain non-empty.
+- `correlation_snapshot` must provide `observed_surface` as `tile` or `session`, plus `observed_session_id` and `observed_vm_lease_id` that match the bound runtime anchor identity.
+- The verifier also requires the headed-observation anchor and the Tiny11 RDP-ready anchor to agree on the same `vm_lease_id` inside one manual-headed run.
 - A preflight-only manual-headed run may end in `blocked_prereq`, but that disposition is never sufficient to complete row `735`.
 - The sanctioned non-test evidence writer is `cargo run -p testsuite --bin honeypot-manual-headed-writer -- <preflight|runtime|finalize> ...`.
 - Its `preflight` mode may record blocked prerequisites under an existing row-`706` run envelope before guest boot, while `runtime` mode refuses to write any runtime anchor unless `verify_row706_evidence_envelope` already passes for the same `run_id`.
