@@ -596,7 +596,7 @@ Pass when: honeypot config and event contracts fail fast on incompatible changes
 - [x] Add a Rust-driven lab harness startup and readiness test for QEMU lifecycle on a POSIX host.
 Pass when: tests can start the lab and wait for RDP readiness without manual intervention.
 
-- [ ] Add a Rust-driven lab harness teardown cleanliness test.
+- [x] Add a Rust-driven lab harness teardown cleanliness test.
 Pass when: the lab tears down without orphaned QEMU processes, sockets, overlays, tempdirs, containers, networks, or volumes.
 
 ### Milestone 5d: Control-Plane And Proxy End-To-End Flows
