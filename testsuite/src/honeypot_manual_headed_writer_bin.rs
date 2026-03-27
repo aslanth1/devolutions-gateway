@@ -40,10 +40,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use testsuite::honeypot_control_plane::{
-    MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE, MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION, ManualHeadedAnchorResult,
-    ManualHeadedAnchorStatus, manual_headed_anchor_runtime_required, manual_headed_begin_run,
-    manual_headed_complete_run, manual_headed_profile_dir, resolve_manual_headed_anchor_artifact_path,
-    row706_default_evidence_dir, verify_manual_headed_evidence_envelope, verify_row706_evidence_envelope,
+    MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN, MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+    MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION, ManualHeadedAnchorResult, ManualHeadedAnchorStatus,
+    manual_headed_anchor_runtime_required, manual_headed_begin_run, manual_headed_complete_run,
+    manual_headed_profile_dir, resolve_manual_headed_anchor_artifact_path, row706_default_evidence_dir,
+    validate_manual_headed_anchor_artifact, verify_manual_headed_evidence_envelope, verify_row706_evidence_envelope,
     write_manual_headed_anchor_result,
 };
 
@@ -243,6 +244,9 @@ fn validate_anchor_artifact(
     vm_lease_id: Option<&str>,
 ) -> anyhow::Result<()> {
     match anchor_id {
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => {
+            validate_manual_headed_anchor_artifact(anchor_id, artifact_path, session_id, vm_lease_id)
+        }
         MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => validate_video_metadata_artifact(artifact_path, session_id, vm_lease_id),
         _ => Ok(()),
     }

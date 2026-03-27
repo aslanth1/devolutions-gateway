@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use honeypot_contracts::control_plane::HealthResponse;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use typed_builder::TypedBuilder;
@@ -1587,6 +1588,24 @@ pub fn manual_headed_anchor_runtime_required(anchor_id: &str) -> anyhow::Result<
 }
 
 #[cfg(unix)]
+pub fn validate_manual_headed_anchor_artifact(
+    anchor_id: &str,
+    artifact_path: &Path,
+    session_id: Option<&str>,
+    vm_lease_id: Option<&str>,
+) -> anyhow::Result<()> {
+    match anchor_id {
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => {
+            validate_manual_headed_stack_startup_shutdown_artifact(artifact_path)
+        }
+        _ => {
+            let _ = (session_id, vm_lease_id);
+            Ok(())
+        }
+    }
+}
+
+#[cfg(unix)]
 pub fn manual_headed_begin_run(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
     let profile_dir = manual_headed_profile_dir(root, run_id)?;
     let artifacts_root = profile_dir.join("artifacts");
@@ -1867,10 +1886,146 @@ fn read_manual_headed_anchor_results(
             result.anchor_id,
             artifact_path.display()
         );
+        validate_manual_headed_anchor_artifact(
+            &result.anchor_id,
+            &artifact_path,
+            result.session_id.as_deref(),
+            result.vm_lease_id.as_deref(),
+        )
+        .with_context(|| {
+            format!(
+                "validate manual-headed artifact semantics for anchor {}",
+                result.anchor_id
+            )
+        })?;
         results.push(result);
     }
 
     Ok(results)
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_stack_startup_shutdown_artifact(artifact_path: &Path) -> anyhow::Result<()> {
+    let document = read_json_document(artifact_path)?;
+    let object = document.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "stack startup or shutdown artifact {} must be a json object",
+            artifact_path.display()
+        )
+    })?;
+
+    let startup_captured_at_unix_secs = object
+        .get("startup_captured_at_unix_secs")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "stack startup or shutdown artifact {} must provide startup_captured_at_unix_secs > 0",
+                artifact_path.display()
+            )
+        })?;
+    let teardown_captured_at_unix_secs = object
+        .get("teardown_captured_at_unix_secs")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "stack startup or shutdown artifact {} must provide teardown_captured_at_unix_secs >= startup_captured_at_unix_secs",
+                artifact_path.display()
+            )
+        })?;
+    anyhow::ensure!(
+        startup_captured_at_unix_secs > 0 && teardown_captured_at_unix_secs >= startup_captured_at_unix_secs,
+        "stack startup or shutdown artifact {} must provide ordered startup and teardown timestamps",
+        artifact_path.display()
+    );
+
+    let services = object.get("services").and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "stack startup or shutdown artifact {} must provide services for control-plane, proxy, and frontend",
+            artifact_path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        services.len() == 3,
+        "stack startup or shutdown artifact {} must provide exactly three services",
+        artifact_path.display()
+    );
+    for service_id in ["control-plane", "proxy", "frontend"] {
+        let service = services.get(service_id).and_then(Value::as_object).ok_or_else(|| {
+            anyhow::anyhow!(
+                "stack startup or shutdown artifact {} must provide services.{service_id}",
+                artifact_path.display()
+            )
+        })?;
+        let evidence_kind = service.get("evidence_kind").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "stack startup or shutdown artifact {} must provide services.{service_id}.evidence_kind",
+                artifact_path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            matches!(evidence_kind, "health" | "bootstrap"),
+            "stack startup or shutdown artifact {} must use evidence_kind health or bootstrap for service {}",
+            artifact_path.display(),
+            service_id
+        );
+        let startup_status = service.get("startup_status").and_then(Value::as_str).ok_or_else(|| {
+            anyhow::anyhow!(
+                "stack startup or shutdown artifact {} must provide services.{service_id}.startup_status",
+                artifact_path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            matches!(startup_status, "healthy" | "ready" | "reachable"),
+            "stack startup or shutdown artifact {} must use startup_status healthy, ready, or reachable for service {}",
+            artifact_path.display(),
+            service_id
+        );
+    }
+
+    let teardown_disposition = object
+        .get("teardown_disposition")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "stack startup or shutdown artifact {} must provide teardown_disposition",
+                artifact_path.display()
+            )
+        })?;
+    match teardown_disposition {
+        "clean_shutdown" => Ok(()),
+        "explicit_failure" => {
+            validate_manual_headed_nonempty_json_string(object.get("failure_code"), "failure_code", artifact_path)?;
+            validate_manual_headed_nonempty_json_string(object.get("failure_reason"), "failure_reason", artifact_path)?;
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "stack startup or shutdown artifact {} must use teardown_disposition clean_shutdown or explicit_failure",
+            artifact_path.display()
+        ),
+    }
+}
+
+#[cfg(unix)]
+fn read_json_document(path: &Path) -> anyhow::Result<Value> {
+    let bytes = fs::read(path).with_context(|| format!("read json artifact {}", path.display()))?;
+    serde_json::from_slice(&bytes).with_context(|| format!("parse json artifact {}", path.display()))
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_nonempty_json_string(
+    value: Option<&Value>,
+    field: &str,
+    artifact_path: &Path,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        value
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty()),
+        "artifact {} must provide a non-empty {}",
+        artifact_path.display(),
+        field
+    );
+    Ok(())
 }
 
 #[cfg(unix)]

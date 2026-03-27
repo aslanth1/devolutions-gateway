@@ -137,6 +137,12 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - Milestone `6a` anchors are now split into `preflight_only` and `runtime_required` classes.
 - `preflight_only` anchors may validate headed-display, Chrome, run identity, the approved Windows key source, the attested Tiny11 image-store or interop root declaration, redaction policy, and artifact-storage contract inputs before any guest boots.
 - `runtime_required` anchors must bind to machine-produced artifacts and a verified row-`706` runtime run before rows `704`, `707`, `710`, `713`, `716`, or the runtime portion of `722` may be treated as complete.
+- The `manual_stack_startup_shutdown` runtime anchor is now machine-validated instead of free-form.
+- Its artifact must be a JSON object under the manual-headed artifacts root with ordered `startup_captured_at_unix_secs` and `teardown_captured_at_unix_secs` fields.
+- That same artifact must provide exactly three `services` entries named `control-plane`, `proxy`, and `frontend`.
+- Each service entry must declare `evidence_kind` as `health` or `bootstrap` plus `startup_status` as `healthy`, `ready`, or `reachable`.
+- Teardown evidence must record `teardown_disposition` as `clean_shutdown` or `explicit_failure`.
+- If `teardown_disposition` is `explicit_failure`, the artifact must also provide non-empty `failure_code` and `failure_reason` fields so teardown failure is explicit instead of implied.
 - A preflight-only manual-headed run may end in `blocked_prereq`, but that disposition is never sufficient to complete row `735`.
 - The sanctioned non-test evidence writer is `cargo run -p testsuite --bin honeypot-manual-headed-writer -- <preflight|runtime|finalize> ...`.
 - Its `preflight` mode may record blocked prerequisites under an existing row-`706` run envelope before guest boot, while `runtime` mode refuses to write any runtime anchor unless `verify_row706_evidence_envelope` already passes for the same `run_id`.

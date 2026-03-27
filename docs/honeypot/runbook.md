@@ -86,6 +86,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - Do not copy that key into manual-headed evidence, screenshots, exports, secondary docs, or any other tracked artifact.
 - Record `session_id` and `vm_lease_id` on every runtime manual-headed artifact whenever those identifiers exist.
 - Treat startup/shutdown service-state capture, Tiny11 plus RDP-ready proof, headed QEMU plus Chrome correlation, bounded interaction, video evidence, and heavy-artifact retrieval as `runtime_required`.
+- For the startup or shutdown capture, write one machine-readable JSON artifact that records ordered startup and teardown timestamps, exactly three service entries named `control-plane`, `proxy`, and `frontend`, and one teardown disposition of `clean_shutdown` or `explicit_failure`.
+- Each recorded service entry must state whether the evidence came from `health` or `bootstrap` plus a startup status of `healthy`, `ready`, or `reachable`.
+- If teardown ends in `explicit_failure`, record both a non-empty failure code and a non-empty failure reason before the run may be finalized.
 - Treat prerequisite gating, run identity setup, redaction hygiene, and artifact-storage contract setup as `preflight_only`.
 - A `preflight_only` run may end in `blocked_prereq`, but it must not be cited as completion evidence for row `735`.
 - Any artifact referenced by a manual-headed run must remain retrievable through the approved storage backend and must match the recorded digest when re-read.

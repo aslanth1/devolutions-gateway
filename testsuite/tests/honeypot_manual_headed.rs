@@ -117,6 +117,96 @@ fn manual_headed_profile_accepts_complete_runtime_bound_profile() {
 }
 
 #[test]
+fn manual_headed_profile_rejects_weak_stack_startup_shutdown_artifact() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        Path::new("runtime/stack.json"),
+        br#"{"startup_captured_at_unix_secs":1,"teardown_captured_at_unix_secs":2,"services":{"control-plane":{"evidence_kind":"health","startup_status":"healthy"},"proxy":{"evidence_kind":"health","startup_status":"healthy"}},"teardown_disposition":"clean_shutdown"}"#,
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        "runtime/rdp.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/interaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("weak stack startup or shutdown artifact should fail verification");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("exactly three services"), "{rendered}");
+}
+
+#[test]
 fn manual_headed_profile_rejects_runtime_anchor_without_verified_row706_binding() {
     let tempdir = tempdir().expect("create tempdir");
     let evidence_root = tempdir.path().join("row706");
@@ -328,7 +418,7 @@ fn manual_headed_writer_runtime_accepts_verified_stack_anchor() {
     let source_artifact = tempdir.path().join("runtime-stack.json");
     fs::write(
         &source_artifact,
-        br#"{"services":{"control-plane":{"status":"healthy"},"proxy":{"status":"healthy"},"frontend":{"status":"healthy"}},"teardown_disposition":"clean_shutdown"}"#,
+        br#"{"startup_captured_at_unix_secs":1,"teardown_captured_at_unix_secs":2,"services":{"control-plane":{"evidence_kind":"health","startup_status":"healthy"},"proxy":{"evidence_kind":"health","startup_status":"healthy"},"frontend":{"evidence_kind":"bootstrap","startup_status":"ready"}},"teardown_disposition":"clean_shutdown"}"#,
     )
     .expect("write runtime source artifact");
     write_verified_row706_run(&evidence_root, &run_id);
@@ -360,6 +450,46 @@ fn manual_headed_writer_runtime_accepts_verified_stack_anchor() {
         .join("manual_headed")
         .join(format!("{MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN}.json"));
     assert!(result_path.is_file());
+}
+
+#[test]
+fn manual_headed_writer_runtime_rejects_weak_stack_anchor() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("runtime-stack.json");
+    fs::write(
+        &source_artifact,
+        br#"{"startup_captured_at_unix_secs":1,"teardown_captured_at_unix_secs":2,"services":{"control-plane":{"evidence_kind":"health","startup_status":"healthy"},"proxy":{"evidence_kind":"health","startup_status":"healthy"},"frontend":{"evidence_kind":"bootstrap","startup_status":"ready"}},"teardown_disposition":"explicit_failure","failure_code":"stack_teardown_failed"}"#,
+    )
+    .expect("write weak runtime source artifact");
+    write_verified_row706_run(&evidence_root, &run_id);
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "runtime",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+            "--status",
+            "passed",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "runtime/stack.json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(rendered.contains("failure_reason"), "{rendered}");
 }
 
 #[test]
@@ -541,9 +671,28 @@ fn write_manual_anchor(
     relpath: &str,
 ) {
     let relpath = Path::new(relpath);
-    let body = format!("manual-headed artifact for {anchor_id}");
-    write_manual_artifact(evidence_root, run_id, relpath, body.as_bytes());
+    let body = manual_anchor_artifact_body(anchor_id, session_id, vm_lease_id);
+    write_manual_anchor_with_body(
+        evidence_root,
+        run_id,
+        anchor_id,
+        session_id,
+        vm_lease_id,
+        relpath,
+        body.as_bytes(),
+    );
+}
 
+fn write_manual_anchor_with_body(
+    evidence_root: &Path,
+    run_id: &str,
+    anchor_id: &str,
+    session_id: Option<&str>,
+    vm_lease_id: Option<&str>,
+    relpath: &Path,
+    body: &[u8],
+) {
+    write_manual_artifact(evidence_root, run_id, relpath, body);
     write_manual_headed_anchor_result(
         evidence_root,
         run_id,
@@ -557,13 +706,55 @@ fn write_manual_anchor(
             producer: "integration-test".to_owned(),
             captured_at_unix_secs: 1,
             source_artifact_relpath: relpath.into(),
-            source_artifact_sha256: sha256_hex(body.as_bytes()),
+            source_artifact_sha256: sha256_hex(body),
             session_id: session_id.map(ToOwned::to_owned),
             vm_lease_id: vm_lease_id.map(ToOwned::to_owned),
             detail: Some(format!("captured {anchor_id}")),
         },
     )
     .expect("write manual-headed anchor");
+}
+
+fn manual_anchor_artifact_body(anchor_id: &str, session_id: Option<&str>, vm_lease_id: Option<&str>) -> String {
+    match anchor_id {
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => serde_json::json!({
+            "startup_captured_at_unix_secs": 1u64,
+            "teardown_captured_at_unix_secs": 2u64,
+            "services": {
+                "control-plane": {
+                    "evidence_kind": "health",
+                    "startup_status": "healthy"
+                },
+                "proxy": {
+                    "evidence_kind": "health",
+                    "startup_status": "healthy"
+                },
+                "frontend": {
+                    "evidence_kind": "bootstrap",
+                    "startup_status": "ready"
+                }
+            },
+            "teardown_disposition": "clean_shutdown"
+        })
+        .to_string(),
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => serde_json::json!({
+            "video_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "duration_floor_secs": 5u64,
+            "timestamp_window": {
+                "start_unix_secs": 1u64,
+                "end_unix_secs": 5u64
+            },
+            "storage_uri": "target/manual/video.webm",
+            "retention_window": {
+                "policy": "manual-review",
+                "expires_at_unix_secs": 10u64
+            },
+            "session_id": session_id,
+            "vm_lease_id": vm_lease_id
+        })
+        .to_string(),
+        _ => format!("manual-headed artifact for {anchor_id}"),
+    }
 }
 
 fn write_manual_artifact(evidence_root: &Path, run_id: &str, relpath: &Path, body: &[u8]) {

@@ -211,6 +211,21 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         &testing,
         "the attested Tiny11 image-store or interop root declaration",
     );
+    assert_contains(
+        testing_path,
+        &testing,
+        "The `manual_stack_startup_shutdown` runtime anchor is now machine-validated instead of free-form.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "exactly three `services` entries named `control-plane`, `proxy`, and `frontend`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`teardown_disposition` as `clean_shutdown` or `explicit_failure`",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -218,6 +233,16 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         runbook_path,
         &runbook,
         "the attested Tiny11 image-store or interop root is named before startup begins",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "exactly three service entries named `control-plane`, `proxy`, and `frontend`",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "a non-empty failure code and a non-empty failure reason",
     );
 }
 
