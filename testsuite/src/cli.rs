@@ -97,10 +97,22 @@ pub fn assert_stderr_eq(output: &assert_cmd::assert::Assert, expected: expect_te
 /// # Errors
 /// Returns an error if the port is not ready within the timeout.
 pub async fn wait_for_tcp_port(port: u16) -> anyhow::Result<()> {
+    use std::time::Duration;
+
+    wait_for_tcp_port_with_timeout(port, Duration::from_secs(30)).await
+}
+
+/// Waits for a TCP port on localhost to become ready (accepting connections) with a caller-provided timeout.
+///
+/// This variant is useful for slower startup paths such as lab-backed binaries that validate large runtime artifacts
+/// before binding their health port.
+///
+/// # Errors
+/// Returns an error if the port is not ready within the timeout.
+pub async fn wait_for_tcp_port_with_timeout(port: u16, timeout: std::time::Duration) -> anyhow::Result<()> {
     use std::net::Ipv4Addr;
     use std::time::{Duration, Instant};
 
-    let timeout = Duration::from_secs(30);
     let poll_interval = Duration::from_millis(50);
     let start = Instant::now();
 

@@ -408,6 +408,12 @@ Pass when: the transformation runs against the clone rather than the original wo
 - [x] Enable and verify RDP in the gold image.
 Pass when: a fresh VM from the gold image reaches a known-ready signal and accepts RDP on TCP 3389 in the lab.
 
+- [ ] Close the authentication gap between the manually verified Tiny11 image and the control-plane-launched imported Tiny11 lease path.
+Pass when: the same approved RDP credentials that succeed against the manually verified Tiny11 boot also succeed through the sanctioned `consume-image` plus control-plane lease path, and the repo records whether the remaining difference was guest policy, runtime launch shape, or another control-plane assumption.
+
+- [ ] Prove whether the trusted-image contract needs boot-critical firmware or NVRAM state in addition to the imported qcow2 artifact.
+Pass when: the repo either demonstrates that qcow2-only import preserves the boot and auth state needed for the control-plane RDP acceptance lane, or it extends the trusted-image contract and runtime launch path to carry the additional sealed firmware inputs required for that proof.
+
 - [x] Add image integrity checks before lease.
 Pass when: the control plane verifies qcow2 chain health and refuses to lease dirty or corrupt images.
 

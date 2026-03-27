@@ -9,7 +9,7 @@ use honeypot_contracts::control_plane::{
 };
 use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use sha2::{Digest as _, Sha256};
-use testsuite::cli::wait_for_tcp_port;
+use testsuite::cli::{wait_for_tcp_port, wait_for_tcp_port_with_timeout};
 use testsuite::honeypot_control_plane::{
     CANONICAL_TINY11_IMAGE_STORE_ROOT, HoneypotControlPlaneTestConfig, ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL,
     ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP, ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY,
@@ -2467,7 +2467,12 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
     child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
     let mut child = child.spawn().expect("spawn control-plane");
 
-    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+    wait_for_tcp_port_with_timeout(
+        port,
+        std::time::Duration::from_secs(u64::from(interop.ready_timeout_secs)),
+    )
+    .await
+    .expect("wait for control-plane port");
 
     let acquire_request = acquire_request_with_pool_and_timeout(
         "session-external-client-interop",
@@ -2604,7 +2609,12 @@ async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_clea
     child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
     let mut child = child.spawn().expect("spawn control-plane");
 
-    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+    wait_for_tcp_port_with_timeout(
+        port,
+        std::time::Duration::from_secs(u64::from(interop.ready_timeout_secs)),
+    )
+    .await
+    .expect("wait for control-plane port");
 
     let cycle_evidence = run_gold_image_acceptance_cycle(
         port,
@@ -2690,7 +2700,12 @@ async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_le
     child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
     let mut child = child.spawn().expect("spawn control-plane");
 
-    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+    wait_for_tcp_port_with_timeout(
+        port,
+        std::time::Duration::from_secs(u64::from(interop.ready_timeout_secs)),
+    )
+    .await
+    .expect("wait for control-plane port");
 
     let first_cycle_evidence = run_gold_image_acceptance_cycle(
         port,
