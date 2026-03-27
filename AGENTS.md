@@ -704,7 +704,7 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 - [x] Mixed-version `current` or `previous` service combinations are documented and validated before rollback is considered safe.
 - [x] The test plan is split into `contract`, `host-smoke`, and `lab-e2e` tiers.
 - [ ] The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.
-- [ ] The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.
+- [x] The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.
 - [x] The frontend can bootstrap, create, update, fullscreen, and remove tiles from live session events.
 - [ ] The stream path is bound to session identity and survives disconnect and recycle correctly.
 - [ ] The Rust e2e path validates both guest behavior and POSIX host artifacts.

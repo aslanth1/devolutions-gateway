@@ -57,3 +57,10 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The current baseline `testsuite` integration suite is the `contract` tier.
 - The `testsuite::honeypot_tiers` module is the current enforcement point for future `host-smoke` and `lab-e2e` additions.
 - Later milestones may add more granular test modules, but they must keep the same tier names and fail-closed gate behavior.
+
+## Credential Replacement And Redaction Evidence
+
+- `AGENTS.md` pass row `The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.` is satisfied by the current `contract` tier.
+- `testsuite/tests/honeypot_visibility.rs` proves the proxy replaces attacker-supplied preflight credentials with the mapped backend credentials during honeypot prepare, binds the backend credential reference to the session, and cleans the mapping up on abort.
+- `testsuite/tests/cli/dgw/preflight.rs` proves the provisioned proxy and target passwords are redacted from gateway logs on the successful credential-provisioning path.
+- `testsuite/tests/cli/dgw/preflight.rs` also proves the same passwords stay redacted when credential provisioning fails validation before session startup.
