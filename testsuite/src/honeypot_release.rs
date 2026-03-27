@@ -114,6 +114,16 @@ pub struct ServiceVersionSelection {
     pub frontend: ImageSlot,
 }
 
+impl Default for ServiceVersionSelection {
+    fn default() -> Self {
+        Self {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Current,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceSchemaVersions {
     pub control_plane: u32,
@@ -222,6 +232,23 @@ pub fn validate_honeypot_images_lock_document(data: &str) -> anyhow::Result<Hone
 }
 
 pub fn validate_honeypot_compose_document(data: &str, lockfile: &HoneypotImagesLock) -> anyhow::Result<()> {
+    validate_honeypot_compose_document_for_selection(
+        data,
+        lockfile,
+        ServiceVersionSelection::default(),
+        ServiceSchemaVersions::default(),
+    )
+}
+
+pub fn validate_honeypot_compose_document_for_selection(
+    data: &str,
+    lockfile: &HoneypotImagesLock,
+    selection: ServiceVersionSelection,
+    schema_versions: ServiceSchemaVersions,
+) -> anyhow::Result<()> {
+    validate_mixed_version_contract_compatibility(selection, schema_versions)
+        .context("compose image selection must satisfy the mixed-version contract")?;
+
     let compose: HoneypotComposeFile = serde_yaml::from_str(data).context("deserialize honeypot compose file")?;
 
     let alias_keys = compose.image_aliases.keys().cloned().collect::<BTreeSet<_>>();
@@ -241,14 +268,18 @@ pub fn validate_honeypot_compose_document(data: &str, lockfile: &HoneypotImagesL
     );
 
     for service in SERVICE_NAMES {
-        let expected_ref = current_image_ref(lockfile.service_entry(service));
+        let expected_ref = image_ref(
+            lockfile.service_entry(service),
+            service_selection_slot(selection, service),
+        );
         let alias_ref = compose
             .image_aliases
             .get(service)
             .with_context(|| format!("missing compose x-images entry for {service}"))?;
         anyhow::ensure!(
             alias_ref == &expected_ref,
-            "compose x-images entry for {service} must match images.lock current digest",
+            "compose x-images entry for {service} must match images.lock {} digest",
+            service_selection_slot(selection, service).name(),
         );
 
         let service_image = &compose
@@ -258,7 +289,8 @@ pub fn validate_honeypot_compose_document(data: &str, lockfile: &HoneypotImagesL
             .image;
         anyhow::ensure!(
             service_image == &expected_ref,
-            "compose service {service} image must match images.lock current digest",
+            "compose service {service} image must match images.lock {} digest",
+            service_selection_slot(selection, service).name(),
         );
     }
 
@@ -613,12 +645,17 @@ fn validate_digest(service: &str, slot: &str, digest: &str) -> anyhow::Result<()
     Ok(())
 }
 
-fn current_image_ref(entry: &HoneypotImageLockEntry) -> String {
+fn image_ref(entry: &HoneypotImageLockEntry, slot: ImageSlot) -> String {
+    let digest = match slot {
+        ImageSlot::Current => &entry.current.digest,
+        ImageSlot::Previous => &entry.previous.digest,
+    };
+
     format!(
         "{}/{image}@{digest}",
         entry.registry,
         image = entry.image,
-        digest = entry.current.digest
+        digest = digest
     )
 }
 
@@ -654,6 +691,24 @@ impl HoneypotService {
                 ..selection
             },
         }
+    }
+}
+
+impl ImageSlot {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Previous => "previous",
+        }
+    }
+}
+
+fn service_selection_slot(selection: ServiceVersionSelection, service: &str) -> ImageSlot {
+    match service {
+        "control-plane" => selection.control_plane,
+        "proxy" => selection.proxy,
+        "frontend" => selection.frontend,
+        _ => panic!("unsupported service name: {service}"),
     }
 }
 

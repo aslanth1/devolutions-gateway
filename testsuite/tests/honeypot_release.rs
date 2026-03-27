@@ -1,16 +1,44 @@
 use testsuite::honeypot_release::{
     HONEYPOT_COMPOSE_PATH, HONEYPOT_CONTROL_PLANE_CONFIG_PATH, HONEYPOT_CONTROL_PLANE_ENV_PATH,
     HONEYPOT_FRONTEND_CONFIG_PATH, HONEYPOT_FRONTEND_ENV_PATH, HONEYPOT_IMAGES_LOCK_PATH, HONEYPOT_PROXY_CONFIG_PATH,
-    HONEYPOT_PROXY_ENV_PATH, HoneypotService, ImageSlot, ServiceSchemaVersions, ServiceVersionSelection,
-    load_honeypot_images_lock, repo_relative_path, validate_honeypot_compose_document,
-    validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
-    validate_honeypot_control_plane_runtime_contract, validate_honeypot_frontend_compose_runtime_document,
-    validate_honeypot_frontend_env_document, validate_honeypot_frontend_runtime_contract,
-    validate_honeypot_images_lock_document, validate_honeypot_proxy_compose_runtime_document,
-    validate_honeypot_proxy_env_document, validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
+    HONEYPOT_PROXY_ENV_PATH, HoneypotImagesLock, HoneypotService, ImageSlot, ServiceSchemaVersions,
+    ServiceVersionSelection, load_honeypot_images_lock, repo_relative_path, validate_honeypot_compose_document,
+    validate_honeypot_compose_document_for_selection, validate_honeypot_control_plane_compose_runtime_document,
+    validate_honeypot_control_plane_env_document, validate_honeypot_control_plane_runtime_contract,
+    validate_honeypot_frontend_compose_runtime_document, validate_honeypot_frontend_env_document,
+    validate_honeypot_frontend_runtime_contract, validate_honeypot_images_lock_document,
+    validate_honeypot_proxy_compose_runtime_document, validate_honeypot_proxy_env_document,
+    validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
     validate_mixed_version_contract_compatibility, validate_restored_service_contract_compatibility,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
+
+fn expected_image_ref(lockfile: &HoneypotImagesLock, service: &'static str, slot: ImageSlot) -> String {
+    let entry = lockfile.service_entry(service);
+    let digest = match slot {
+        ImageSlot::Current => &entry.current.digest,
+        ImageSlot::Previous => &entry.previous.digest,
+    };
+
+    format!("{}/{}@{}", entry.registry, entry.image, digest)
+}
+
+fn compose_document_for_selection(lockfile: &HoneypotImagesLock, selection: ServiceVersionSelection) -> String {
+    let mut compose_data =
+        std::fs::read_to_string(repo_relative_path(HONEYPOT_COMPOSE_PATH)).expect("read on-disk compose file");
+
+    for (service, slot) in [
+        ("control-plane", selection.control_plane),
+        ("proxy", selection.proxy),
+        ("frontend", selection.frontend),
+    ] {
+        let current_ref = expected_image_ref(lockfile, service, ImageSlot::Current);
+        let selected_ref = expected_image_ref(lockfile, service, slot);
+        compose_data = compose_data.replace(&current_ref, &selected_ref);
+    }
+
+    compose_data
+}
 
 #[test]
 fn release_inputs_on_disk_match_the_honeypot_lockfile_contract() {
@@ -245,6 +273,80 @@ fn downgraded_control_plane_contract_compatibility_is_allowed() {
         ServiceSchemaVersions::default(),
     )
     .expect("previous/current/current should stay contract-compatible");
+}
+
+#[test]
+fn downgraded_control_plane_compose_compatibility_is_allowed() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let selection = ServiceVersionSelection {
+        control_plane: ImageSlot::Previous,
+        proxy: ImageSlot::Current,
+        frontend: ImageSlot::Current,
+    };
+    let compose_data = compose_document_for_selection(&lockfile, selection);
+
+    validate_honeypot_compose_document_for_selection(
+        &compose_data,
+        &lockfile,
+        selection,
+        ServiceSchemaVersions::default(),
+    )
+    .expect("previous/current/current compose should stay compatible with current peers");
+}
+
+#[test]
+fn downgraded_control_plane_compose_compatibility_rejects_unsupported_previous_pairings() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let selection = ServiceVersionSelection {
+        control_plane: ImageSlot::Previous,
+        proxy: ImageSlot::Previous,
+        frontend: ImageSlot::Current,
+    };
+    let compose_data = compose_document_for_selection(&lockfile, selection);
+
+    let error = validate_honeypot_compose_document_for_selection(
+        &compose_data,
+        &lockfile,
+        selection,
+        ServiceSchemaVersions::default(),
+    )
+    .expect_err("previous/previous/current compose must be rejected");
+
+    assert!(
+        format!("{error:#}").contains("proxy previous requires control-plane current"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn downgraded_control_plane_compose_compatibility_rejects_schema_version_drift() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let selection = ServiceVersionSelection {
+        control_plane: ImageSlot::Previous,
+        proxy: ImageSlot::Current,
+        frontend: ImageSlot::Current,
+    };
+    let compose_data = compose_document_for_selection(&lockfile, selection);
+
+    let error = validate_honeypot_compose_document_for_selection(
+        &compose_data,
+        &lockfile,
+        selection,
+        ServiceSchemaVersions {
+            control_plane: 2,
+            proxy: 1,
+            frontend: 1,
+        },
+    )
+    .expect_err("schema drift across proxy/control-plane should be rejected");
+
+    assert!(
+        format!("{error:#}").contains("proxy schema_version 1 is incompatible with control-plane schema_version 2"),
+        "{error:#}"
+    );
 }
 
 #[test]
