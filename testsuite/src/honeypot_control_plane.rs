@@ -1436,6 +1436,8 @@ pub const MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE: &str = "manual_redaction_hygie
 pub const MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE: &str = "manual_artifact_storage";
 #[cfg(unix)]
 pub const MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+#[cfg(unix)]
+const MANUAL_HEADED_INTERACTION_MAX_DURATION_SECS: u64 = 3600;
 
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1492,6 +1494,24 @@ pub struct ManualHeadedRunManifest {
 pub struct ManualHeadedEvidenceEnvelope {
     pub row706_run_id: String,
     pub anchor_results: Vec<ManualHeadedAnchorResult>,
+}
+
+#[cfg(unix)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ManualHeadedTimeWindow {
+    start_unix_secs: u64,
+    end_unix_secs: u64,
+}
+
+#[cfg(unix)]
+impl ManualHeadedTimeWindow {
+    fn duration_secs(self) -> u64 {
+        self.end_unix_secs - self.start_unix_secs
+    }
+
+    fn contains(self, other: Self) -> bool {
+        self.start_unix_secs <= other.start_unix_secs && self.end_unix_secs >= other.end_unix_secs
+    }
 }
 
 #[cfg(unix)]
@@ -1600,6 +1620,9 @@ pub fn validate_manual_headed_anchor_artifact(
         }
         MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION => {
             validate_manual_headed_qemu_chrome_observation_artifact(artifact_path, session_id, vm_lease_id)
+        }
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION => {
+            validate_manual_headed_bounded_interaction_artifact(artifact_path, session_id, vm_lease_id)
         }
         MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => {
             validate_manual_headed_video_evidence_artifact(artifact_path, session_id, vm_lease_id)
@@ -1829,6 +1852,59 @@ pub fn verify_manual_headed_evidence_envelope(
         "manual-headed anchors {} and {} must bind to the same vm_lease_id",
         MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
         MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+    );
+    let bounded_interaction = by_anchor_id
+        .get(MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION)
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "manual-headed anchor {} is missing",
+                MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION
+            )
+        })?;
+    let video_evidence = by_anchor_id
+        .get(MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE)
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "manual-headed anchor {} is missing",
+                MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE
+            )
+        })?;
+    anyhow::ensure!(
+        bounded_interaction.session_id == headed_observation.session_id,
+        "manual-headed anchors {} and {} must bind to the same session_id",
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+    );
+    anyhow::ensure!(
+        bounded_interaction.vm_lease_id == headed_observation.vm_lease_id,
+        "manual-headed anchors {} and {} must bind to the same vm_lease_id",
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+    );
+    anyhow::ensure!(
+        bounded_interaction.session_id == video_evidence.session_id,
+        "manual-headed anchors {} and {} must bind to the same session_id",
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE
+    );
+    anyhow::ensure!(
+        bounded_interaction.vm_lease_id == video_evidence.vm_lease_id,
+        "manual-headed anchors {} and {} must bind to the same vm_lease_id",
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE
+    );
+
+    let bounded_interaction_path =
+        manual_headed_anchor_artifact_path(root, run_id, &bounded_interaction.source_artifact_relpath)?;
+    let bounded_interaction_window = read_manual_headed_bounded_interaction_window(&bounded_interaction_path)?;
+    let video_evidence_path =
+        manual_headed_anchor_artifact_path(root, run_id, &video_evidence.source_artifact_relpath)?;
+    let video_window = read_manual_headed_video_evidence_window(&video_evidence_path)?;
+    anyhow::ensure!(
+        video_window.contains(bounded_interaction_window),
+        "manual-headed interaction window must stay within the recorded video timestamp_window"
     );
 
     Ok(ManualHeadedEvidenceEnvelope {
@@ -2124,6 +2200,88 @@ fn validate_manual_headed_qemu_chrome_observation_artifact(
 }
 
 #[cfg(unix)]
+fn validate_manual_headed_bounded_interaction_artifact(
+    artifact_path: &Path,
+    session_id: Option<&str>,
+    vm_lease_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let document = read_json_document(artifact_path)?;
+    let object = document.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "bounded interaction artifact {} must be a json object",
+            artifact_path.display()
+        )
+    })?;
+
+    let interaction_window = read_manual_headed_time_window(
+        object.get("interaction_window"),
+        "bounded interaction artifact",
+        "interaction_window",
+        artifact_path,
+    )?;
+    anyhow::ensure!(
+        interaction_window.duration_secs() <= MANUAL_HEADED_INTERACTION_MAX_DURATION_SECS,
+        "bounded interaction artifact {} must keep interaction_window within {} seconds",
+        artifact_path.display(),
+        MANUAL_HEADED_INTERACTION_MAX_DURATION_SECS
+    );
+    validate_manual_headed_optional_matching_json_string(
+        object.get("session_id"),
+        "session_id",
+        session_id,
+        artifact_path,
+    )?;
+    validate_manual_headed_optional_matching_json_string(
+        object.get("vm_lease_id"),
+        "vm_lease_id",
+        vm_lease_id,
+        artifact_path,
+    )?;
+
+    let modalities = object.get("modalities").and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "bounded interaction artifact {} must provide modalities.mouse, modalities.keyboard, and modalities.browsing",
+            artifact_path.display()
+        )
+    })?;
+    for modality in ["mouse", "keyboard", "browsing"] {
+        let modality_object = modalities.get(modality).and_then(Value::as_object).ok_or_else(|| {
+            anyhow::anyhow!(
+                "bounded interaction artifact {} must provide modalities.{modality}",
+                artifact_path.display()
+            )
+        })?;
+        anyhow::ensure!(
+            modality_object
+                .get("event_count")
+                .and_then(Value::as_u64)
+                .is_some_and(|value| value > 0),
+            "bounded interaction artifact {} must provide modalities.{modality}.event_count > 0",
+            artifact_path.display()
+        );
+        let evidence_refs = modality_object
+            .get("evidence_refs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "bounded interaction artifact {} must provide modalities.{modality}.evidence_refs",
+                    artifact_path.display()
+                )
+            })?;
+        anyhow::ensure!(
+            !evidence_refs.is_empty()
+                && evidence_refs
+                    .iter()
+                    .all(|value| value.as_str().is_some_and(|value| !value.trim().is_empty())),
+            "bounded interaction artifact {} must provide at least one non-empty modalities.{modality}.evidence_refs entry",
+            artifact_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
 fn validate_manual_headed_video_evidence_artifact(
     artifact_path: &Path,
     session_id: Option<&str>,
@@ -2156,7 +2314,12 @@ fn validate_manual_headed_video_evidence_artifact(
         "video evidence artifact {} must provide duration_floor_secs > 0",
         artifact_path.display()
     );
-    validate_manual_headed_timestamp_window(object.get("timestamp_window"), artifact_path)?;
+    let _ = read_manual_headed_time_window(
+        object.get("timestamp_window"),
+        "video evidence artifact",
+        "timestamp_window",
+        artifact_path,
+    )?;
     validate_manual_headed_nonempty_json_string(object.get("storage_uri"), "storage_uri", artifact_path)?;
     validate_manual_headed_retention_window(object.get("retention_window"), artifact_path)?;
     validate_manual_headed_optional_matching_json_string(
@@ -2176,31 +2339,73 @@ fn validate_manual_headed_video_evidence_artifact(
 }
 
 #[cfg(unix)]
-fn validate_manual_headed_timestamp_window(value: Option<&Value>, artifact_path: &Path) -> anyhow::Result<()> {
+fn read_manual_headed_video_evidence_window(artifact_path: &Path) -> anyhow::Result<ManualHeadedTimeWindow> {
+    let document = read_json_document(artifact_path)?;
+    let object = document.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "video evidence artifact {} must be a json object",
+            artifact_path.display()
+        )
+    })?;
+    read_manual_headed_time_window(
+        object.get("timestamp_window"),
+        "video evidence artifact",
+        "timestamp_window",
+        artifact_path,
+    )
+}
+
+#[cfg(unix)]
+fn read_manual_headed_bounded_interaction_window(artifact_path: &Path) -> anyhow::Result<ManualHeadedTimeWindow> {
+    let document = read_json_document(artifact_path)?;
+    let object = document.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "bounded interaction artifact {} must be a json object",
+            artifact_path.display()
+        )
+    })?;
+    read_manual_headed_time_window(
+        object.get("interaction_window"),
+        "bounded interaction artifact",
+        "interaction_window",
+        artifact_path,
+    )
+}
+
+#[cfg(unix)]
+fn read_manual_headed_time_window(
+    value: Option<&Value>,
+    artifact_kind: &str,
+    field: &str,
+    artifact_path: &Path,
+) -> anyhow::Result<ManualHeadedTimeWindow> {
     let window = value.and_then(Value::as_object).ok_or_else(|| {
         anyhow::anyhow!(
-            "video evidence artifact {} must provide timestamp_window.start_unix_secs and timestamp_window.end_unix_secs",
+            "{artifact_kind} {} must provide {field}.start_unix_secs and {field}.end_unix_secs",
             artifact_path.display()
         )
     })?;
     let start = window.get("start_unix_secs").and_then(Value::as_u64).ok_or_else(|| {
         anyhow::anyhow!(
-            "video evidence artifact {} must provide timestamp_window.start_unix_secs",
+            "{artifact_kind} {} must provide {field}.start_unix_secs",
             artifact_path.display()
         )
     })?;
     let end = window.get("end_unix_secs").and_then(Value::as_u64).ok_or_else(|| {
         anyhow::anyhow!(
-            "video evidence artifact {} must provide timestamp_window.end_unix_secs",
+            "{artifact_kind} {} must provide {field}.end_unix_secs",
             artifact_path.display()
         )
     })?;
     anyhow::ensure!(
-        start > 0 && end >= start,
-        "video evidence artifact {} must provide a valid timestamp window",
+        start > 0 && end > start,
+        "{artifact_kind} {} must provide an ordered {field} range",
         artifact_path.display()
     );
-    Ok(())
+    Ok(ManualHeadedTimeWindow {
+        start_unix_secs: start,
+        end_unix_secs: end,
+    })
 }
 
 #[cfg(unix)]

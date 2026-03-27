@@ -476,6 +476,279 @@ fn manual_headed_profile_rejects_headed_observation_vm_lease_mismatch_with_rdp_r
 }
 
 #[test]
+fn manual_headed_profile_rejects_noop_bounded_interaction_artifact() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        "runtime/rdp.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        Path::new("runtime/interaction.json"),
+        br#"{"interaction_window":{"start_unix_secs":2,"end_unix_secs":8},"session_id":"session-1","vm_lease_id":"lease-1","modalities":{"mouse":{"event_count":0,"evidence_refs":["video://mouse"]},"keyboard":{"event_count":3,"evidence_refs":["video://keyboard"]},"browsing":{"event_count":1,"evidence_refs":["video://browsing"]}}}"#,
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("no-op bounded interaction artifact should fail verification");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("modalities.mouse.event_count > 0"), "{rendered}");
+}
+
+#[test]
+fn manual_headed_profile_rejects_bounded_interaction_session_mismatch_with_headed_observation() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        "runtime/rdp.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some("session-2"),
+        Some(VM_LEASE_ID),
+        Path::new("runtime/interaction.json"),
+        br#"{"interaction_window":{"start_unix_secs":2,"end_unix_secs":8},"session_id":"session-2","vm_lease_id":"lease-1","modalities":{"mouse":{"event_count":2,"evidence_refs":["video://mouse"]},"keyboard":{"event_count":3,"evidence_refs":["video://keyboard"]},"browsing":{"event_count":1,"evidence_refs":["video://browsing"]}}}"#,
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("bounded interaction should bind to the same session as headed observation");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("same session_id"), "{rendered}");
+}
+
+#[test]
+fn manual_headed_profile_rejects_bounded_interaction_window_outside_video_window() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        "runtime/rdp.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        Path::new("runtime/interaction.json"),
+        br#"{"interaction_window":{"start_unix_secs":20,"end_unix_secs":30},"session_id":"session-1","vm_lease_id":"lease-1","modalities":{"mouse":{"event_count":2,"evidence_refs":["video://mouse"]},"keyboard":{"event_count":3,"evidence_refs":["video://keyboard"]},"browsing":{"event_count":1,"evidence_refs":["video://browsing"]}}}"#,
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("bounded interaction must stay within the recorded video window");
+    let rendered = format!("{error:#}");
+    assert!(
+        rendered.contains("must stay within the recorded video timestamp_window"),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn manual_headed_profile_rejects_runtime_anchor_without_verified_row706_binding() {
     let tempdir = tempdir().expect("create tempdir");
     let evidence_root = tempdir.path().join("row706");
@@ -849,6 +1122,50 @@ fn manual_headed_writer_runtime_rejects_weak_headed_qemu_chrome_observation_arti
     assert!(rendered.contains("frontend_access_path"), "{rendered}");
 }
 
+#[test]
+fn manual_headed_writer_runtime_rejects_noop_bounded_interaction_artifact() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("interaction.json");
+    fs::write(
+        &source_artifact,
+        br#"{"interaction_window":{"start_unix_secs":2,"end_unix_secs":8},"session_id":"session-1","vm_lease_id":"lease-1","modalities":{"mouse":{"event_count":0,"evidence_refs":["video://mouse"]},"keyboard":{"event_count":3,"evidence_refs":["video://keyboard"]},"browsing":{"event_count":1,"evidence_refs":["video://browsing"]}}}"#,
+    )
+    .expect("write bounded interaction artifact");
+    write_verified_row706_run(&evidence_root, &run_id);
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "runtime",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+            "--status",
+            "passed",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "runtime/interaction.json",
+            "--session-id",
+            SESSION_ID,
+            "--vm-lease-id",
+            VM_LEASE_ID,
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(rendered.contains("modalities.mouse.event_count > 0"), "{rendered}");
+}
+
 fn write_verified_row706_run(evidence_root: &Path, run_id: &str) {
     row706_begin_run(evidence_root, run_id).expect("begin row706 run");
     let image_store_root = evidence_root.join("interop-store");
@@ -1062,12 +1379,35 @@ fn manual_anchor_artifact_body(anchor_id: &str, session_id: Option<&str>, vm_lea
             }
         })
         .to_string(),
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION => serde_json::json!({
+            "interaction_window": {
+                "start_unix_secs": 2u64,
+                "end_unix_secs": 8u64
+            },
+            "session_id": session_id,
+            "vm_lease_id": vm_lease_id,
+            "modalities": {
+                "mouse": {
+                    "event_count": 4u64,
+                    "evidence_refs": ["video://segment/mouse"]
+                },
+                "keyboard": {
+                    "event_count": 6u64,
+                    "evidence_refs": ["video://segment/keyboard"]
+                },
+                "browsing": {
+                    "event_count": 2u64,
+                    "evidence_refs": ["video://segment/browsing"]
+                }
+            }
+        })
+        .to_string(),
         MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => serde_json::json!({
             "video_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "duration_floor_secs": 5u64,
             "timestamp_window": {
                 "start_unix_secs": 1u64,
-                "end_unix_secs": 5u64
+                "end_unix_secs": 10u64
             },
             "storage_uri": "target/manual/video.webm",
             "retention_window": {

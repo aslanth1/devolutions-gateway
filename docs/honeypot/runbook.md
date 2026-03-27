@@ -94,6 +94,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - For headed QEMU plus Chrome observation, write one machine-readable JSON artifact that records `qemu_display_mode`, `qemu_launch_reference`, `browser_family`, `frontend_access_path`, and `correlation_snapshot`.
 - Keep `qemu_display_mode` set to `headed`, keep `browser_family` set to `chrome`, and ensure the correlation snapshot ties the observed tile or session back to the exact `session_id` and `vm_lease_id` for the run.
 - The headed-observation artifact must also agree on `vm_lease_id` with the Tiny11 RDP-ready anchor so the observed frontend tile cannot drift from the active lease identity.
+- For bounded interaction, write one machine-readable JSON artifact that records `interaction_window`, `session_id`, `vm_lease_id`, and `modalities`.
+- Keep `interaction_window` ordered and bounded, keep it inside the recorded video `timestamp_window`, and keep its `session_id` plus `vm_lease_id` aligned with the headed-observation anchor.
+- `modalities.mouse`, `modalities.keyboard`, and `modalities.browsing` must each provide `event_count > 0` and at least one non-empty `evidence_refs` entry so no modality is satisfied by a no-op claim.
 - Treat prerequisite gating, run identity setup, redaction hygiene, and artifact-storage contract setup as `preflight_only`.
 - A `preflight_only` run may end in `blocked_prereq`, but it must not be cited as completion evidence for row `735`.
 - Any artifact referenced by a manual-headed run must remain retrievable through the approved storage backend and must match the recorded digest when re-read.

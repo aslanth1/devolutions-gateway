@@ -713,7 +713,7 @@ Pass when: the runbook names where key material is loaded from without committin
 - [x] Add a headed QEMU and Chrome frontend observation checklist.
 Pass when: the run records the non-headless QEMU launch path, the Chrome frontend access path, and a correlation snapshot proving the observed tile or session matches the active Tiny11 lease.
 
-- [ ] Add a bounded manual interaction checklist.
+- [x] Add a bounded manual interaction checklist.
 Pass when: the run records a bounded mouse, keyboard, and guest-browsing interaction window whose timestamps are tied to the same `run_id`, `session_id`, and `vm_lease_id`.
 
 - [x] Add a video-evidence checklist for manual-headed runs.

@@ -153,6 +153,11 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `qemu_display_mode` must be `headed`, `browser_family` must be `chrome`, and both `qemu_launch_reference` and `frontend_access_path` must remain non-empty.
 - `correlation_snapshot` must provide `observed_surface` as `tile` or `session`, plus `observed_session_id` and `observed_vm_lease_id` that match the bound runtime anchor identity.
 - The verifier also requires the headed-observation anchor and the Tiny11 RDP-ready anchor to agree on the same `vm_lease_id` inside one manual-headed run.
+- The `manual_bounded_interaction` runtime anchor is now machine-validated in the shared verifier path rather than left as a free-form operator note.
+- Its artifact must be a JSON object with `interaction_window`, `session_id`, `vm_lease_id`, and `modalities`.
+- `interaction_window.start_unix_secs` and `interaction_window.end_unix_secs` must form an ordered positive range whose duration stays within the shared sanity bound.
+- `modalities.mouse`, `modalities.keyboard`, and `modalities.browsing` must each provide `event_count > 0` and at least one non-empty `evidence_refs` entry.
+- The verifier also requires the bounded-interaction anchor to agree on the same `session_id` and `vm_lease_id` as the headed-observation and video anchors, and it requires the interaction window to stay within the recorded video `timestamp_window`.
 - A preflight-only manual-headed run may end in `blocked_prereq`, but that disposition is never sufficient to complete row `735`.
 - The sanctioned non-test evidence writer is `cargo run -p testsuite --bin honeypot-manual-headed-writer -- <preflight|runtime|finalize> ...`.
 - Its `preflight` mode may record blocked prerequisites under an existing row-`706` run envelope before guest boot, while `runtime` mode refuses to write any runtime anchor unless `verify_row706_evidence_envelope` already passes for the same `run_id`.
