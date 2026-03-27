@@ -26,6 +26,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `host-smoke` may touch `/dev/kvm`, local Docker bring-up, documented host mounts, qcow2 overlays, QMP sockets, QGA sockets, and cleanup checks on that prepared host.
 - `host-smoke` must not require exposure to untrusted traffic or the full isolated attacker lab.
 - `host-smoke` is opt-in and must not run unless `DGW_HONEYPOT_HOST_SMOKE=1` is set.
+- `host-smoke` is also the right tier for real browser-surface wiring checks against the three-service compose stack when the proof stops at service readiness, dashboard bootstrap, and SSE handshake rather than live attacker traffic.
 
 ## Lab-E2E Tier
 
@@ -88,6 +89,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_control_plane.rs` also proves POSIX host-artifact cleanup in the same Rust `lab-e2e` lane by asserting the active snapshot, runtime dir, overlay, pid file, QMP socket, QGA socket, and fake-QEMU process are all removed after recycle in `control_plane_lab_harness_teardown_cleans_runtime_artifacts_on_posix_host`.
 - `testsuite/tests/honeypot_release.rs` adds supporting POSIX host depth by checking the three-service runtime artifact, permission, and redaction contract in `posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted`.
 - `testsuite/tests/honeypot_control_plane.rs` includes `control_plane_external_client_interoperability_smoke_uses_xfreerdp` as an optional supplemental Rust `lab-e2e` lane when explicit external-client lab inputs are configured.
+
+## Full-Stack Frontend Driver Evidence
+
+- The current three-service compose harness also includes a full-stack frontend-driver smoke lane in `host-smoke`.
+- `testsuite/tests/honeypot_release.rs` proves the checked-in `control-plane`, `proxy`, and `frontend` images can start together, render the `Observation Deck` dashboard through the real frontend-to-proxy bootstrap path, and complete the `/events` SSE header handshake in `compose_frontend_operator_path_renders_dashboard_and_proxies_event_stream_headers`.
+- That lane deliberately uses a compose-network driver request from a peer service instead of assuming Docker-published localhost ports are reachable on every workstation namespace.
+- That lane is intentionally narrower than `lab-e2e`: it proves operator-path frontend wiring for the full stack without claiming live attacker traffic, Tiny11 guest boot, or Chrome-driven session interaction.
 
 ## Gold Image Consumption Evidence
 

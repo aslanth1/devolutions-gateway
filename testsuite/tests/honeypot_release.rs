@@ -124,6 +124,29 @@ fn rewrite_compose_image_ref(
     serde_yaml::to_string(&document).expect("serialize compose document")
 }
 
+fn rewrite_compose_service_ports(compose_data: &str, service: &'static str, ports: &[String]) -> String {
+    let mut document: serde_yaml::Value = serde_yaml::from_str(compose_data).expect("parse compose document");
+    let root = document.as_mapping_mut().expect("compose root must be a mapping");
+    let services_key = serde_yaml::Value::String("services".to_owned());
+    let service_name_key = serde_yaml::Value::String(service.to_owned());
+    let ports_key = serde_yaml::Value::String("ports".to_owned());
+    let services = root
+        .get_mut(&services_key)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .expect("compose services must be a mapping");
+    let service_entry = services
+        .get_mut(&service_name_key)
+        .and_then(serde_yaml::Value::as_mapping_mut)
+        .expect("compose service entry must be a mapping");
+    let port_entries = ports
+        .iter()
+        .map(|port| serde_yaml::Value::String(port.clone()))
+        .collect::<Vec<_>>();
+    service_entry.insert(ports_key, serde_yaml::Value::Sequence(port_entries));
+
+    serde_yaml::to_string(&document).expect("serialize compose document")
+}
+
 fn honeypot_scope_token(scope: &str) -> String {
     let header = BASE64_URL_SAFE_NO_PAD.encode(r#"{"typ":"JWT","alg":"RS256"}"#);
     let payload = BASE64_URL_SAFE_NO_PAD.encode(format!(
@@ -543,8 +566,8 @@ impl DockerComposeFixture {
             compose_data = compose_data.replace(from, &to);
         }
 
-        compose_data = compose_data.replace("\"0.0.0.0:8443:8443\"", "\"127.0.0.1::8443\"");
-        compose_data = compose_data.replace("\"127.0.0.1:8080:8080\"", "\"127.0.0.1::8080\"");
+        compose_data = rewrite_compose_service_ports(&compose_data, "proxy", &["127.0.0.1::8443".to_owned()]);
+        compose_data = rewrite_compose_service_ports(&compose_data, "frontend", &["127.0.0.1::8080".to_owned()]);
 
         std::fs::write(&self.compose_path, compose_data)
             .with_context(|| format!("write executable compose fixture at {}", self.compose_path.display()))
@@ -771,6 +794,18 @@ fn docker_compose_json(
     let output = run_docker_compose(compose_path, project_name, &args)?;
     serde_json::from_slice(&output.stdout)
         .with_context(|| format!("decode compose exec JSON response for service {service}"))
+}
+
+fn docker_compose_exec_stdout(
+    compose_path: &Path,
+    project_name: &str,
+    service: &str,
+    command_and_args: &[String],
+) -> anyhow::Result<Vec<u8>> {
+    let mut args = vec!["exec".to_owned(), "-T".to_owned(), service.to_owned()];
+    args.extend(command_and_args.iter().cloned());
+    let output = run_docker_compose(compose_path, project_name, &args)?;
+    Ok(output.stdout)
 }
 
 fn docker_compose_service_container_id(
@@ -1829,6 +1864,129 @@ async fn compose_bring_up_starts_the_three_service_stack_and_tears_it_down_clean
 }
 
 #[tokio::test]
+async fn compose_frontend_operator_path_renders_dashboard_and_proxies_event_stream_headers() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping compose frontend operator-path host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let project_name = format!("dgw-honeypot-browser-{}", Uuid::new_v4().simple());
+    let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build control-plane compose browser image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy compose browser image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image)
+            .context("build frontend compose browser image")?;
+
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "docker compose up failed before compose-driver smoke\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should be healthy before compose-driver assertions")?;
+
+        let watch_token = honeypot_scope_token("gateway.honeypot.watch");
+        let health_body: Value = serde_json::from_slice(
+            &docker_compose_exec_stdout(
+                &fixture.compose_path,
+                &project_name,
+                "proxy",
+                &[
+                    "curl".to_owned(),
+                    "-fsS".to_owned(),
+                    "http://frontend:8080/health".to_owned(),
+                ],
+            )
+            .context("request frontend health through the compose-network driver path")?,
+        )
+        .context("decode frontend health JSON from the compose-network driver path")?;
+        assert_eq!(health_body["service_state"], "ready");
+        assert_eq!(health_body["proxy_bootstrap_reachable"], true);
+        assert_eq!(health_body["live_session_count"], 0);
+        assert_eq!(health_body["ready_tile_count"], 0);
+
+        let dashboard_body = String::from_utf8(
+            docker_compose_exec_stdout(
+                &fixture.compose_path,
+                &project_name,
+                "proxy",
+                &[
+                    "curl".to_owned(),
+                    "-fsS".to_owned(),
+                    format!("http://frontend:8080/?token={watch_token}"),
+                ],
+            )
+            .context("request frontend dashboard through the compose-network driver path")?,
+        )
+        .context("decode frontend dashboard HTML from the compose-network driver path")?;
+        assert!(dashboard_body.contains("Observation Deck"), "{dashboard_body}");
+        assert!(
+            dashboard_body.contains("No live sessions are visible yet."),
+            "{dashboard_body}"
+        );
+        assert!(
+            dashboard_body.contains("id=\"cursor-value\">0</code>"),
+            "{dashboard_body}"
+        );
+        assert!(
+            dashboard_body
+                .contains("new EventSource(authedPath(`/events?cursor=${encodeURIComponent(replayCursor)}`));"),
+            "{dashboard_body}"
+        );
+
+        let events_headers = String::from_utf8(
+            docker_compose_exec_stdout(
+                &fixture.compose_path,
+                &project_name,
+                "proxy",
+                &[
+                    "curl".to_owned(),
+                    "-fsS".to_owned(),
+                    "-I".to_owned(),
+                    format!("http://frontend:8080/events?cursor=0&token={watch_token}"),
+                ],
+            )
+            .context("request frontend events stream headers through the compose-network driver path")?,
+        )
+        .context("decode frontend events headers from the compose-network driver path")?;
+        assert!(events_headers.contains("200"), "{events_headers}");
+        assert!(events_headers.contains("text/event-stream"), "{events_headers}");
+        assert!(events_headers.contains("no-cache"), "{events_headers}");
+
+        Ok(())
+    }
+    .await;
+
+    let cleanup_errors = cleanup_compose_project(&fixture.compose_path, &project_name, &resources);
+
+    match (result, cleanup_errors.is_empty()) {
+        (Ok(()), true) => {}
+        (Ok(()), false) => panic!("compose driver-path cleanup failed: {}", cleanup_errors.join("; ")),
+        (Err(test_error), true) => panic!("{test_error:#}"),
+        (Err(test_error), false) => panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; ")),
+    }
+}
+
+#[tokio::test]
 async fn control_plane_rollback_drill_restores_the_stack_through_images_lock_selection() {
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
         eprintln!("skipping control-plane rollback host-smoke test: {error:#}");
@@ -2788,6 +2946,39 @@ fn downgraded_control_plane_contract_compatibility_is_allowed() {
         ServiceSchemaVersions::default(),
     )
     .expect("previous/current/current should stay contract-compatible");
+}
+
+#[test]
+fn compose_port_rewrite_keeps_proxy_ephemeral_and_frontend_explicit() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let compose_data = compose_document_for_selection(&lockfile, ServiceVersionSelection::default());
+    let compose_data = rewrite_compose_image_ref(
+        &compose_data,
+        "frontend",
+        "example.invalid/frontend:current",
+        false,
+        false,
+    );
+    let compose_data = rewrite_compose_service_ports(&compose_data, "proxy", &["127.0.0.1::8443".to_owned()]);
+    let compose_data = rewrite_compose_service_ports(&compose_data, "frontend", &["127.0.0.1::8080".to_owned()]);
+    let document: serde_yaml::Value = serde_yaml::from_str(&compose_data).expect("parse rewritten compose");
+    let services = document["services"]
+        .as_mapping()
+        .expect("compose services should stay a mapping");
+
+    assert_eq!(
+        services[&serde_yaml::Value::String("proxy".to_owned())]["ports"][0]
+            .as_str()
+            .expect("proxy port should stay a string"),
+        "127.0.0.1::8443"
+    );
+    assert_eq!(
+        services[&serde_yaml::Value::String("frontend".to_owned())]["ports"][0]
+            .as_str()
+            .expect("frontend port should stay a string"),
+        "127.0.0.1::8080"
+    );
 }
 
 #[test]
