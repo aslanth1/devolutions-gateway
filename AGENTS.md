@@ -396,6 +396,15 @@ Pass when: the image process is reproducible, documented, records provenance inp
 - [x] Add a canonical Tiny11 availability and readiness gate for lab-backed runs.
 Pass when: if the documented canonical Tiny11-derived image or trusted interop store is absent, the repo has one sanctioned path to create or import it for use, and if it already exists, every relevant test run executes heuristics that confirm provenance binding, expected clean-state, and required readiness before the run may proceed.
 
+- [x] Clone the working `kvm-win11` gold image into a dedicated Tiny11-prep workspace before any transformation.
+Pass when: the prep flow records the source `kvm-win11` image and firmware state it cloned from, uses a distinct target path that does not mutate the working gold image in place, and leaves the original `kvm-win11` lab bootable for fallback use.
+
+- [x] Boot the cloned `kvm-win11` prep image and confirm it reaches a known pre-transformation ready state under QEMU.
+Pass when: the cloned VM can be started intentionally, the prep notes record the boot path and guest identity used for the session, and the clone is ready for Tiny11 modification without relying on the original gold image staying powered on.
+
+- [ ] Apply the approved Tiny11 transformation scripts to the cloned `kvm-win11` prep image and capture the resulting provenance inputs.
+Pass when: the transformation runs against the clone rather than the original working image, the script references and digests needed for later manifest attestation are recorded, and the transformed output is ready for post-transform RDP verification plus sanctioned `consume-image` import into the canonical interop store.
+
 - [x] Enable and verify RDP in the gold image.
 Pass when: a fresh VM from the gold image reaches a known-ready signal and accepts RDP on TCP 3389 in the lab.
 
