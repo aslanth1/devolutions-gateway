@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +10,7 @@ use anyhow::Context as _;
 use honeypot_contracts::control_plane::HealthResponse;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use typed_builder::TypedBuilder;
 use uuid::Uuid;
@@ -1169,4 +1170,707 @@ fn validate_sha256_field(manifest_path: &Path, field_name: &str, value: &str) ->
         manifest_path.display()
     );
     Ok(())
+}
+
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_PREREQ_GATE: &str = "manual_prereq_gate";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_IDENTITY_BINDING: &str = "manual_identity_binding";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN: &str = "manual_stack_startup_shutdown";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_TINY11_RDP_READY: &str = "manual_tiny11_rdp_ready";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION: &str = "manual_headed_qemu_chrome_observation";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION: &str = "manual_bounded_interaction";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE: &str = "manual_video_evidence";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE: &str = "manual_redaction_hygiene";
+#[cfg(unix)]
+pub const MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE: &str = "manual_artifact_storage";
+#[cfg(unix)]
+pub const MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION: u32 = 1;
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualHeadedAnchorStatus {
+    Passed,
+    BlockedPrereq,
+    Failed,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualHeadedRunStatus {
+    Running,
+    Complete,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManualHeadedAnchorResult {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub row706_run_id: String,
+    pub anchor_id: String,
+    pub executed: bool,
+    pub status: ManualHeadedAnchorStatus,
+    pub producer: String,
+    pub captured_at_unix_secs: u64,
+    pub source_artifact_relpath: PathBuf,
+    pub source_artifact_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vm_lease_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManualHeadedRunManifest {
+    pub schema_version: u32,
+    pub run_id: String,
+    pub created_at_unix_secs: u64,
+    pub status: ManualHeadedRunStatus,
+    pub expected_anchor_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_unix_secs: Option<u64>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualHeadedEvidenceEnvelope {
+    pub row706_run_id: String,
+    pub anchor_results: Vec<ManualHeadedAnchorResult>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy)]
+struct ManualHeadedAnchorSpec {
+    id: &'static str,
+    runtime_required: bool,
+    requires_session_id: bool,
+    requires_vm_lease_id: bool,
+}
+
+#[cfg(unix)]
+const MANUAL_HEADED_ANCHOR_SPECS: [ManualHeadedAnchorSpec; 9] = [
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        runtime_required: false,
+        requires_session_id: false,
+        requires_vm_lease_id: false,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        runtime_required: false,
+        requires_session_id: false,
+        requires_vm_lease_id: false,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        runtime_required: true,
+        requires_session_id: false,
+        requires_vm_lease_id: false,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        runtime_required: true,
+        requires_session_id: false,
+        requires_vm_lease_id: true,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        runtime_required: true,
+        requires_session_id: true,
+        requires_vm_lease_id: true,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        runtime_required: true,
+        requires_session_id: true,
+        requires_vm_lease_id: true,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        runtime_required: true,
+        requires_session_id: true,
+        requires_vm_lease_id: true,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        runtime_required: false,
+        requires_session_id: false,
+        requires_vm_lease_id: false,
+    },
+    ManualHeadedAnchorSpec {
+        id: MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        runtime_required: false,
+        requires_session_id: false,
+        requires_vm_lease_id: false,
+    },
+];
+
+#[cfg(unix)]
+pub fn manual_headed_profile_dir(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
+    Ok(ensure_row706_run_dir_exists(root, run_id)?.join("manual_headed"))
+}
+
+#[cfg(unix)]
+pub fn manual_headed_artifacts_root(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
+    Ok(manual_headed_profile_dir(root, run_id)?.join("artifacts"))
+}
+
+#[cfg(unix)]
+pub fn manual_headed_begin_run(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
+    let profile_dir = manual_headed_profile_dir(root, run_id)?;
+    let artifacts_root = profile_dir.join("artifacts");
+    if profile_dir.exists() {
+        let metadata = fs::symlink_metadata(&profile_dir)
+            .with_context(|| format!("read manual-headed profile metadata {}", profile_dir.display()))?;
+        anyhow::ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "manual-headed profile dir must be a real directory: {}",
+            profile_dir.display()
+        );
+    } else {
+        fs::create_dir_all(&profile_dir)
+            .with_context(|| format!("create manual-headed profile dir {}", profile_dir.display()))?;
+    }
+    fs::create_dir_all(&artifacts_root)
+        .with_context(|| format!("create manual-headed artifacts root {}", artifacts_root.display()))?;
+    ensure_manual_headed_dir_within_run(root, run_id, &profile_dir)?;
+
+    let manifest = ManualHeadedRunManifest {
+        schema_version: MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION,
+        run_id: run_id.to_owned(),
+        created_at_unix_secs: unix_timestamp_secs()?,
+        status: ManualHeadedRunStatus::Running,
+        expected_anchor_ids: manual_headed_expected_anchor_ids()
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect(),
+        completed_at_unix_secs: None,
+    };
+    let manifest_path = manual_headed_run_manifest_path(&profile_dir);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&manifest_path)
+        .with_context(|| format!("create manual-headed run manifest {}", manifest_path.display()))?;
+    let bytes = serde_json::to_vec_pretty(&manifest).context("serialize manual-headed run manifest")?;
+    file.write_all(&bytes)
+        .with_context(|| format!("write manual-headed run manifest {}", manifest_path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync manual-headed run manifest {}", manifest_path.display()))?;
+
+    Ok(profile_dir)
+}
+
+#[cfg(unix)]
+pub fn manual_headed_complete_run(root: &Path, run_id: &str) -> anyhow::Result<bool> {
+    let profile_dir = manual_headed_profile_dir(root, run_id)?;
+    let mut manifest = read_manual_headed_run_manifest(&profile_dir)?;
+    anyhow::ensure!(
+        manifest.run_id == run_id,
+        "manual-headed manifest run_id {} does not match requested run {}",
+        manifest.run_id,
+        run_id
+    );
+
+    if manifest.status == ManualHeadedRunStatus::Complete {
+        return Ok(true);
+    }
+
+    if manual_headed_expected_anchor_ids()
+        .into_iter()
+        .any(|anchor_id| !manual_headed_anchor_result_path(&profile_dir, anchor_id).is_file())
+    {
+        return Ok(false);
+    }
+
+    manifest.status = ManualHeadedRunStatus::Complete;
+    manifest.completed_at_unix_secs = Some(unix_timestamp_secs()?);
+    write_manual_headed_run_manifest(&profile_dir, &manifest)?;
+
+    Ok(true)
+}
+
+#[cfg(unix)]
+pub fn write_manual_headed_anchor_result(
+    root: &Path,
+    run_id: &str,
+    result: &ManualHeadedAnchorResult,
+) -> anyhow::Result<()> {
+    validate_manual_headed_anchor_result_shape(result)?;
+    anyhow::ensure!(
+        result.run_id == run_id,
+        "manual-headed anchor {} run_id {} does not match requested run {}",
+        result.anchor_id,
+        result.run_id,
+        run_id
+    );
+    anyhow::ensure!(
+        result.row706_run_id == run_id,
+        "manual-headed anchor {} must bind to row706 run {}",
+        result.anchor_id,
+        run_id
+    );
+
+    let profile_dir = manual_headed_profile_dir(root, run_id)?;
+    let manifest = read_manual_headed_run_manifest(&profile_dir)?;
+    anyhow::ensure!(
+        manifest.status == ManualHeadedRunStatus::Running,
+        "manual-headed run {} must be running before writing anchor {}",
+        run_id,
+        result.anchor_id
+    );
+    anyhow::ensure!(
+        manifest
+            .expected_anchor_ids
+            .iter()
+            .any(|anchor_id| anchor_id == &result.anchor_id),
+        "manual-headed anchor {} is not declared in manifest {}",
+        result.anchor_id,
+        manual_headed_run_manifest_path(&profile_dir).display()
+    );
+
+    let artifact_path = manual_headed_anchor_artifact_path(root, run_id, &result.source_artifact_relpath)?;
+    anyhow::ensure!(
+        artifact_path.is_file(),
+        "manual-headed anchor {} source artifact {} does not exist",
+        result.anchor_id,
+        artifact_path.display()
+    );
+    let actual_sha256 = sha256_file_hex(&artifact_path)?;
+    anyhow::ensure!(
+        actual_sha256.eq_ignore_ascii_case(&result.source_artifact_sha256),
+        "manual-headed anchor {} source artifact digest mismatch for {}",
+        result.anchor_id,
+        artifact_path.display()
+    );
+
+    let result_path = manual_headed_anchor_result_path(&profile_dir, &result.anchor_id);
+    anyhow::ensure!(
+        !result_path.exists(),
+        "manual-headed anchor {} already exists in {}",
+        result.anchor_id,
+        result_path.display()
+    );
+    let tmp_path = result_path.with_extension(format!("tmp-{}", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(result).context("serialize manual-headed anchor result")?;
+    fs::write(&tmp_path, bytes).with_context(|| format!("write manual-headed temp fragment {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &result_path).with_context(|| {
+        format!(
+            "publish manual-headed anchor result {} via {}",
+            result_path.display(),
+            tmp_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+pub fn verify_manual_headed_evidence_envelope(
+    root: &Path,
+    run_id: &str,
+) -> anyhow::Result<ManualHeadedEvidenceEnvelope> {
+    let profile_dir = manual_headed_profile_dir(root, run_id)?;
+    let manifest = read_manual_headed_run_manifest(&profile_dir)?;
+    anyhow::ensure!(
+        manifest.run_id == run_id,
+        "manual-headed manifest run_id {} does not match requested run {}",
+        manifest.run_id,
+        run_id
+    );
+    anyhow::ensure!(
+        manifest.status == ManualHeadedRunStatus::Complete,
+        "manual-headed run {} must be complete before verification",
+        run_id
+    );
+
+    let results = read_manual_headed_anchor_results(root, run_id, &profile_dir, &manifest)?;
+    let by_anchor_id: BTreeMap<_, _> = results
+        .iter()
+        .map(|result| (result.anchor_id.as_str(), result))
+        .collect();
+
+    for spec in MANUAL_HEADED_ANCHOR_SPECS {
+        let result = by_anchor_id
+            .get(spec.id)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("manual-headed anchor {} is missing", spec.id))?;
+        anyhow::ensure!(
+            result.executed && result.status == ManualHeadedAnchorStatus::Passed,
+            "manual-headed anchor {} must be executed and passed",
+            spec.id
+        );
+        if spec.runtime_required {
+            verify_row706_evidence_envelope(root, &result.row706_run_id).with_context(|| {
+                format!(
+                    "manual-headed runtime anchor {} requires a verified row706 run {}",
+                    spec.id, result.row706_run_id
+                )
+            })?;
+        }
+    }
+
+    Ok(ManualHeadedEvidenceEnvelope {
+        row706_run_id: run_id.to_owned(),
+        anchor_results: results,
+    })
+}
+
+#[cfg(unix)]
+fn read_manual_headed_anchor_results(
+    root: &Path,
+    run_id: &str,
+    profile_dir: &Path,
+    manifest: &ManualHeadedRunManifest,
+) -> anyhow::Result<Vec<ManualHeadedAnchorResult>> {
+    let mut json_paths = fs::read_dir(profile_dir)
+        .with_context(|| format!("read manual-headed run dir {}", profile_dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("collect manual-headed run entries from {}", profile_dir.display()))?;
+    json_paths.retain(|path| path.extension().is_some_and(|extension| extension == "json"));
+    json_paths.sort();
+
+    let expected_json_names: BTreeMap<_, _> = manual_headed_expected_anchor_ids()
+        .into_iter()
+        .map(|anchor_id| (format!("{anchor_id}.json"), anchor_id))
+        .collect();
+    for json_path in &json_paths {
+        let file_name = json_path
+            .file_name()
+            .and_then(|file_name| file_name.to_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "manual-headed run dir contains a non-utf8 json path {}",
+                    json_path.display()
+                )
+            })?;
+        anyhow::ensure!(
+            file_name == "manifest.json" || expected_json_names.contains_key(file_name),
+            "manual-headed run {} contains unexpected json file {}",
+            manifest.run_id,
+            json_path.display()
+        );
+    }
+
+    let mut results = Vec::with_capacity(manifest.expected_anchor_ids.len());
+    for anchor_id in &manifest.expected_anchor_ids {
+        let result_path = manual_headed_anchor_result_path(profile_dir, anchor_id);
+        let bytes =
+            fs::read(&result_path).with_context(|| format!("read manual-headed fragment {}", result_path.display()))?;
+        let result: ManualHeadedAnchorResult = serde_json::from_slice(&bytes)
+            .with_context(|| format!("parse manual-headed fragment {}", result_path.display()))?;
+        validate_manual_headed_anchor_result_shape(&result)?;
+        anyhow::ensure!(
+            result.run_id == manifest.run_id,
+            "manual-headed anchor {} does not match run_id {}",
+            result.anchor_id,
+            manifest.run_id
+        );
+        anyhow::ensure!(
+            result.row706_run_id == run_id,
+            "manual-headed anchor {} must bind to row706 run {}",
+            result.anchor_id,
+            run_id
+        );
+
+        let artifact_path = manual_headed_anchor_artifact_path(root, run_id, &result.source_artifact_relpath)?;
+        anyhow::ensure!(
+            artifact_path.is_file(),
+            "manual-headed anchor {} source artifact {} does not exist",
+            result.anchor_id,
+            artifact_path.display()
+        );
+        let metadata = fs::symlink_metadata(&artifact_path)
+            .with_context(|| format!("read manual-headed artifact metadata {}", artifact_path.display()))?;
+        anyhow::ensure!(
+            !metadata.file_type().is_symlink(),
+            "manual-headed anchor {} source artifact must not be a symlink: {}",
+            result.anchor_id,
+            artifact_path.display()
+        );
+        let actual_sha256 = sha256_file_hex(&artifact_path)?;
+        anyhow::ensure!(
+            actual_sha256.eq_ignore_ascii_case(&result.source_artifact_sha256),
+            "manual-headed anchor {} source artifact digest mismatch for {}",
+            result.anchor_id,
+            artifact_path.display()
+        );
+        results.push(result);
+    }
+
+    Ok(results)
+}
+
+#[cfg(unix)]
+fn read_manual_headed_run_manifest(profile_dir: &Path) -> anyhow::Result<ManualHeadedRunManifest> {
+    let manifest_path = manual_headed_run_manifest_path(profile_dir);
+    let bytes = fs::read(&manifest_path)
+        .with_context(|| format!("read manual-headed run manifest {}", manifest_path.display()))?;
+    let manifest: ManualHeadedRunManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse manual-headed run manifest {}", manifest_path.display()))?;
+    validate_manual_headed_run_manifest_shape(profile_dir, &manifest)?;
+
+    Ok(manifest)
+}
+
+#[cfg(unix)]
+fn write_manual_headed_run_manifest(profile_dir: &Path, manifest: &ManualHeadedRunManifest) -> anyhow::Result<()> {
+    validate_manual_headed_run_manifest_shape(profile_dir, manifest)?;
+    let manifest_path = manual_headed_run_manifest_path(profile_dir);
+    let tmp_path = manifest_path.with_extension(format!("tmp-{}", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(manifest).context("serialize manual-headed run manifest")?;
+    fs::write(&tmp_path, bytes).with_context(|| format!("write manual-headed temp manifest {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, &manifest_path).with_context(|| {
+        format!(
+            "publish manual-headed run manifest {} via {}",
+            manifest_path.display(),
+            tmp_path.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn manual_headed_anchor_spec(anchor_id: &str) -> Option<ManualHeadedAnchorSpec> {
+    MANUAL_HEADED_ANCHOR_SPECS
+        .iter()
+        .find(|spec| spec.id == anchor_id)
+        .copied()
+}
+
+#[cfg(unix)]
+fn manual_headed_expected_anchor_ids() -> [&'static str; 9] {
+    [
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+    ]
+}
+
+#[cfg(unix)]
+fn manual_headed_run_manifest_path(profile_dir: &Path) -> PathBuf {
+    profile_dir.join("manifest.json")
+}
+
+#[cfg(unix)]
+fn manual_headed_anchor_result_path(profile_dir: &Path, anchor_id: &str) -> PathBuf {
+    profile_dir.join(format!("{anchor_id}.json"))
+}
+
+#[cfg(unix)]
+fn manual_headed_anchor_artifact_path(root: &Path, run_id: &str, relpath: &Path) -> anyhow::Result<PathBuf> {
+    validate_manual_headed_relpath(relpath)?;
+    let artifacts_root = manual_headed_artifacts_root(root, run_id)?;
+    let artifact_path = artifacts_root.join(relpath);
+    let canonical_artifacts_root = artifacts_root
+        .canonicalize()
+        .with_context(|| format!("canonicalize manual-headed artifacts root {}", artifacts_root.display()))?;
+    let parent = artifact_path.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "manual-headed artifact path must have a parent: {}",
+            artifact_path.display()
+        )
+    })?;
+    fs::create_dir_all(parent).with_context(|| format!("create manual-headed artifact parent {}", parent.display()))?;
+    let canonical_parent = parent
+        .canonicalize()
+        .with_context(|| format!("canonicalize manual-headed artifact parent {}", parent.display()))?;
+    anyhow::ensure!(
+        canonical_parent.starts_with(&canonical_artifacts_root),
+        "manual-headed artifact parent {} escapes artifacts root {}",
+        canonical_parent.display(),
+        canonical_artifacts_root.display()
+    );
+    Ok(artifact_path)
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_anchor_result_shape(result: &ManualHeadedAnchorResult) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        result.schema_version == MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION,
+        "manual-headed anchor {} must use schema version {}",
+        result.anchor_id,
+        MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION
+    );
+    validate_row706_run_id(&result.run_id)?;
+    validate_row706_run_id(&result.row706_run_id)?;
+    let spec = manual_headed_anchor_spec(&result.anchor_id)
+        .ok_or_else(|| anyhow::anyhow!("manual-headed anchor id {} is not recognized", result.anchor_id))?;
+    anyhow::ensure!(
+        !result.producer.trim().is_empty(),
+        "manual-headed anchor {} producer must not be empty",
+        result.anchor_id
+    );
+    anyhow::ensure!(
+        result.captured_at_unix_secs > 0,
+        "manual-headed anchor {} must record captured_at_unix_secs",
+        result.anchor_id
+    );
+    validate_sha256_field(
+        Path::new("manual-headed"),
+        &format!("{}.source_artifact_sha256", result.anchor_id),
+        &result.source_artifact_sha256,
+    )?;
+    validate_manual_headed_relpath(&result.source_artifact_relpath)?;
+
+    match result.status {
+        ManualHeadedAnchorStatus::BlockedPrereq => anyhow::ensure!(
+            !result.executed,
+            "manual-headed blocked-prereq anchor {} must set executed=false",
+            result.anchor_id
+        ),
+        ManualHeadedAnchorStatus::Passed | ManualHeadedAnchorStatus::Failed => anyhow::ensure!(
+            result.executed,
+            "manual-headed executed anchor {} must set executed=true when status is {:?}",
+            result.anchor_id,
+            result.status
+        ),
+    }
+
+    if spec.requires_session_id {
+        anyhow::ensure!(
+            result
+                .session_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            "manual-headed anchor {} requires session_id",
+            result.anchor_id
+        );
+    }
+    if spec.requires_vm_lease_id {
+        anyhow::ensure!(
+            result
+                .vm_lease_id
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+            "manual-headed anchor {} requires vm_lease_id",
+            result.anchor_id
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_run_manifest_shape(
+    profile_dir: &Path,
+    manifest: &ManualHeadedRunManifest,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        manifest.schema_version == MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION,
+        "manual-headed manifest in {} must use schema version {}",
+        manual_headed_run_manifest_path(profile_dir).display(),
+        MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION
+    );
+    validate_row706_run_id(&manifest.run_id)?;
+    anyhow::ensure!(
+        manifest.expected_anchor_ids.len() == manual_headed_expected_anchor_ids().len(),
+        "manual-headed manifest {} must declare all expected anchors",
+        manual_headed_run_manifest_path(profile_dir).display()
+    );
+    for anchor_id in manual_headed_expected_anchor_ids() {
+        anyhow::ensure!(
+            manifest
+                .expected_anchor_ids
+                .iter()
+                .any(|declared_anchor| declared_anchor == anchor_id),
+            "manual-headed manifest {} is missing expected anchor {}",
+            manual_headed_run_manifest_path(profile_dir).display(),
+            anchor_id
+        );
+    }
+    if manifest.status == ManualHeadedRunStatus::Complete {
+        anyhow::ensure!(
+            manifest.completed_at_unix_secs.is_some(),
+            "manual-headed manifest {} must record completed_at_unix_secs when complete",
+            manual_headed_run_manifest_path(profile_dir).display()
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_relpath(relpath: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !relpath.as_os_str().is_empty(),
+        "manual-headed artifact relpath must not be empty"
+    );
+    anyhow::ensure!(
+        relpath.is_relative(),
+        "manual-headed artifact relpath must stay relative: {}",
+        relpath.display()
+    );
+    anyhow::ensure!(
+        relpath
+            .components()
+            .all(|component| matches!(component, Component::Normal(_))),
+        "manual-headed artifact relpath must not escape or use special components: {}",
+        relpath.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_row706_run_dir_exists(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
+    let run_dir = row706_run_dir(root, run_id)?;
+    let runs_root = row706_runs_root(root);
+    fs::create_dir_all(&runs_root).with_context(|| format!("create row706 runs root {}", runs_root.display()))?;
+    if run_dir.exists() {
+        let metadata = fs::symlink_metadata(&run_dir)
+            .with_context(|| format!("read row706 run dir metadata {}", run_dir.display()))?;
+        anyhow::ensure!(
+            metadata.file_type().is_dir() && !metadata.file_type().is_symlink(),
+            "row706 run dir must be a real directory: {}",
+            run_dir.display()
+        );
+    } else {
+        fs::create_dir(&run_dir).with_context(|| format!("create row706 run dir {}", run_dir.display()))?;
+    }
+    ensure_row706_run_dir_within_root(&runs_root, &run_dir)?;
+    Ok(run_dir)
+}
+
+#[cfg(unix)]
+fn ensure_manual_headed_dir_within_run(root: &Path, run_id: &str, profile_dir: &Path) -> anyhow::Result<()> {
+    let run_dir = ensure_row706_run_dir_exists(root, run_id)?;
+    let canonical_run_dir = run_dir
+        .canonicalize()
+        .with_context(|| format!("canonicalize row706 run dir {}", run_dir.display()))?;
+    let canonical_profile_dir = profile_dir
+        .canonicalize()
+        .with_context(|| format!("canonicalize manual-headed profile dir {}", profile_dir.display()))?;
+    anyhow::ensure!(
+        canonical_profile_dir.starts_with(&canonical_run_dir),
+        "manual-headed profile dir {} escapes row706 run dir {}",
+        canonical_profile_dir.display(),
+        canonical_run_dir.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sha256_file_hex(path: &Path) -> anyhow::Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("read sha256 input {}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(&bytes)))
 }

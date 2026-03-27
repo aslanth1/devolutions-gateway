@@ -17,6 +17,17 @@ pub fn assert_contains(doc_path: &str, body: &str, needle: &str) {
     );
 }
 
+pub fn contains_windows_product_key_like_plaintext(body: &str) -> bool {
+    body.split_whitespace().any(|token| {
+        let candidate = token.trim_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-');
+        let groups: Vec<_> = candidate.split('-').collect();
+        groups.len() == 5
+            && groups
+                .iter()
+                .all(|group| group.len() == 5 && group.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit()))
+    })
+}
+
 pub fn section_checklist_lines<'a>(body: &'a str, section_heading: &str) -> Vec<&'a str> {
     let mut in_section = false;
     let mut lines = Vec::new();

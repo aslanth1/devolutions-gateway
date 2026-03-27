@@ -122,6 +122,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `AGENTS.md` now carries a gated `Milestone 6a` contract for any future headed Tiny11 walkthrough that also touches Chrome or manual guest interaction.
 - That contract is intentionally fail-closed: it requires explicit run identity binding, service-state capture, redacted credential handling, retrievable artifact references, and approved storage for heavy or sensitive VM assets instead of normal git history.
 - The manual-headed lane remains supplemental to the canonical Rust `lab-e2e` proof and must not be used to bypass the existing Tiny11 lineage, RDP-ready, or cleanup evidence gates.
+- The only approved evidence root for manual-headed work is the existing row-`706` run envelope under `target/row706/runs/<run_id>/`; Milestone `6a` is a profile inside that run root, not a second authority.
+- Milestone `6a` anchors are now split into `preflight_only` and `runtime_required` classes.
+- `preflight_only` anchors may validate headed-display, Chrome, run identity, the approved Windows key source, the attested Tiny11 image-store or interop root declaration, redaction policy, and artifact-storage contract inputs before any guest boots.
+- `runtime_required` anchors must bind to machine-produced artifacts and a verified row-`706` runtime run before rows `704`, `707`, `710`, `713`, `716`, or the runtime portion of `722` may be treated as complete.
+- A preflight-only manual-headed run may end in `blocked_prereq`, but that disposition is never sufficient to complete row `735`.
+- The redaction lane still fails closed for tracked plaintext RDP credentials, session tokens, and similar secrets, but it now allows the single repo-local Windows provisioning key file documented in `WINDOWS11-LICENSE.md` for local Win11 host creation only.
+- That allowlist does not extend to manual-headed evidence, exports, screenshots, or any second tracked artifact; the provisioning key must stay confined to that one documented file or an approved mounted secret path.
 
 ## Tiny11 Production And Recycle Evidence
 

@@ -6,6 +6,7 @@ mod cli;
 mod honeypot_control_plane;
 mod honeypot_docs;
 mod honeypot_frontend;
+mod honeypot_manual_headed;
 mod honeypot_release;
 mod honeypot_tiers;
 mod honeypot_visibility;

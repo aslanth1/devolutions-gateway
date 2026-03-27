@@ -695,10 +695,10 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 
 ### Milestone 6a: Manual Headed Tiny11 Walkthrough Contract (Gated)
 
-- [ ] Add a gated manual-headed lab prerequisite checklist.
-Pass when: the run requires an explicit manual-lab gate, confirms headed-display and Chrome availability, records the Tiny11 key path without committing key material, and names the attested Tiny11 image-store or interop root before startup begins.
+- [x] Add a gated manual-headed lab prerequisite checklist.
+Pass when: the run requires an explicit manual-lab gate, confirms headed-display and Chrome availability, records either the approved repo-local Windows provisioning key file or a non-git secret path for key material, and names the attested Tiny11 image-store or interop root before startup begins.
 
-- [ ] Add a manual-headed run-identity binding checklist.
+- [x] Add a manual-headed run-identity binding checklist.
 Pass when: one `run_id` is created and every committed log, manifest, frontend snapshot, video reference, and service-state capture binds to that same `run_id`, `session_id`, and `vm_lease_id` whenever those identifiers exist.
 
 - [ ] Add a manual full-stack startup and shutdown proof checklist for `control-plane`, `proxy`, and `frontend`.
@@ -716,10 +716,10 @@ Pass when: the run records a bounded mouse, keyboard, and guest-browsing interac
 - [ ] Add a video-evidence checklist for manual-headed runs.
 Pass when: a reviewable video artifact is saved through the approved artifact path and the committed evidence index records its digest, duration floor, timestamp window, storage URI, and retention window.
 
-- [ ] Add a redaction and credential-handling checklist for manual-headed runs.
-Pass when: plaintext RDP credentials, product keys, session tokens, and similar secrets are forbidden from git-tracked artifacts, redacted evidence remains reviewable, and live credentials follow the documented secret-handling path.
+- [x] Add a redaction and credential-handling checklist for manual-headed runs.
+Pass when: plaintext RDP credentials, session tokens, and similar secrets are forbidden from git-tracked artifacts, the single repo-local Windows provisioning key file is explicitly allowlisted for local Win11 host creation only, redacted evidence remains reviewable, and live credentials follow the documented secret-handling path without copying the key into run evidence or exports.
 
-- [ ] Add a VM artifact storage and retrieval checklist for manual-headed runs.
+- [x] Add a VM artifact storage and retrieval checklist for manual-headed runs.
 Pass when: raw `.qcow2`, overlay, memory-dump, and equivalent heavy or sensitive VM state are forbidden from normal git history, the approved storage backend is recorded, and the checklist fails if the referenced artifact cannot be retrieved or its digest mismatches.
 
 ## Verification Matrix

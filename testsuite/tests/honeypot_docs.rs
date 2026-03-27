@@ -1,4 +1,7 @@
-use testsuite::honeypot_docs::{assert_contains, is_checked_checklist_line, read_repo_text, section_checklist_lines};
+use testsuite::honeypot_docs::{
+    assert_contains, contains_windows_product_key_like_plaintext, is_checked_checklist_line, read_repo_text,
+    section_checklist_lines,
+};
 
 #[test]
 fn honeypot_docs_keep_decision_freeze_matrix_authoritative() {
@@ -177,7 +180,12 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
     assert_contains(
         agents_path,
         &agents,
-        "plaintext RDP credentials, product keys, session tokens, and similar secrets are forbidden from git-tracked artifacts",
+        "plaintext RDP credentials, session tokens, and similar secrets are forbidden from git-tracked artifacts",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "single repo-local Windows provisioning key file is explicitly allowlisted for local Win11 host creation only",
     );
     assert_contains(
         agents_path,
@@ -192,5 +200,49 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         testing_path,
         &testing,
         "The manual-headed lane remains supplemental to the canonical Rust `lab-e2e` proof",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "allows the single repo-local Windows provisioning key file documented in `WINDOWS11-LICENSE.md`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "the attested Tiny11 image-store or interop root declaration",
+    );
+
+    let runbook_path = "docs/honeypot/runbook.md";
+    let runbook = read_repo_text(runbook_path);
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "the attested Tiny11 image-store or interop root is named before startup begins",
+    );
+}
+
+#[test]
+fn honeypot_docs_keep_windows_provisioning_key_allowlist_narrow() {
+    let key_doc_path = "WINDOWS11-LICENSE.md";
+    let key_doc = read_repo_text(key_doc_path);
+    assert!(
+        contains_windows_product_key_like_plaintext(&key_doc),
+        "{key_doc_path} must retain the repo-local Windows provisioning key"
+    );
+
+    for doc_path in ["AGENTS.md", "docs/honeypot/runbook.md", "docs/honeypot/testing.md"] {
+        let body = read_repo_text(doc_path);
+        assert!(
+            !contains_windows_product_key_like_plaintext(&body),
+            "{doc_path} must not duplicate the repo-local Windows provisioning key"
+        );
+    }
+
+    let runbook_path = "docs/honeypot/runbook.md";
+    let runbook = read_repo_text(runbook_path);
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Do not copy that key into manual-headed evidence, screenshots, exports, secondary docs, or any other tracked artifact.",
     );
 }

@@ -73,6 +73,20 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 7. Open the operator frontend at `http://127.0.0.1:8080/`.
 8. Do not allow attacker traffic until the stack is healthy end to end and the operator can load the dashboard without bootstrap errors.
 
+## Milestone 6a Manual-Headed Checklist
+
+- Use one `run_id` for the entire headed walkthrough and store every manual-headed artifact under `target/row706/runs/<run_id>/`.
+- Treat manual-headed evidence as a profile in the existing row-`706` run envelope, not as a separate checklist store or second authority.
+- Do not start a manual-headed run unless the explicit manual-lab gate is recorded, headed display is available, Chrome is present, the run records either `WINDOWS11-LICENSE.md` or a non-git secret path for Windows key material, and the attested Tiny11 image-store or interop root is named before startup begins.
+- Keep live product keys, RDP credentials, and equivalent secrets only in mounted secret paths or other non-git operator storage.
+- The tracked `WINDOWS11-LICENSE.md` file is the one allowed repo-local Windows provisioning key file for local Win11 host creation.
+- Do not copy that key into manual-headed evidence, screenshots, exports, secondary docs, or any other tracked artifact.
+- Record `session_id` and `vm_lease_id` on every runtime manual-headed artifact whenever those identifiers exist.
+- Treat startup/shutdown service-state capture, Tiny11 plus RDP-ready proof, headed QEMU plus Chrome correlation, bounded interaction, video evidence, and heavy-artifact retrieval as `runtime_required`.
+- Treat prerequisite gating, run identity setup, redaction hygiene, and artifact-storage contract setup as `preflight_only`.
+- A `preflight_only` run may end in `blocked_prereq`, but it must not be cited as completion evidence for row `735`.
+- Any artifact referenced by a manual-headed run must remain retrievable through the approved storage backend and must match the recorded digest when re-read.
+
 ## Routine Observation
 
 - The frontend dashboard is the preferred operator surface for live sessions.
