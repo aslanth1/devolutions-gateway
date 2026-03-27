@@ -89,6 +89,14 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_release.rs` adds supporting POSIX host depth by checking the three-service runtime artifact, permission, and redaction contract in `posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted`.
 - `testsuite/tests/honeypot_control_plane.rs` includes `control_plane_external_client_interoperability_smoke_uses_xfreerdp` as an optional supplemental Rust `lab-e2e` lane when explicit external-client lab inputs are configured.
 
+## Gold Image Consumption Evidence
+
+- `AGENTS.md` pass row `Build or consume the Tiny11-derived Windows 11 gold image flow without Bash or Python wrappers.` is satisfied by the Rust-native consume path in `honeypot-control-plane`.
+- `honeypot/control-plane/src/image.rs` proves the consume flow rejects traversal, symlink escape, duplicate conflicting identities, and digest drift while producing a canonical digest-pinned trusted artifact and manifest that `trusted_images()` can load directly.
+- `testsuite/tests/honeypot_control_plane.rs` proves the operator-facing `honeypot-control-plane consume-image` command imports a source bundle, starts the control plane with no manual manifest edits, reports one trusted image, and reaches acquire preconditions successfully in `control_plane_consume_image_command_imports_a_trusted_bundle_without_manual_manifest_edits`.
+- This consume flow guarantees path confinement, digest binding, atomic visibility of imported artifacts, and compatibility with the existing lease path.
+- This consume flow does not yet provide an external signer or PKI trust root beyond the recorded approval identity and manifest/digest checks.
+
 ## Gold Image Acceptance Evidence
 
 - `AGENTS.md` pass row `Add a gold-image acceptance test.` is satisfied by the Rust `lab-e2e` acceptance lane in `testsuite/tests/honeypot_control_plane.rs`.

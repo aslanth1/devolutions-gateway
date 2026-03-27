@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
@@ -21,7 +21,25 @@ pub(crate) struct TrustedImage {
     pub(crate) base_image_path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsumeTrustedImageState {
+    Imported,
+    AlreadyPresent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ConsumedTrustedImage {
+    pub import_state: ConsumeTrustedImageState,
+    pub pool_name: String,
+    pub vm_name: String,
+    pub attestation_ref: String,
+    pub manifest_path: PathBuf,
+    pub base_image_path: PathBuf,
+    pub base_image_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TrustedImageManifestDocument {
     pool_name: String,
@@ -36,7 +54,7 @@ struct TrustedImageManifestDocument {
     approval: ApprovalRecord,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SourceIsoRecord {
     acquisition_channel: String,
@@ -48,30 +66,169 @@ struct SourceIsoRecord {
     sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TransformationRecord {
     timestamp: String,
     inputs: Vec<TransformationInputRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TransformationInputRecord {
     reference: String,
     sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BaseImageRecord {
     sha256: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApprovalRecord {
     approved_by: String,
+}
+
+pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) -> anyhow::Result<ConsumedTrustedImage> {
+    fs::create_dir_all(&paths.image_store)
+        .with_context(|| format!("create image store {}", paths.image_store.display()))?;
+    let manifest_dir = paths.manifest_dir();
+    fs::create_dir_all(&manifest_dir).with_context(|| format!("create manifest dir {}", manifest_dir.display()))?;
+
+    let source_manifest_path = source_manifest_path
+        .canonicalize()
+        .with_context(|| format!("canonicalize source manifest {}", source_manifest_path.display()))?;
+    validate_regular_file("source manifest", &source_manifest_path)?;
+    validate_non_symlink_file("source manifest", &source_manifest_path)?;
+
+    let manifest = read_trusted_image_manifest(&source_manifest_path)?;
+    validate_manifest(&manifest, &source_manifest_path)?;
+
+    let source_bundle_root = source_manifest_path
+        .parent()
+        .context("source manifest must have a parent directory")?
+        .canonicalize()
+        .with_context(|| format!("canonicalize source bundle root {}", source_manifest_path.display()))?;
+    let source_base_image_path = resolve_source_bundle_base_image_path(&source_bundle_root, &manifest.base_image_path)?;
+    validate_non_symlink_file("source base image", &source_base_image_path)?;
+    let expected_base_image_sha256 = normalize_sha256("base_image.sha256", &manifest.base_image.sha256)?;
+
+    let final_image_file_name = format!("sha256-{}.qcow2", expected_base_image_sha256);
+    let final_base_image_path = paths.image_store.join(&final_image_file_name);
+    let final_manifest_path = manifest_dir.join(format!(
+        "{}-{}.json",
+        sanitize_file_component(&manifest.vm_name),
+        &expected_base_image_sha256[..12]
+    ));
+    let imported_manifest = TrustedImageManifestDocument {
+        base_image_path: PathBuf::from(&final_image_file_name),
+        ..manifest
+    };
+
+    let _import_lock = ImportLock::acquire(&manifest_dir, &final_manifest_path)?;
+    validate_existing_trusted_identity(
+        paths,
+        &imported_manifest,
+        &final_base_image_path,
+        &final_manifest_path,
+        &expected_base_image_sha256,
+    )?;
+
+    let final_image_exists = final_base_image_path.exists();
+    let final_manifest_exists = final_manifest_path.exists();
+    if final_image_exists || final_manifest_exists {
+        anyhow::ensure!(
+            final_image_exists && final_manifest_exists,
+            "existing imported artifact is incomplete for vm_name {}",
+            imported_manifest.vm_name,
+        );
+        let existing_manifest = read_trusted_image_manifest(&final_manifest_path)?;
+        anyhow::ensure!(
+            existing_manifest == imported_manifest,
+            "existing imported manifest {} does not match the requested trusted artifact",
+            final_manifest_path.display(),
+        );
+        let actual_digest = sha256_file(&final_base_image_path)?;
+        anyhow::ensure!(
+            actual_digest == expected_base_image_sha256,
+            "existing imported base image digest mismatch for {}: expected {}, got {}",
+            final_base_image_path.display(),
+            expected_base_image_sha256,
+            actual_digest,
+        );
+
+        return Ok(ConsumedTrustedImage {
+            import_state: ConsumeTrustedImageState::AlreadyPresent,
+            pool_name: imported_manifest.pool_name,
+            vm_name: imported_manifest.vm_name,
+            attestation_ref: imported_manifest.attestation_ref,
+            manifest_path: final_manifest_path,
+            base_image_path: final_base_image_path,
+            base_image_sha256: expected_base_image_sha256,
+        });
+    }
+
+    let temp_image_path = final_base_image_path.with_extension("qcow2.importing");
+    let temp_manifest_path = final_manifest_path.with_extension("json.importing");
+    let temp_image_guard = TempPathGuard::new(&temp_image_path);
+    let temp_manifest_guard = TempPathGuard::new(&temp_manifest_path);
+
+    copy_file_atomically(&source_base_image_path, &temp_image_path)?;
+    let copied_digest = sha256_file(&temp_image_path)?;
+    anyhow::ensure!(
+        copied_digest == expected_base_image_sha256,
+        "base_image.sha256 mismatch for imported artifact {}: expected {}, got {}",
+        temp_image_path.display(),
+        expected_base_image_sha256,
+        copied_digest,
+    );
+
+    write_json_atomically(&temp_manifest_path, &imported_manifest)?;
+
+    fs::rename(&temp_image_path, &final_base_image_path).with_context(|| {
+        format!(
+            "rename imported base image {} to {}",
+            temp_image_path.display(),
+            final_base_image_path.display(),
+        )
+    })?;
+    sync_parent_dir(&final_base_image_path)?;
+    temp_image_guard.disarm();
+
+    fs::rename(&temp_manifest_path, &final_manifest_path).with_context(|| {
+        format!(
+            "rename imported manifest {} to {}",
+            temp_manifest_path.display(),
+            final_manifest_path.display(),
+        )
+    })?;
+    sync_parent_dir(&final_manifest_path)?;
+    temp_manifest_guard.disarm();
+
+    if let Err(error) = trusted_images(paths) {
+        let _ = fs::remove_file(&final_manifest_path);
+        let _ = fs::remove_file(&final_base_image_path);
+        return Err(error).with_context(|| {
+            format!(
+                "validate imported trusted image {} and {}",
+                final_manifest_path.display(),
+                final_base_image_path.display(),
+            )
+        });
+    }
+
+    Ok(ConsumedTrustedImage {
+        import_state: ConsumeTrustedImageState::Imported,
+        pool_name: imported_manifest.pool_name,
+        vm_name: imported_manifest.vm_name,
+        attestation_ref: imported_manifest.attestation_ref,
+        manifest_path: final_manifest_path,
+        base_image_path: final_base_image_path,
+        base_image_sha256: expected_base_image_sha256,
+    })
 }
 
 pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedImage>> {
@@ -238,6 +395,236 @@ fn validate_image_store_path(image_store: &Path, path: &Path) -> anyhow::Result<
     Ok(())
 }
 
+fn resolve_source_bundle_base_image_path(source_bundle_root: &Path, configured_path: &Path) -> anyhow::Result<PathBuf> {
+    validate_bundle_relative_path("base_image_path", configured_path)?;
+
+    let resolved_path = source_bundle_root.join(configured_path);
+    validate_non_symlink_file("source base image", &resolved_path)?;
+    let canonical_path = resolved_path
+        .canonicalize()
+        .with_context(|| format!("canonicalize source base image {}", resolved_path.display()))?;
+
+    anyhow::ensure!(
+        canonical_path.starts_with(source_bundle_root),
+        "source base image {} escapes source bundle {}",
+        canonical_path.display(),
+        source_bundle_root.display(),
+    );
+
+    Ok(canonical_path)
+}
+
+fn validate_bundle_relative_path(label: &str, path: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(!path.as_os_str().is_empty(), "{label} must not be empty");
+    anyhow::ensure!(!path.is_absolute(), "{label} must be a relative bundle path");
+    anyhow::ensure!(
+        path.components()
+            .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "{label} must not contain traversal or special path components",
+    );
+    Ok(())
+}
+
+fn validate_regular_file(label: &str, path: &Path) -> anyhow::Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("read metadata for {} {}", label, path.display()))?;
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "{label} {} must be a regular file",
+        path.display()
+    );
+    Ok(())
+}
+
+fn validate_non_symlink_file(label: &str, path: &Path) -> anyhow::Result<()> {
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("read metadata for {} {}", label, path.display()))?;
+    anyhow::ensure!(
+        !metadata.file_type().is_symlink(),
+        "{label} {} must not be a symlink",
+        path.display()
+    );
+    anyhow::ensure!(
+        metadata.file_type().is_file(),
+        "{label} {} must be a regular file",
+        path.display()
+    );
+    Ok(())
+}
+
+fn validate_existing_trusted_identity(
+    paths: &PathConfig,
+    manifest: &TrustedImageManifestDocument,
+    final_base_image_path: &Path,
+    final_manifest_path: &Path,
+    expected_base_image_sha256: &str,
+) -> anyhow::Result<()> {
+    let trusted_images = trusted_images(paths)?;
+
+    if let Some(existing_trusted_image) = trusted_images
+        .iter()
+        .find(|trusted_image| trusted_image.vm_name == manifest.vm_name)
+    {
+        let existing_identity_matches = existing_trusted_image.pool_name == manifest.pool_name
+            && existing_trusted_image.attestation_ref == manifest.attestation_ref
+            && existing_trusted_image.base_image_path == final_base_image_path;
+        anyhow::ensure!(
+            existing_identity_matches,
+            "trusted vm_name {} already exists with a different identity",
+            manifest.vm_name,
+        );
+    }
+
+    anyhow::ensure!(
+        !final_manifest_path.exists()
+            || !final_base_image_path.exists()
+            || sha256_file(final_base_image_path)? == expected_base_image_sha256,
+        "existing imported base image {} does not match the requested digest {}",
+        final_base_image_path.display(),
+        expected_base_image_sha256,
+    );
+
+    Ok(())
+}
+
+fn copy_file_atomically(source_path: &Path, destination_path: &Path) -> anyhow::Result<()> {
+    let mut source_file =
+        fs::File::open(source_path).with_context(|| format!("open source base image {}", source_path.display()))?;
+    let mut destination_file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination_path)
+        .with_context(|| format!("create staging image {}", destination_path.display()))?;
+    let mut buffer = [0u8; 8192];
+
+    loop {
+        let read = source_file
+            .read(&mut buffer)
+            .with_context(|| format!("read source base image {}", source_path.display()))?;
+        if read == 0 {
+            break;
+        }
+
+        destination_file
+            .write_all(&buffer[..read])
+            .with_context(|| format!("write staging image {}", destination_path.display()))?;
+    }
+
+    destination_file
+        .sync_all()
+        .with_context(|| format!("sync staging image {}", destination_path.display()))?;
+    sync_parent_dir(destination_path)
+}
+
+fn write_json_atomically<T>(path: &Path, value: &T) -> anyhow::Result<()>
+where
+    T: Serialize,
+{
+    let bytes = serde_json::to_vec_pretty(value).context("serialize imported trusted manifest")?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .with_context(|| format!("create staging manifest {}", path.display()))?;
+    file.write_all(&bytes)
+        .with_context(|| format!("write staging manifest {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("sync staging manifest {}", path.display()))?;
+    sync_parent_dir(path)
+}
+
+fn sanitize_file_component(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "trusted-image".to_owned()
+    } else {
+        sanitized
+    }
+}
+
+fn sync_parent_dir(path: &Path) -> anyhow::Result<()> {
+    let parent = path
+        .parent()
+        .with_context(|| format!("resolve parent directory for {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        let directory = fs::File::open(parent).with_context(|| format!("open directory {}", parent.display()))?;
+        directory
+            .sync_all()
+            .with_context(|| format!("sync directory {}", parent.display()))?;
+    }
+
+    #[cfg(not(unix))]
+    let _ = parent;
+
+    Ok(())
+}
+
+struct TempPathGuard {
+    path: PathBuf,
+    armed: std::sync::atomic::AtomicBool,
+}
+
+impl TempPathGuard {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            armed: std::sync::atomic::AtomicBool::new(true),
+        }
+    }
+
+    fn disarm(&self) {
+        self.armed.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+impl Drop for TempPathGuard {
+    fn drop(&mut self) {
+        if self.armed.load(std::sync::atomic::Ordering::Acquire) {
+            let _ = fs::remove_file(&self.path);
+        }
+    }
+}
+
+struct ImportLock {
+    path: PathBuf,
+}
+
+impl ImportLock {
+    fn acquire(manifest_dir: &Path, final_manifest_path: &Path) -> anyhow::Result<Self> {
+        let file_name = final_manifest_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("resolve imported manifest file name")?;
+        let path = manifest_dir.join(format!(".{file_name}.lock"));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("create import lock {}", path.display()))?;
+        writeln!(file, "pid={}", std::process::id())
+            .with_context(|| format!("write import lock {}", path.display()))?;
+        file.sync_all()
+            .with_context(|| format!("sync import lock {}", path.display()))?;
+        Ok(Self { path })
+    }
+}
+
+impl Drop for ImportLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 fn normalize_sha256(label: &str, digest: &str) -> anyhow::Result<String> {
     let digest = digest.trim().to_ascii_lowercase();
     anyhow::ensure!(!digest.is_empty(), "{label} must not be empty");
@@ -294,12 +681,12 @@ fn is_json_file(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
-    use super::trusted_images;
+    use super::{ConsumeTrustedImageState, consume_trusted_image, trusted_images};
     use crate::config::PathConfig;
 
     #[test]
@@ -451,6 +838,242 @@ mod tests {
 
         let error = trusted_images(&paths).expect_err("duplicate vm_name should fail");
         assert!(format!("{error:#}").contains("must be unique"), "{error:#}");
+    }
+
+    #[test]
+    fn consume_trusted_image_imports_a_bundle_into_the_trusted_store() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(tempdir.path(), "honeypot-import-0", "default", "image-0");
+
+        let imported = consume_trusted_image(&paths, &bundle.manifest_path).expect("import trusted image bundle");
+
+        assert_eq!(imported.import_state, ConsumeTrustedImageState::Imported);
+        assert!(imported.base_image_path.starts_with(&paths.image_store));
+        assert!(imported.manifest_path.starts_with(paths.manifest_dir()));
+        assert!(imported.base_image_path.is_file());
+        assert!(imported.manifest_path.is_file());
+
+        let trusted_images = trusted_images(&paths).expect("load imported trusted images");
+        assert_eq!(trusted_images.len(), 1);
+        assert_eq!(trusted_images[0].vm_name, "honeypot-import-0");
+        assert_eq!(trusted_images[0].pool_name, "default");
+        assert_eq!(trusted_images[0].attestation_ref, "attestation://image-0");
+        assert_eq!(trusted_images[0].base_image_path, imported.base_image_path);
+    }
+
+    #[test]
+    fn consume_trusted_image_is_idempotent_for_the_same_bundle() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(tempdir.path(), "honeypot-import-0", "default", "image-0");
+
+        let first = consume_trusted_image(&paths, &bundle.manifest_path).expect("first import should succeed");
+        let second = consume_trusted_image(&paths, &bundle.manifest_path).expect("second import should succeed");
+
+        assert_eq!(first.import_state, ConsumeTrustedImageState::Imported);
+        assert_eq!(second.import_state, ConsumeTrustedImageState::AlreadyPresent);
+        assert_eq!(first.base_image_path, second.base_image_path);
+        assert_eq!(first.manifest_path, second.manifest_path);
+    }
+
+    #[test]
+    fn consume_trusted_image_rejects_bundle_path_escape() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let source_root = tempdir.path().join("source-bundle");
+        let escape_image_path = tempdir.path().join("escape.qcow2");
+        let manifest_path = source_root.join("image-escape.json");
+        let base_image_contents = b"escape-base-image";
+
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::write(&escape_image_path, base_image_contents).expect("write escape image");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "pool_name": "default",
+                "vm_name": "honeypot-import-escape",
+                "attestation_ref": "attestation://image-escape",
+                "guest_rdp_port": 3389,
+                "base_image_path": "../escape.qcow2",
+                "source_iso": {
+                    "acquisition_channel": "msdn",
+                    "acquisition_date": "2026-03-25",
+                    "filename": "windows11-pro-x64.iso",
+                    "size_bytes": 1024,
+                    "edition": "Windows 11 Pro x64",
+                    "language": "en-US",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "transformation": {
+                    "timestamp": "2026-03-25T12:00:00Z",
+                    "inputs": [{
+                        "reference": "tiny11-builder.ps1",
+                        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                    }]
+                },
+                "base_image": {
+                    "sha256": format!("{:x}", Sha256::digest(base_image_contents))
+                },
+                "approval": {
+                    "approved_by": "operator@example.test"
+                }
+            }))
+            .expect("serialize escape manifest"),
+        )
+        .expect("write escape manifest");
+
+        let error = consume_trusted_image(&paths, &manifest_path).expect_err("path escape should fail");
+        assert!(
+            format!("{error:#}").contains("relative bundle path")
+                || format!("{error:#}").contains("traversal")
+                || format!("{error:#}").contains("escapes source bundle"),
+            "{error:#}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn consume_trusted_image_rejects_symlinked_source_base_image() {
+        use std::os::unix::fs::symlink;
+
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let source_root = tempdir.path().join("source-bundle");
+        let outside_root = tempdir.path().join("outside");
+        let manifest_path = source_root.join("image-symlink.json");
+        let outside_image_path = outside_root.join("real-image.qcow2");
+        let linked_image_path = source_root.join("linked-image.qcow2");
+        let base_image_contents = b"symlink-base-image";
+
+        fs::create_dir_all(&source_root).expect("create source root");
+        fs::create_dir_all(&outside_root).expect("create outside root");
+        fs::write(&outside_image_path, base_image_contents).expect("write outside image");
+        symlink(&outside_image_path, &linked_image_path).expect("create source image symlink");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "pool_name": "default",
+                "vm_name": "honeypot-import-symlink",
+                "attestation_ref": "attestation://image-symlink",
+                "guest_rdp_port": 3389,
+                "base_image_path": "linked-image.qcow2",
+                "source_iso": {
+                    "acquisition_channel": "msdn",
+                    "acquisition_date": "2026-03-25",
+                    "filename": "windows11-pro-x64.iso",
+                    "size_bytes": 1024,
+                    "edition": "Windows 11 Pro x64",
+                    "language": "en-US",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "transformation": {
+                    "timestamp": "2026-03-25T12:00:00Z",
+                    "inputs": [{
+                        "reference": "tiny11-builder.ps1",
+                        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                    }]
+                },
+                "base_image": {
+                    "sha256": format!("{:x}", Sha256::digest(base_image_contents))
+                },
+                "approval": {
+                    "approved_by": "operator@example.test"
+                }
+            }))
+            .expect("serialize symlink manifest"),
+        )
+        .expect("write symlink manifest");
+
+        let error = consume_trusted_image(&paths, &manifest_path).expect_err("symlink source should fail");
+        assert!(format!("{error:#}").contains("must not be a symlink"), "{error:#}");
+    }
+
+    #[test]
+    fn consume_trusted_image_rejects_duplicate_vm_name_with_different_identity() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let first_bundle = create_source_bundle(tempdir.path(), "honeypot-import-0", "default", "image-0");
+        let second_bundle = create_source_bundle_with_contents(
+            tempdir.path(),
+            "honeypot-import-0",
+            "default",
+            "image-1",
+            b"other-base-image",
+        );
+
+        consume_trusted_image(&paths, &first_bundle.manifest_path).expect("first import should succeed");
+        let error =
+            consume_trusted_image(&paths, &second_bundle.manifest_path).expect_err("duplicate vm_name should fail");
+        assert!(
+            format!("{error:#}").contains("already exists with a different identity"),
+            "{error:#}"
+        );
+    }
+
+    struct SourceBundle {
+        manifest_path: PathBuf,
+    }
+
+    fn create_source_bundle(root: &Path, vm_name: &str, pool_name: &str, suffix: &str) -> SourceBundle {
+        create_source_bundle_with_contents(
+            root,
+            vm_name,
+            pool_name,
+            suffix,
+            format!("base-image-{suffix}").as_bytes(),
+        )
+    }
+
+    fn create_source_bundle_with_contents(
+        root: &Path,
+        vm_name: &str,
+        pool_name: &str,
+        suffix: &str,
+        base_image_contents: &[u8],
+    ) -> SourceBundle {
+        let source_root = root.join(format!("source-bundle-{suffix}"));
+        let manifest_path = source_root.join(format!("{suffix}.json"));
+        let base_image_path = source_root.join(format!("{suffix}.qcow2"));
+
+        fs::create_dir_all(&source_root).expect("create source bundle root");
+        fs::write(&base_image_path, base_image_contents).expect("write source base image");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "pool_name": pool_name,
+                "vm_name": vm_name,
+                "attestation_ref": format!("attestation://{suffix}"),
+                "guest_rdp_port": 3389,
+                "base_image_path": base_image_path.file_name().and_then(|value| value.to_str()).expect("source base image name"),
+                "source_iso": {
+                    "acquisition_channel": "msdn",
+                    "acquisition_date": "2026-03-25",
+                    "filename": "windows11-pro-x64.iso",
+                    "size_bytes": 1024,
+                    "edition": "Windows 11 Pro x64",
+                    "language": "en-US",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "transformation": {
+                    "timestamp": "2026-03-25T12:00:00Z",
+                    "inputs": [{
+                        "reference": "tiny11-builder.ps1",
+                        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                    }]
+                },
+                "base_image": {
+                    "sha256": format!("{:x}", Sha256::digest(base_image_contents))
+                },
+                "approval": {
+                    "approved_by": "operator@example.test"
+                }
+            }))
+            .expect("serialize source manifest"),
+        )
+        .expect("write source manifest");
+
+        SourceBundle { manifest_path }
     }
 
     fn test_paths(root: &Path) -> PathConfig {

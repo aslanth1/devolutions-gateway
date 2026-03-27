@@ -390,7 +390,7 @@ Pass when: the control plane can drive a named VM through the active runtime lif
 - [x] Implement VM lifecycle adapters for destroy and recycle.
 Pass when: the control plane can retire, reset, or recycle a named VM back to the chosen clean state and surface actionable errors.
 
-- [ ] Build or consume the Tiny11-derived Windows 11 gold image flow without Bash or Python wrappers.
+- [x] Build or consume the Tiny11-derived Windows 11 gold image flow without Bash or Python wrappers.
 Pass when: the image process is reproducible, documented, records provenance inputs, and produces a version-pinned base artifact.
 
 - [ ] Enable and verify RDP in the gold image.

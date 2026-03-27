@@ -83,6 +83,8 @@ Operator procedures for bring-up, emergency stop, recycle, evidence capture, and
 
 - The image store may hold only approved Windows 11 Pro x64 base inputs, Tiny11-derived transformation inputs, attestation manifests, and resulting reusable base images.
 - Each reusable base image must have a machine-readable manifest that records the ISO acquisition channel, acquisition date, filename, size, edition, language, SHA-256, transformation input refs, transformation timestamp, and resulting base-image digest.
+- The canonical Rust consume flow is `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>`.
+- That consume command must accept only a bundle-local qcow2 path from the source manifest, copy the image into the configured image store under a digest-pinned filename, write the canonical trusted manifest into the configured manifest dir, and fail closed on traversal, symlink escape, digest mismatch, or partial import.
 - `control-plane` must refuse to report `ready` if the configured image set lacks the required provenance records or if the recorded digests fail validation.
 - `proxy` and `frontend` must never mount, read, or modify base images, manifests, or quarantine artifacts directly.
 
