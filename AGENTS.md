@@ -649,7 +649,7 @@ Pass when: secrets stay redacted in service logs, host logs, and lab artifacts d
 - [ ] Add a credential TTL-expiry test.
 Pass when: expired mappings are removed deterministically and do not survive disconnect, kill, or recycle paths.
 
-- [ ] Add a no-lease handling test.
+- [x] Add a no-lease handling test.
 Pass when: the proxy and frontend surface the no-lease outcome clearly and do not leave behind partial session or VM state.
 
 - [x] Add a kill-switch action test.

@@ -9,13 +9,15 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::extract::{Path, Query, State};
 use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderMap, Request, StatusCode};
+use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, response::Response};
 use devolutions_gateway::credential::{
     AppCredential, AppCredentialMapping, CredentialBinding, CredentialProvisionRequest, Password,
 };
 use devolutions_gateway::session::{
-    ConnectionModeDetails, SessionInfo, SessionKillReason, SessionManagerTask, remove_session_in_progress,
+    ConnectionModeDetails, SessionInfo, SessionKillReason, SessionManagerTask, add_session_in_progress,
+    remove_session_in_progress,
 };
 use devolutions_gateway::token::{ApplicationProtocol, Protocol, RecordingPolicy, SessionTtl, extract_jti};
 use devolutions_gateway::{DgwState, MockHandles};
@@ -25,6 +27,7 @@ use honeypot_contracts::control_plane::{
     RecycleVmRequest, RecycleVmResponse, ReleaseState, ReleaseVmRequest, ReleaseVmResponse, StreamEndpointRequest,
     StreamEndpointResponse,
 };
+use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use honeypot_contracts::events::{EventEnvelope, EventPayload, KillScope, SessionState, StreamState};
 use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
 use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse, StreamTransport};
@@ -52,6 +55,13 @@ struct FakeControlPlaneObservedCalls {
     acquired: Arc<tokio::sync::Mutex<Vec<AcquireVmRequest>>>,
     released: Arc<tokio::sync::Mutex<Vec<(String, ReleaseVmRequest)>>>,
     recycled: Arc<tokio::sync::Mutex<Vec<(String, RecycleVmRequest)>>>,
+    acquire_error: Arc<tokio::sync::Mutex<Option<FakeControlPlaneError>>>,
+}
+
+#[derive(Clone)]
+struct FakeControlPlaneError {
+    status: StatusCode,
+    response: ErrorResponse,
 }
 
 struct HandlesGuard {
@@ -73,11 +83,18 @@ struct FakeControlPlaneServer {
 
 impl FakeControlPlaneServer {
     async fn spawn() -> anyhow::Result<Self> {
+        Self::spawn_with_acquire_error(None).await
+    }
+
+    async fn spawn_with_acquire_error(acquire_error: Option<FakeControlPlaneError>) -> anyhow::Result<Self> {
         let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .context("bind fake control-plane listener")?;
         let addr = listener.local_addr().context("read fake control-plane address")?;
-        let calls = FakeControlPlaneObservedCalls::default();
+        let calls = FakeControlPlaneObservedCalls {
+            acquire_error: Arc::new(tokio::sync::Mutex::new(acquire_error)),
+            ..FakeControlPlaneObservedCalls::default()
+        };
         let router = Router::new()
             .route("/api/v1/vm/acquire", post(fake_acquire_handler))
             .route("/api/v1/vm/{vm_lease_id}/release", post(fake_release_handler))
@@ -107,7 +124,7 @@ async fn fake_acquire_handler(
     State(calls): State<FakeControlPlaneObservedCalls>,
     headers: HeaderMap,
     Json(request): Json<AcquireVmRequest>,
-) -> Json<AcquireVmResponse> {
+) -> Response {
     assert_eq!(
         headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()),
         Some("Bearer visibility-test-token")
@@ -119,6 +136,10 @@ async fn fake_acquire_handler(
     );
     assert_eq!(request.attacker_protocol, AttackerProtocol::Rdp);
     calls.acquired.lock().await.push(request.clone());
+
+    if let Some(error) = calls.acquire_error.lock().await.clone() {
+        return (error.status, Json(error.response)).into_response();
+    }
 
     Json(AcquireVmResponse {
         schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -132,6 +153,7 @@ async fn fake_acquire_handler(
         backend_credential_ref: request.backend_credential_ref,
         attestation_ref: ATTESTATION_REF.to_owned(),
     })
+    .into_response()
 }
 
 async fn fake_stream_handler(
@@ -452,6 +474,26 @@ fn backend_credential_mapping() -> AppCredentialMapping {
     }
 }
 
+fn control_plane_error_status(error_code: ErrorCode) -> StatusCode {
+    match error_code {
+        ErrorCode::AuthFailed | ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+        ErrorCode::Forbidden => StatusCode::FORBIDDEN,
+        ErrorCode::InvalidRequest => StatusCode::BAD_REQUEST,
+        ErrorCode::LeaseNotFound => StatusCode::NOT_FOUND,
+        ErrorCode::LeaseConflict
+        | ErrorCode::LeaseStateConflict
+        | ErrorCode::Quarantined
+        | ErrorCode::CursorExpired => StatusCode::CONFLICT,
+        ErrorCode::NoCapacity
+        | ErrorCode::ImageUntrusted
+        | ErrorCode::HostUnavailable
+        | ErrorCode::BootTimeout
+        | ErrorCode::ResetFailed
+        | ErrorCode::RecycleFailed
+        | ErrorCode::StreamUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
 fn assert_username_password(credential: &AppCredential, expected_username: &str, expected_password: &str) {
     match credential {
         AppCredential::UsernamePassword { username, password } => {
@@ -459,6 +501,116 @@ fn assert_username_password(credential: &AppCredential, expected_username: &str,
             assert_eq!(password.expose_secret(), expected_password);
         }
     }
+}
+
+#[tokio::test]
+async fn honeypot_no_lease_surfaces_terminal_outcome_and_cleans_partial_state() -> anyhow::Result<()> {
+    let control_plane = FakeControlPlaneServer::spawn_with_acquire_error(Some(FakeControlPlaneError {
+        status: control_plane_error_status(ErrorCode::NoCapacity),
+        response: ErrorResponse::new("corr-acquire-no-capacity", ErrorCode::NoCapacity, "no capacity", false),
+    }))
+    .await?;
+    let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
+    let session_id = Uuid::new_v4();
+    let session = live_session(session_id);
+
+    let error = add_session_in_progress(
+        &state.sessions,
+        &state.subscriber_tx,
+        session.clone(),
+        Arc::new(tokio::sync::Notify::new()),
+        None,
+    )
+    .await
+    .expect_err("no-capacity acquire should reject session admission");
+    assert!(format!("{error:#}").contains("couldn't initialize honeypot session state"));
+
+    let response = app
+        .clone()
+        .oneshot(get_request("/jet/sessions")?)
+        .await
+        .context("request running sessions after no-lease failure")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let sessions_after: Value = serde_json::from_slice(&collect_response_body(response).await?)
+        .context("decode running sessions after no-lease failure")?;
+    assert_eq!(
+        sessions_after.as_array().map(Vec::len),
+        Some(0),
+        "no-lease failure should not leave a live session behind"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(get_request("/jet/honeypot/bootstrap")?)
+        .await
+        .context("request honeypot bootstrap after no-lease failure")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bootstrap: BootstrapResponse = serde_json::from_slice(&collect_response_body(response).await?)
+        .context("decode honeypot bootstrap after no-lease failure")?;
+    assert!(
+        bootstrap.sessions.is_empty(),
+        "no-lease failure should not leave a frontend-visible bootstrap tile"
+    );
+
+    let response = app
+        .clone()
+        .oneshot(get_request("/jet/honeypot/events?cursor=0")?)
+        .await
+        .context("request honeypot event replay after no-lease failure")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let sse_body = collect_sse_replay(response, 3).await?;
+    let replay = parse_sse_events(&sse_body)?;
+
+    assert_eq!(replay.len(), 3, "{sse_body}");
+    assert_eq!(replay[0].session_id.as_deref(), Some(session_id.to_string().as_str()));
+    assert!(replay[1].session_id.is_none());
+    assert_eq!(replay[2].session_id.as_deref(), Some(session_id.to_string().as_str()));
+    assert!(matches!(
+        replay[0].payload,
+        EventPayload::SessionStarted {
+            session_state: SessionState::Connected,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &replay[1].payload,
+        EventPayload::ProxyStatusDegraded {
+            reason_code,
+            affected_session_ids,
+            ..
+        } if reason_code == "no_capacity" && affected_session_ids == &[session_id.to_string()]
+    ));
+    assert!(matches!(
+        &replay[2].payload,
+        EventPayload::SessionEnded {
+            terminal_outcome: honeypot_contracts::events::TerminalOutcome::NoLease,
+            disconnect_reason,
+            recycle_expected: false,
+            ..
+        } if disconnect_reason == "no_capacity"
+    ));
+    assert!(
+        !replay
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::SessionAssigned { .. })),
+        "no-lease failure must not emit session.assigned"
+    );
+
+    let acquired = control_plane.calls.acquired.lock().await.clone();
+    assert_eq!(acquired.len(), 1);
+    assert_eq!(acquired[0].session_id, session_id.to_string());
+    assert!(
+        control_plane.calls.released.lock().await.is_empty(),
+        "no-lease failure must not try to release a lease that was never assigned"
+    );
+    assert!(
+        control_plane.calls.recycled.lock().await.is_empty(),
+        "no-lease failure must not try to recycle a lease that was never assigned"
+    );
+
+    control_plane.shutdown().await;
+
+    Ok(())
 }
 
 #[tokio::test]
