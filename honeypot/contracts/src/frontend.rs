@@ -51,4 +51,46 @@ pub struct CommandProposalResponse {
     pub executed: bool,
 }
 
-impl_versioned!(BootstrapResponse, CommandProposalRequest, CommandProposalResponse);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandVoteChoice {
+    Approve,
+    Reject,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandVoteState {
+    Deferred,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandVoteRequest {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub proposal_id: String,
+    pub vote: CommandVoteChoice,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandVoteResponse {
+    pub schema_version: u32,
+    pub correlation_id: String,
+    pub vote_id: String,
+    pub recorded_at: String,
+    pub session_id: String,
+    pub proposal_id: String,
+    pub vote: CommandVoteChoice,
+    pub vote_state: CommandVoteState,
+    pub decision_reason: String,
+    pub executed: bool,
+}
+
+impl_versioned!(
+    BootstrapResponse,
+    CommandProposalRequest,
+    CommandProposalResponse,
+    CommandVoteRequest,
+    CommandVoteResponse
+);

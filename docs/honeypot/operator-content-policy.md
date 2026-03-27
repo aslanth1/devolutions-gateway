@@ -19,7 +19,7 @@ It must not be read as approval to enable deferred interactive features before t
 - `watch` is the active observation role.
 - `kill` is the active intervention role.
 - `propose` is a non-executing placeholder role in MVP.
-- `approve` is a reserved future role and is disabled for MVP.
+- `approve` is a non-executing placeholder role in MVP.
 - Shared operator credentials are prohibited.
 - Every operator-visible action must remain attributable to a named identity.
 
@@ -30,7 +30,7 @@ It must not be read as approval to enable deferred interactive features before t
 - `kill` maps to `gateway.honeypot.session.kill` for single-session kill and quarantine.
 - `kill` also maps to `gateway.honeypot.system.kill` for global emergency stop.
 - `propose` maps to `gateway.honeypot.command.propose`, but that scope may record only deferred or rejected placeholder commands.
-- `approve` maps to `gateway.honeypot.command.approve`, but that scope remains reserved only.
+- `approve` maps to `gateway.honeypot.command.approve`, but that scope may record only deferred or rejected placeholder votes.
 - No operator may use `propose` or `approve` for real command execution until the deferred voting and command rows are implemented and explicitly enabled.
 
 ## Allowed Actions
@@ -42,7 +42,7 @@ It must not be read as approval to enable deferred interactive features before t
 - `kill` may terminate a live honeypot session, quarantine a suspicious guest, and invoke the global emergency stop when the matching scope is present.
 - `kill` may trigger evidence capture only as part of an authorized defensive workflow that preserves audit context and follows the export limits below.
 - `propose` may record only a deferred or rejected placeholder command in MVP and must not execute anything.
-- `approve` remains a non-operational placeholder in MVP and authorizes no live feature today.
+- `approve` may record only a deferred or rejected placeholder vote in MVP and must not execute anything.
 
 ## Sensitive Content Classes
 

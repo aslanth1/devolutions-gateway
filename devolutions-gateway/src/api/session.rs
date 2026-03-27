@@ -2,7 +2,10 @@ use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
 use honeypot_contracts::Versioned;
-use honeypot_contracts::frontend::{CommandProposalRequest, CommandProposalResponse, CommandProposalState};
+use honeypot_contracts::frontend::{
+    CommandProposalRequest, CommandProposalResponse, CommandProposalState, CommandVoteChoice, CommandVoteRequest,
+    CommandVoteResponse, CommandVoteState,
+};
 use uuid::Uuid;
 
 use crate::DgwState;
@@ -15,6 +18,7 @@ pub fn make_router<S>(state: DgwState) -> Router<S> {
     Router::new()
         .route("/system/terminate", post(terminate_all_sessions))
         .route("/{id}/propose", post(propose_command))
+        .route("/{id}/vote", post(vote_command))
         .route("/{id}/quarantine", post(quarantine_session))
         .route("/{id}/terminate", post(terminate_session))
         .with_state(state)
@@ -170,6 +174,63 @@ async fn propose_command(
     Ok(Json(response))
 }
 
+async fn vote_command(
+    State(state): State<DgwState>,
+    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
+    scope_token: ScopeToken,
+    Json(request): Json<CommandVoteRequest>,
+) -> Result<Json<CommandVoteResponse>, HttpError> {
+    if !state.honeypot.is_enabled() {
+        return Err(HttpError::not_found().msg("honeypot mode is disabled"));
+    }
+
+    authorize_vote_scope(&scope_token)?;
+    request.ensure_supported_schema().map_err(
+        HttpError::bad_request()
+            .with_msg("unsupported honeypot schema_version")
+            .err(),
+    )?;
+
+    let proposal_id = request.proposal_id.trim().to_owned();
+    if proposal_id.is_empty() {
+        return Err(HttpError::bad_request().msg("proposal_id is required"));
+    }
+
+    let (vote_state, decision_reason) = match request.vote {
+        CommandVoteChoice::Approve => (CommandVoteState::Deferred, "disabled_by_policy"),
+        CommandVoteChoice::Reject => (CommandVoteState::Rejected, "rejected_by_operator"),
+    };
+
+    let response = CommandVoteResponse {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        correlation_id: format!("honeypot-command-vote-{}", Uuid::new_v4()),
+        vote_id: format!("vote-{}", Uuid::new_v4()),
+        recorded_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
+        session_id: session_id.to_string(),
+        proposal_id,
+        vote: request.vote,
+        vote_state,
+        decision_reason: decision_reason.to_owned(),
+        executed: false,
+    };
+
+    tracing::info!(
+        session_id = %response.session_id,
+        proposal_id = %response.proposal_id,
+        vote_id = %response.vote_id,
+        correlation_id = %response.correlation_id,
+        vote = ?response.vote,
+        vote_state = ?response.vote_state,
+        decision_reason = %response.decision_reason,
+        executed = response.executed,
+        "honeypot command vote placeholder recorded"
+    );
+
+    Ok(Json(response))
+}
+
 async fn terminate_all_sessions(
     State(state): State<DgwState>,
     scope_token: ScopeToken,
@@ -256,6 +317,13 @@ fn authorize_quarantine_scope(scope_token: &ScopeToken) -> Result<SessionKillMet
 fn authorize_proposal_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
     match scope_token.0.scope {
         AccessScope::Wildcard | AccessScope::HoneypotCommandPropose => Ok(()),
+        _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+    }
+}
+
+fn authorize_vote_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
+    match scope_token.0.scope {
+        AccessScope::Wildcard | AccessScope::HoneypotCommandApprove => Ok(()),
         _ => Err(HttpError::forbidden().msg("invalid scope for route")),
     }
 }

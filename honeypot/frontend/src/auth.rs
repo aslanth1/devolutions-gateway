@@ -32,6 +32,7 @@ pub(super) enum RequiredScope {
     SessionKill,
     SystemKill,
     CommandPropose,
+    CommandApprove,
 }
 
 impl RequiredScope {
@@ -42,6 +43,7 @@ impl RequiredScope {
             Self::SessionKill => "gateway.honeypot.session.kill",
             Self::SystemKill => "gateway.honeypot.system.kill",
             Self::CommandPropose => "gateway.honeypot.command.propose",
+            Self::CommandApprove => "gateway.honeypot.command.approve",
         }
     }
 }
@@ -66,6 +68,10 @@ impl OperatorAccess {
 
     pub(super) fn can_trigger_system_kill(&self) -> bool {
         matches!(self.scope, AccessScope::Wildcard | AccessScope::HoneypotSystemKill)
+    }
+
+    pub(super) fn can_approve_commands(&self) -> bool {
+        matches!(self.scope, AccessScope::Wildcard | AccessScope::HoneypotCommandApprove)
     }
 
     #[cfg(test)]
@@ -254,6 +260,7 @@ fn scope_allows(required: RequiredScope, actual: &AccessScope) -> bool {
             | (RequiredScope::SessionKill, AccessScope::HoneypotSessionKill)
             | (RequiredScope::SessionKill, AccessScope::HoneypotSystemKill)
             | (RequiredScope::SystemKill, AccessScope::HoneypotSystemKill)
+            | (RequiredScope::CommandApprove, AccessScope::HoneypotCommandApprove)
             | (RequiredScope::CommandPropose, AccessScope::HoneypotCommandPropose)
     )
 }

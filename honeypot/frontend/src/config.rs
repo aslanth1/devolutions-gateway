@@ -47,6 +47,7 @@ pub struct ProxyConfig {
     pub events_path: String,
     pub stream_token_path_template: String,
     pub propose_path_template: String,
+    pub vote_path_template: String,
     pub terminate_path_template: String,
     pub quarantine_path_template: String,
     pub system_terminate_path: String,
@@ -73,6 +74,12 @@ impl ProxyConfig {
 
     pub fn propose_url(&self, session_id: &str) -> anyhow::Result<Url> {
         let path = self.propose_path_template.replace("{session_id}", session_id);
+
+        self.url_for_path(&path)
+    }
+
+    pub fn vote_url(&self, session_id: &str) -> anyhow::Result<Url> {
+        let path = self.vote_path_template.replace("{session_id}", session_id);
 
         self.url_for_path(&path)
     }
@@ -117,6 +124,7 @@ impl Default for ProxyConfig {
             events_path: "/jet/honeypot/events".to_owned(),
             stream_token_path_template: "/jet/honeypot/session/{session_id}/stream-token".to_owned(),
             propose_path_template: "/jet/session/{session_id}/propose".to_owned(),
+            vote_path_template: "/jet/session/{session_id}/vote".to_owned(),
             terminate_path_template: "/jet/session/{session_id}/terminate".to_owned(),
             quarantine_path_template: "/jet/session/{session_id}/quarantine".to_owned(),
             system_terminate_path: "/jet/session/system/terminate".to_owned(),

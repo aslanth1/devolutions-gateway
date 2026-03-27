@@ -7,6 +7,7 @@ use crate::error::{ErrorCode, ErrorResponse};
 use crate::events::{EventEnvelope, EventPayload, KillScope, SessionState, StreamState, TerminalOutcome};
 use crate::frontend::{
     BootstrapResponse, BootstrapSession, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
+    CommandVoteChoice, CommandVoteRequest, CommandVoteResponse, CommandVoteState,
 };
 use crate::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
 
@@ -132,6 +133,46 @@ fn command_proposal_response_round_trips_placeholder_state() {
         .expect("schema_version 1 should be supported");
     let json = serde_json::to_string(&response).expect("serialize command proposal response");
     let decoded: CommandProposalResponse = serde_json::from_str(&json).expect("deserialize command proposal response");
+
+    assert_eq!(decoded, response);
+}
+
+#[test]
+fn command_vote_request_rejects_unsupported_schema() {
+    let request = CommandVoteRequest {
+        schema_version: crate::SCHEMA_VERSION + 1,
+        request_id: "vote-req-1".to_owned(),
+        proposal_id: "proposal-1".to_owned(),
+        vote: CommandVoteChoice::Approve,
+    };
+
+    let error = request
+        .ensure_supported_schema()
+        .expect_err("schema_version 2 should be rejected");
+
+    assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
+}
+
+#[test]
+fn command_vote_response_round_trips_placeholder_state() {
+    let response = CommandVoteResponse {
+        schema_version: crate::SCHEMA_VERSION,
+        correlation_id: "corr-vote-1".to_owned(),
+        vote_id: "vote-1".to_owned(),
+        recorded_at: "2026-03-26T00:00:45Z".to_owned(),
+        session_id: "session-1".to_owned(),
+        proposal_id: "proposal-1".to_owned(),
+        vote: CommandVoteChoice::Approve,
+        vote_state: CommandVoteState::Deferred,
+        decision_reason: "disabled_by_policy".to_owned(),
+        executed: false,
+    };
+
+    response
+        .ensure_supported_schema()
+        .expect("schema_version 1 should be supported");
+    let json = serde_json::to_string(&response).expect("serialize command vote response");
+    let decoded: CommandVoteResponse = serde_json::from_str(&json).expect("deserialize command vote response");
 
     assert_eq!(decoded, response);
 }

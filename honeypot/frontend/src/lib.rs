@@ -15,6 +15,7 @@ use futures::StreamExt as _;
 use honeypot_contracts::events::{SessionState, StreamState};
 use honeypot_contracts::frontend::{
     BootstrapResponse, BootstrapSession, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
+    CommandVoteChoice, CommandVoteRequest, CommandVoteResponse, CommandVoteState,
 };
 use honeypot_contracts::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
 use tokio::net::TcpListener;
@@ -215,6 +216,39 @@ impl FrontendRuntime {
         }
     }
 
+    async fn vote_on_command(
+        &self,
+        session_id: &str,
+        request: &CommandVoteRequest,
+    ) -> Result<CommandVoteResponse, FrontendVoteError> {
+        use reqwest::StatusCode as ReqwestStatusCode;
+
+        let vote_url = self
+            .config
+            .proxy
+            .vote_url(session_id)
+            .map_err(FrontendVoteError::Proxy)?;
+        let response = self
+            .authorized(self.client.post(vote_url))
+            .json(request)
+            .send()
+            .await
+            .with_context(|| format!("request proxy command vote placeholder for {session_id}"))
+            .map_err(FrontendVoteError::Proxy)?;
+
+        match response.status() {
+            ReqwestStatusCode::OK | ReqwestStatusCode::ACCEPTED => response
+                .json::<CommandVoteResponse>()
+                .await
+                .with_context(|| format!("decode proxy command vote placeholder for {session_id}"))
+                .map_err(FrontendVoteError::Proxy),
+            ReqwestStatusCode::NOT_FOUND => Err(FrontendVoteError::NotFound),
+            status => Err(FrontendVoteError::Proxy(anyhow::anyhow!(
+                "proxy command vote placeholder failed with {status}"
+            ))),
+        }
+    }
+
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(token) = &self.config.auth.proxy_bearer_token {
             request.bearer_auth(token)
@@ -309,6 +343,12 @@ enum FrontendProposalError {
     Proxy(anyhow::Error),
 }
 
+#[derive(Debug)]
+enum FrontendVoteError {
+    NotFound,
+    Proxy(anyhow::Error),
+}
+
 pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
     let runtime = Arc::new(FrontendRuntime::new(config)?);
     let bind_addr = runtime.bind_addr();
@@ -323,6 +363,7 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
         .route("/tile/{id}", get(tile_handler))
         .route("/session/{id}", get(session_handler))
         .route("/session/{id}/propose", post(propose_handler))
+        .route("/session/{id}/vote", post(vote_handler))
         .route("/session/{id}/kill", post(kill_handler))
         .route("/session/{id}/quarantine", post(quarantine_handler))
         .route("/system/kill", post(system_kill_handler))
@@ -518,6 +559,12 @@ struct CommandProposalForm {
     command_text: String,
 }
 
+#[derive(serde::Deserialize)]
+struct CommandVoteForm {
+    proposal_id: String,
+    vote: CommandVoteChoice,
+}
+
 async fn propose_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -540,11 +587,48 @@ async fn propose_handler(
     };
 
     match state.runtime.propose_command(&session_id, &request).await {
-        Ok(response) => Html(render_command_proposal_notice(&response, access.raw_token())).into_response(),
+        Ok(response) => Html(render_command_proposal_notice(
+            &response,
+            access.raw_token(),
+            access.can_approve_commands(),
+        ))
+        .into_response(),
         Err(FrontendProposalError::NotFound) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
         Err(FrontendProposalError::Proxy(error)) => frontend_error(
             StatusCode::BAD_GATEWAY,
             &format!("command proposal placeholder failed: {error:#}"),
+        ),
+    }
+}
+
+async fn vote_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<OperatorTokenQuery>,
+    Form(form): Form<CommandVoteForm>,
+) -> Response {
+    let access = match state
+        .runtime
+        .authorize_operator(&headers, query.token.as_deref(), RequiredScope::CommandApprove)
+    {
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
+
+    let request = CommandVoteRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: format!("frontend-command-vote-{session_id}-{}", proposal_nonce()),
+        proposal_id: form.proposal_id,
+        vote: form.vote,
+    };
+
+    match state.runtime.vote_on_command(&session_id, &request).await {
+        Ok(response) => Html(render_command_vote_notice(&response, access.raw_token())).into_response(),
+        Err(FrontendVoteError::NotFound) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
+        Err(FrontendVoteError::Proxy(error)) => frontend_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("command vote placeholder failed: {error:#}"),
         ),
     }
 }
@@ -1161,7 +1245,11 @@ fn render_quarantine_notice(session_id: &str, operator_token: &str) -> String {
     )
 }
 
-fn render_command_proposal_notice(response: &CommandProposalResponse, operator_token: &str) -> String {
+fn render_command_proposal_notice(
+    response: &CommandProposalResponse,
+    operator_token: &str,
+    can_approve_commands: bool,
+) -> String {
     let auth_query = operator_token_query(operator_token);
     let state_label = match response.proposal_state {
         CommandProposalState::Deferred => "Proposal deferred",
@@ -1175,6 +1263,8 @@ fn render_command_proposal_notice(response: &CommandProposalResponse, operator_t
             "The placeholder recorded the request and rejected it without executing anything."
         }
     };
+    let vote_controls =
+        render_command_vote_controls(response, operator_token, can_approve_commands && !response.executed);
 
     format!(
         r#"<div class="focus-shell">
@@ -1185,6 +1275,7 @@ fn render_command_proposal_notice(response: &CommandProposalResponse, operator_t
       <p><strong>Command</strong><br><code>{command_text}</code></p>
       <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
       <p>{guidance}</p>
+      {vote_controls}
       <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
     </div>
   </div>
@@ -1194,6 +1285,74 @@ fn render_command_proposal_notice(response: &CommandProposalResponse, operator_t
         proposal_id = escape_html(&response.proposal_id),
         recorded_at = escape_html(&response.recorded_at),
         command_text = escape_html(&response.command_text),
+        decision_reason = escape_html(&response.decision_reason),
+        guidance = escape_html(guidance),
+        vote_controls = vote_controls,
+        auth_query = auth_query,
+    )
+}
+
+fn render_command_vote_controls(
+    response: &CommandProposalResponse,
+    operator_token: &str,
+    can_approve_commands: bool,
+) -> String {
+    if response.proposal_state != CommandProposalState::Deferred {
+        return String::new();
+    }
+
+    if !can_approve_commands {
+        return "<p><strong>Voting</strong><br><span>Approve scope is required to record the placeholder vote.</span></p>"
+            .to_owned();
+    }
+
+    let auth_query = operator_token_query(operator_token);
+    let session_id = escape_html(&response.session_id);
+    let proposal_id = escape_html(&response.proposal_id);
+
+    format!(
+        r##"<form class="focus-actions" hx-post="/session/{session_id}/vote?{auth_query}" hx-target="#focus-panel" hx-swap="innerHTML">
+  <input type="hidden" name="proposal_id" value="{proposal_id}">
+  <button class="quarantine-button" type="submit" name="vote" value="approve">Record approval placeholder</button>
+  <button class="kill-button" type="submit" name="vote" value="reject">Record rejection placeholder</button>
+</form>"##
+    )
+}
+
+fn render_command_vote_notice(response: &CommandVoteResponse, operator_token: &str) -> String {
+    let auth_query = operator_token_query(operator_token);
+    let state_label = match response.vote_state {
+        CommandVoteState::Deferred => "Vote deferred",
+        CommandVoteState::Rejected => "Vote rejected",
+    };
+    let vote_label = match response.vote {
+        CommandVoteChoice::Approve => "approve",
+        CommandVoteChoice::Reject => "reject",
+    };
+    let guidance = match response.vote_state {
+        CommandVoteState::Deferred => "The placeholder recorded the vote and kept execution disabled.",
+        CommandVoteState::Rejected => "The placeholder recorded the rejection and kept execution disabled.",
+    };
+
+    format!(
+        r#"<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>{state_label}</strong>
+      <p>Session <code>{session_id}</code> recorded vote <code>{vote_id}</code> for proposal <code>{proposal_id}</code> at <code>{recorded_at}</code>.</p>
+      <p><strong>Vote</strong><br><code>{vote_label}</code></p>
+      <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
+      <p>{guidance}</p>
+      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>"#,
+        state_label = escape_html(state_label),
+        session_id = escape_html(&response.session_id),
+        vote_id = escape_html(&response.vote_id),
+        proposal_id = escape_html(&response.proposal_id),
+        recorded_at = escape_html(&response.recorded_at),
+        vote_label = escape_html(vote_label),
         decision_reason = escape_html(&response.decision_reason),
         guidance = escape_html(guidance),
         auth_query = auth_query,

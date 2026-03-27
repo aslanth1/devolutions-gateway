@@ -508,7 +508,7 @@ Pass when: `session.ended`, `session.killed`, and recycle terminal events remove
 - [x] Add a command proposal skeleton for future state-messing features.
 Pass when: a command can be proposed, recorded, and rejected or deferred without execution.
 
-- [ ] Add a command voting skeleton for future state-messing features.
+- [x] Add a command voting skeleton for future state-messing features.
 Pass when: proposed commands can be voted on, but execution stays policy-gated.
 
 - [ ] Add a keyboard capture placeholder behind explicit policy checks.
