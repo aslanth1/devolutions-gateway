@@ -16,3 +16,29 @@ pub fn assert_contains(doc_path: &str, body: &str, needle: &str) {
         "{doc_path} must contain {needle:?}, but it did not"
     );
 }
+
+pub fn section_checklist_lines<'a>(body: &'a str, section_heading: &str) -> Vec<&'a str> {
+    let mut in_section = false;
+    let mut lines = Vec::new();
+
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            if in_section {
+                break;
+            }
+
+            in_section = rest.trim() == section_heading;
+            continue;
+        }
+
+        if in_section && (line.starts_with("- [x]") || line.starts_with("- [ ]")) {
+            lines.push(line);
+        }
+    }
+
+    lines
+}
+
+pub fn is_checked_checklist_line(line: &str) -> bool {
+    line.starts_with("- [x]")
+}

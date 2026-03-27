@@ -1,4 +1,4 @@
-use testsuite::honeypot_docs::{assert_contains, read_repo_text};
+use testsuite::honeypot_docs::{assert_contains, is_checked_checklist_line, read_repo_text, section_checklist_lines};
 
 #[test]
 fn honeypot_docs_keep_decision_freeze_matrix_authoritative() {
@@ -103,5 +103,58 @@ fn honeypot_docs_keep_ownership_matrix_authoritative() {
         research_path,
         &research,
         "Any future second session bus, subscriber bus, credential API, or stream API requires an explicit replacement note in `DF-03` or `DF-04` before implementation starts.",
+    );
+}
+
+#[test]
+fn honeypot_docs_enforce_milestone_gate_completion_before_later_milestones() {
+    let agents_path = "AGENTS.md";
+    let agents = read_repo_text(agents_path);
+
+    assert_contains(
+        agents_path,
+        &agents,
+        "- [x] Milestone 0 and Milestone 0.5 are complete before Milestone 1 through Milestone 6 implementation starts.",
+    );
+
+    let milestone_zero_rows = section_checklist_lines(&agents, "Milestone 0: Baseline, Safety, and Repo Boundaries");
+    assert!(
+        !milestone_zero_rows.is_empty(),
+        "{agents_path} must contain Milestone 0 checklist rows"
+    );
+    assert!(
+        milestone_zero_rows.iter().all(|row| is_checked_checklist_line(row)),
+        "{agents_path} Milestone 0 rows must all be checked before later milestones"
+    );
+
+    let milestone_zero_five_rows = section_checklist_lines(&agents, "Milestone 0.5: Research and Design Freeze");
+    assert!(
+        !milestone_zero_five_rows.is_empty(),
+        "{agents_path} must contain Milestone 0.5 checklist rows"
+    );
+    assert!(
+        milestone_zero_five_rows
+            .iter()
+            .all(|row| is_checked_checklist_line(row)),
+        "{agents_path} Milestone 0.5 rows must all be checked before later milestones"
+    );
+
+    let late_sections = [
+        "Milestone 1: Gold Image and Control Plane Foundations",
+        "Milestone 2: Proxy Honeypot Mode",
+        "Milestone 3: Frontend Tile Wall And Operator Loop",
+        "Milestone 4: Event and Stream Cohesion",
+        "Milestone 5: End-to-End Validation and Release Drills",
+        "Milestone 6: Hardening and Operational Readiness",
+    ];
+
+    let checked_late_rows = late_sections
+        .iter()
+        .flat_map(|section| section_checklist_lines(&agents, section))
+        .filter(|row| is_checked_checklist_line(row))
+        .count();
+    assert!(
+        checked_late_rows > 0,
+        "{agents_path} must contain checked Milestone 1 through Milestone 6 rows for gate validation"
     );
 }

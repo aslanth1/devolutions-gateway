@@ -166,6 +166,12 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_docs.rs` proves the core honeypot docs still route frozen policy through `DF-*` rows, route seam ownership through `OM-*` rows, and keep the replacement-note requirement on any future seam change.
 - `docs/honeypot/decisions.md`, `docs/honeypot/architecture.md`, and `docs/honeypot/contracts.md` are the canonical authority chain enforced by that test.
 
+## Milestone Gate Evidence
+
+- `AGENTS.md` pass row `Milestone 0 and Milestone 0.5 are complete before Milestone 1 through Milestone 6 implementation starts.` is enforced by docs-governance coverage in `testsuite/tests/honeypot_docs.rs`.
+- That test proves Milestone 0 and Milestone 0.5 checklist rows are fully checked whenever Milestone 1 through Milestone 6 rows are marked complete, and it binds the gate statement to the checked verification-matrix row in `AGENTS.md`.
+- This keeps the milestone-order claim fail-closed in repo validation instead of leaving it as a one-time prose assertion.
+
 ## Audit Logging Evidence
 
 - `AGENTS.md` pass row `Add audit logging for control-plane actions, session kills, and frontend vote actions.` is satisfied by the existing typed control-plane envelopes, honeypot lifecycle events, and the typed non-executing proposal or vote placeholders.

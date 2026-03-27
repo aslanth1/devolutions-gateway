@@ -696,7 +696,7 @@ Pass when: the runbook describes how to quarantine bad images or hosts without l
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
-- [ ] Milestone 0 and Milestone 0.5 are complete before Milestone 1 through Milestone 6 implementation starts.
+- [x] Milestone 0 and Milestone 0.5 are complete before Milestone 1 through Milestone 6 implementation starts.
 - [x] The design-freeze docs exist before implementation starts.
 - [x] The three honeypot services each have their own Docker image, build context, healthcheck, and runtime config contract.
 - [x] Current and previous image digests are pinned for `control-plane`, `proxy`, and `frontend`, and rollback does not require rebuilding.
