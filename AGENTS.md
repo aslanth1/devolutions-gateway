@@ -655,7 +655,7 @@ Pass when: the proxy and frontend surface the no-lease outcome clearly and do no
 - [x] Add a kill-switch action test.
 Pass when: single-session and global kill actions tear down sessions and revoke credentials deterministically.
 
-- [ ] Add an orphan-cleanup test.
+- [x] Add an orphan-cleanup test.
 Pass when: abandoned VM and container artifacts are reclaimed deterministically after interrupted or failed sessions.
 
 - [x] Add a control-plane outage degradation test.

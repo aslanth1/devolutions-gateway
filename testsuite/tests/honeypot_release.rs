@@ -898,6 +898,123 @@ fn assert_compose_stack_ready(compose_path: &Path, project_name: &str) -> anyhow
     Ok(())
 }
 
+fn clear_directory_contents(directory: &Path) -> anyhow::Result<()> {
+    if !directory.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(directory).with_context(|| format!("read {}", directory.display()))? {
+        let entry = entry.with_context(|| format!("read entry in {}", directory.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).with_context(|| format!("remove directory {}", path.display()))?;
+        } else {
+            std::fs::remove_file(&path).with_context(|| format!("remove file {}", path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_relative_runtime_entries(
+    root: &Path,
+    current: &Path,
+    label: &str,
+    entries: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    if !current.exists() {
+        return Ok(());
+    }
+
+    for entry in std::fs::read_dir(current).with_context(|| format!("read {}", current.display()))? {
+        let entry = entry.with_context(|| format!("read entry in {}", current.display()))?;
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .with_context(|| format!("strip {} from {}", root.display(), path.display()))?;
+        entries.push(format!("{label}/{}", relative.display()));
+        if path.is_dir() {
+            collect_relative_runtime_entries(root, &path, label, entries)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn list_fixture_runtime_orphans(fixture: &DockerComposeFixture) -> anyhow::Result<Vec<String>> {
+    let mut entries = Vec::new();
+    let overlay_dir = fixture.image_store_dir.join("overlays");
+    for (label, root) in [
+        ("images/overlays", overlay_dir.as_path()),
+        ("leases", fixture.lease_store_dir.as_path()),
+        ("quarantine", fixture.quarantine_store_dir.as_path()),
+        ("qmp", fixture.qmp_dir.as_path()),
+        ("qga", fixture.qga_dir.as_path()),
+    ] {
+        collect_relative_runtime_entries(root, root, label, &mut entries)?;
+    }
+    entries.sort();
+    Ok(entries)
+}
+
+fn seed_fixture_runtime_orphans(fixture: &DockerComposeFixture) -> anyhow::Result<Vec<String>> {
+    let overlay_dir = fixture.image_store_dir.join("overlays");
+    let overlay_vm_dir = overlay_dir.join("orphan-vm-001");
+    let quarantine_vm_dir = fixture.quarantine_store_dir.join("orphan-vm-001");
+
+    std::fs::create_dir_all(&overlay_vm_dir).with_context(|| format!("create {}", overlay_vm_dir.display()))?;
+    std::fs::create_dir_all(&quarantine_vm_dir).with_context(|| format!("create {}", quarantine_vm_dir.display()))?;
+
+    std::fs::write(overlay_vm_dir.join("disk.qcow2"), b"orphan overlay qcow2")
+        .context("write orphan overlay fixture")?;
+    std::fs::write(
+        fixture.lease_store_dir.join("orphan-vm-001.json"),
+        b"{\"lease\":\"orphan\"}",
+    )
+    .context("write orphan lease fixture")?;
+    std::fs::write(quarantine_vm_dir.join("metadata.json"), b"{\"state\":\"quarantined\"}")
+        .context("write orphan quarantine fixture")?;
+    std::fs::write(fixture.qmp_dir.join("orphan-vm-001.qmp.sock"), b"orphan qmp")
+        .context("write orphan qmp fixture")?;
+    std::fs::write(fixture.qga_dir.join("orphan-vm-001.qga.sock"), b"orphan qga")
+        .context("write orphan qga fixture")?;
+
+    list_fixture_runtime_orphans(fixture)
+}
+
+fn cleanup_fixture_runtime_orphans(fixture: &DockerComposeFixture) -> Vec<String> {
+    let mut cleanup_errors = Vec::new();
+    let overlay_dir = fixture.image_store_dir.join("overlays");
+    if overlay_dir.exists() {
+        match std::fs::remove_dir_all(&overlay_dir) {
+            Ok(()) => {}
+            Err(error) => cleanup_errors.push(format!(
+                "remove overlay runtime dir {}: {error:#}",
+                overlay_dir.display()
+            )),
+        }
+    }
+
+    for (label, directory) in [
+        ("lease", fixture.lease_store_dir.as_path()),
+        ("quarantine", fixture.quarantine_store_dir.as_path()),
+        ("qmp", fixture.qmp_dir.as_path()),
+        ("qga", fixture.qga_dir.as_path()),
+    ] {
+        if let Err(error) = clear_directory_contents(directory) {
+            cleanup_errors.push(format!("clear {label} runtime dir {}: {error:#}", directory.display()));
+        }
+    }
+
+    match list_fixture_runtime_orphans(fixture) {
+        Ok(leftovers) if leftovers.is_empty() => {}
+        Ok(leftovers) => cleanup_errors.push(format!("leftover runtime artifacts: {}", leftovers.join(", "))),
+        Err(error) => cleanup_errors.push(format!("list runtime artifacts after cleanup: {error:#}")),
+    }
+
+    cleanup_errors
+}
+
 fn cleanup_compose_project_runtime_artifacts(compose_path: &Path, project_name: &str) -> Vec<String> {
     let down_result = run_docker_compose(
         compose_path,
@@ -928,6 +1045,16 @@ fn cleanup_compose_project_runtime_artifacts(compose_path: &Path, project_name: 
         }
     }
 
+    cleanup_errors
+}
+
+fn cleanup_compose_project_orphans(
+    compose_path: &Path,
+    project_name: &str,
+    fixture: &DockerComposeFixture,
+) -> Vec<String> {
+    let mut cleanup_errors = cleanup_compose_project_runtime_artifacts(compose_path, project_name);
+    cleanup_errors.extend(cleanup_fixture_runtime_orphans(fixture));
     cleanup_errors
 }
 
@@ -2106,6 +2233,101 @@ async fn restored_service_rejoin_health_recovery() {
     match (result, final_cleanup) {
         (Ok(()), Ok(())) => {}
         (Ok(()), Err(cleanup_error)) => panic!("restored-service rejoin image cleanup failed: {cleanup_error:#}"),
+        (Err(test_error), Ok(())) => panic!("{test_error:#}"),
+        (Err(test_error), Err(cleanup_error)) => panic!("{test_error:#}\ncleanup error: {cleanup_error:#}"),
+    }
+}
+
+#[tokio::test]
+async fn orphan_cleanup_reclaims_vm_and_container_artifacts() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping orphan-cleanup host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let project_name = format!("dgw-honeypot-orphans-{}", Uuid::new_v4().simple());
+    let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build current control-plane orphan-cleanup image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image)
+            .context("build current proxy orphan-cleanup image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image)
+            .context("build current frontend orphan-cleanup image")?;
+
+        fixture
+            .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+            .context("write compose selection for current/current/current before orphan cleanup")?;
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "docker compose up failed before orphan cleanup\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should be healthy before orphan cleanup")?;
+
+        let project_label = format!("com.docker.compose.project={project_name}");
+        let live_containers = docker_filtered_names("container", &project_label).context("list compose containers")?;
+        anyhow::ensure!(
+            !live_containers.is_empty(),
+            "compose project {project_name} should create containers before orphan cleanup"
+        );
+        let live_networks = docker_filtered_names("network", &project_label).context("list compose networks")?;
+        anyhow::ensure!(
+            !live_networks.is_empty(),
+            "compose project {project_name} should create networks before orphan cleanup"
+        );
+        let live_volumes = docker_filtered_names("volume", &project_label).context("list compose volumes")?;
+        anyhow::ensure!(
+            !live_volumes.is_empty(),
+            "compose project {project_name} should create volumes before orphan cleanup"
+        );
+
+        let seeded_orphans = seed_fixture_runtime_orphans(&fixture).context("seed runtime orphan fixtures")?;
+        anyhow::ensure!(
+            !seeded_orphans.is_empty(),
+            "runtime orphan seeding should leave at least one host artifact"
+        );
+
+        let cleanup_errors = cleanup_compose_project_orphans(&fixture.compose_path, &project_name, &fixture);
+        anyhow::ensure!(
+            cleanup_errors.is_empty(),
+            "orphan cleanup should reclaim docker and runtime artifacts: {}",
+            cleanup_errors.join("; ")
+        );
+
+        let leftover_runtime_artifacts =
+            list_fixture_runtime_orphans(&fixture).context("list runtime artifacts after orphan cleanup")?;
+        anyhow::ensure!(
+            leftover_runtime_artifacts.is_empty(),
+            "orphan cleanup left runtime artifacts behind: {}",
+            leftover_runtime_artifacts.join(", ")
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let final_cleanup = resources.cleanup();
+    match (result, final_cleanup) {
+        (Ok(()), Ok(())) => {}
+        (Ok(()), Err(cleanup_error)) => panic!("orphan-cleanup image cleanup failed: {cleanup_error:#}"),
         (Err(test_error), Ok(())) => panic!("{test_error:#}"),
         (Err(test_error), Err(cleanup_error)) => panic!("{test_error:#}\ncleanup error: {cleanup_error:#}"),
     }
