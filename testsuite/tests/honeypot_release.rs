@@ -40,6 +40,45 @@ fn compose_document_for_selection(lockfile: &HoneypotImagesLock, selection: Serv
     compose_data
 }
 
+fn rewrite_compose_image_ref(
+    compose_data: &str,
+    service: &'static str,
+    new_ref: &str,
+    update_alias: bool,
+    update_service: bool,
+) -> String {
+    let mut document: serde_yaml::Value = serde_yaml::from_str(compose_data).expect("parse compose document");
+
+    if update_alias {
+        let root = document.as_mapping_mut().expect("compose root must be a mapping");
+        let x_images_key = serde_yaml::Value::String("x-images".to_owned());
+        let service_key = serde_yaml::Value::String(service.to_owned());
+        let image_aliases = root
+            .get_mut(&x_images_key)
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .expect("compose x-images must be a mapping");
+        image_aliases.insert(service_key, serde_yaml::Value::String(new_ref.to_owned()));
+    }
+
+    if update_service {
+        let root = document.as_mapping_mut().expect("compose root must be a mapping");
+        let services_key = serde_yaml::Value::String("services".to_owned());
+        let service_name_key = serde_yaml::Value::String(service.to_owned());
+        let image_key = serde_yaml::Value::String("image".to_owned());
+        let services = root
+            .get_mut(&services_key)
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .expect("compose services must be a mapping");
+        let service_entry = services
+            .get_mut(&service_name_key)
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .expect("compose service entry must be a mapping");
+        service_entry.insert(image_key, serde_yaml::Value::String(new_ref.to_owned()));
+    }
+
+    serde_yaml::to_string(&document).expect("serialize compose document")
+}
+
 #[test]
 fn release_inputs_on_disk_match_the_honeypot_lockfile_contract() {
     require_honeypot_tier(HoneypotTestTier::Contract).expect("contract tier should always be available");
@@ -260,6 +299,38 @@ services:
     .expect_err("compose should reject tag-based control-plane image refs");
 
     assert!(format!("{error:#}").contains("control-plane"), "{error:#}");
+}
+
+#[test]
+fn compose_lockfile_conformance_rejects_unknown_digest_bypass() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let compose_data = compose_document_for_selection(&lockfile, ServiceVersionSelection::default());
+    let bypass_ref = "ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+    let compose_data = rewrite_compose_image_ref(&compose_data, "proxy", bypass_ref, true, true);
+
+    let error = validate_honeypot_compose_document(&compose_data, &lockfile)
+        .expect_err("compose should reject digest refs that bypass images.lock");
+
+    assert!(format!("{error:#}").contains("proxy"), "{error:#}");
+    assert!(format!("{error:#}").contains("images.lock current digest"), "{error:#}");
+}
+
+#[test]
+fn compose_lockfile_conformance_rejects_service_image_bypass_when_alias_stays_pinned() {
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let compose_data = compose_document_for_selection(&lockfile, ServiceVersionSelection::default());
+    let bypass_ref = expected_image_ref(&lockfile, "proxy", ImageSlot::Current);
+    let compose_data = rewrite_compose_image_ref(&compose_data, "frontend", &bypass_ref, false, true);
+
+    let error = validate_honeypot_compose_document(&compose_data, &lockfile)
+        .expect_err("compose should reject a service image that bypasses the pinned lockfile entry");
+
+    assert!(
+        format!("{error:#}").contains("compose service frontend image must match images.lock current digest"),
+        "{error:#}"
+    );
 }
 
 #[test]

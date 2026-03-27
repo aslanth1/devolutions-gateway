@@ -573,7 +573,7 @@ Pass when: Rust tests can pull or resolve each service by pinned digest rather t
 - [ ] Add a Rust compose bring-up test for the three-service stack.
 Pass when: the test boots the Dockerized stack with documented networks and volumes, resolves service images from `honeypot/docker/images.lock`, verifies inter-service wiring, and tears it down cleanly.
 
-- [ ] Add a compose lockfile-conformance test.
+- [x] Add a compose lockfile-conformance test.
 Pass when: the three-service stack refuses validation if a service image reference bypasses `honeypot/docker/images.lock` or resolves a floating tag.
 
 - [x] Add a downgraded `control-plane` compose compatibility test.
