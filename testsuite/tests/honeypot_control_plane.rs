@@ -11,8 +11,9 @@ use sha2::{Digest as _, Sha256};
 use testsuite::cli::wait_for_tcp_port;
 use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, find_unused_port, get_json_response_with_bearer_token,
-    honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd, post_json_response_with_bearer_token,
-    read_health_response_with_bearer_token, send_http_request, write_honeypot_control_plane_config,
+    honeypot_control_plane_assert_cmd, honeypot_control_plane_tokio_cmd, load_honeypot_interop_store_evidence,
+    post_json_response_with_bearer_token, read_health_response_with_bearer_token, send_http_request,
+    validate_honeypot_interop_lease_binding, write_honeypot_control_plane_config,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
 
@@ -2430,7 +2431,7 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
         .data_dir(data_dir)
         .image_store(interop.image_store.clone())
         .manifest_dir(interop.manifest_dir.clone())
-        .lease_store(lease_store)
+        .lease_store(lease_store.clone())
         .quarantine_store(quarantine_store)
         .qmp_dir(qmp_dir)
         .qga_dir(qga_dir)
@@ -2459,6 +2460,7 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
         post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request)
             .await
             .expect("acquire external-client interoperability lease");
+    let active_snapshot_path = lease_store.join(format!("{}.json", acquire.vm_lease_id));
 
     wait_for_xfreerdp_auth_only(
         &interop,
@@ -2467,6 +2469,12 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
         std::time::Duration::from_secs(u64::from(interop.ready_timeout_secs)),
     )
     .expect("xfreerdp should complete auth-only smoke");
+    assert!(
+        active_snapshot_path.is_file(),
+        "expected active lease snapshot at {}",
+        active_snapshot_path.display()
+    );
+    assert_active_snapshot_matches_interop_store(&interop, &acquire.attestation_ref, &active_snapshot_path);
 
     let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
         port,
@@ -2721,6 +2729,7 @@ async fn run_gold_image_acceptance_cycle(
         "expected active lease snapshot at {}",
         active_snapshot_path.display()
     );
+    assert_active_snapshot_matches_interop_store(interop, &acquire.attestation_ref, &active_snapshot_path);
     assert!(overlay_path.is_file(), "expected overlay at {}", overlay_path.display());
     assert!(
         pid_file_path.is_file(),
@@ -2865,6 +2874,61 @@ async fn control_plane_process_driver_reports_qemu_startup_failures() {
 
     child.kill().await.expect("kill control-plane");
     let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_interop_store_evidence_binds_attestation_to_base_image_path() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let evidence = load_honeypot_interop_store_evidence(&fixture.image_store, &fixture.manifest_dir)
+        .expect("load interop store evidence");
+
+    validate_honeypot_interop_lease_binding(&evidence, "attestation://gold-image-0", &fixture.base_image_paths[0])
+        .expect("validate attestation-bound interop base image");
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_interop_store_evidence_rejects_manifest_base_image_escape() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let escaped_dir = tempdir.path().join("escaped");
+    let escaped_base_image_path = escaped_dir.join("outside.qcow2");
+
+    fs::create_dir_all(&escaped_dir).expect("create escaped dir");
+    fs::write(&escaped_base_image_path, b"escaped-base-image").expect("write escaped base image");
+    rewrite_manifest_base_image_path(&fixture.manifest_paths[0], "../escaped/outside.qcow2");
+
+    let error = load_honeypot_interop_store_evidence(&fixture.image_store, &fixture.manifest_dir)
+        .expect_err("escaped base image path should be rejected");
+    let rendered_error = format!("{error:#}");
+    assert!(
+        rendered_error.contains("escapes the configured image store root"),
+        "{rendered_error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn control_plane_interop_store_evidence_rejects_unattested_base_image_binding() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+    let unattested_base_image_path = fixture.image_store.join("unattested.qcow2");
+
+    fs::write(&unattested_base_image_path, b"unattested-base-image").expect("write unattested base image");
+    let evidence = load_honeypot_interop_store_evidence(&fixture.image_store, &fixture.manifest_dir)
+        .expect("load interop store evidence");
+
+    let error =
+        validate_honeypot_interop_lease_binding(&evidence, "attestation://gold-image-0", &unattested_base_image_path)
+            .expect_err("unattested base image binding should be rejected");
+    let rendered_error = format!("{error:#}");
+    assert!(
+        rendered_error.contains("are not bound to a validated interop manifest"),
+        "{rendered_error}"
+    );
 }
 
 #[cfg(unix)]
@@ -3179,6 +3243,17 @@ fn rewrite_manifest_guest_rdp_port(manifest_path: &std::path::Path, guest_rdp_po
     .expect("write manifest with updated guest rdp port");
 }
 
+fn rewrite_manifest_base_image_path(manifest_path: &std::path::Path, base_image_path: &str) {
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(manifest_path).expect("read manifest")).expect("parse manifest");
+    manifest["base_image_path"] = serde_json::Value::String(base_image_path.to_owned());
+    fs::write(
+        manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("serialize manifest with updated base image path"),
+    )
+    .expect("write manifest with updated base image path");
+}
+
 #[cfg(unix)]
 #[derive(Debug)]
 struct ExternalClientInteropConfig {
@@ -3193,6 +3268,7 @@ struct ExternalClientInteropConfig {
     rdp_password: String,
     rdp_domain: Option<String>,
     rdp_security: Option<String>,
+    evidence: testsuite::honeypot_control_plane::HoneypotInteropStoreEvidence,
 }
 
 #[cfg(unix)]
@@ -3224,6 +3300,8 @@ fn load_external_client_interop_config() -> anyhow::Result<ExternalClientInterop
     let rdp_password = required_env_string(HONEYPOT_INTEROP_RDP_PASSWORD_ENV)?;
     let rdp_domain = optional_env_string(HONEYPOT_INTEROP_RDP_DOMAIN_ENV);
     let rdp_security = optional_env_string(HONEYPOT_INTEROP_RDP_SECURITY_ENV);
+    let evidence = load_honeypot_interop_store_evidence(&image_store, &manifest_dir)
+        .context("load attested interop image store evidence")?;
 
     Ok(ExternalClientInteropConfig {
         image_store,
@@ -3237,7 +3315,31 @@ fn load_external_client_interop_config() -> anyhow::Result<ExternalClientInterop
         rdp_password,
         rdp_domain,
         rdp_security,
+        evidence,
     })
+}
+
+#[cfg(unix)]
+fn assert_active_snapshot_matches_interop_store(
+    interop: &ExternalClientInteropConfig,
+    attestation_ref: &str,
+    snapshot_path: &std::path::Path,
+) {
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&fs::read(snapshot_path).expect("read active lease snapshot"))
+            .expect("parse active lease snapshot");
+    let base_image_path = snapshot
+        .get("launch_plan")
+        .and_then(|launch_plan| launch_plan.get("base_image_path"))
+        .and_then(serde_json::Value::as_str)
+        .expect("launch_plan.base_image_path should be present in active lease snapshot");
+
+    validate_honeypot_interop_lease_binding(
+        &interop.evidence,
+        attestation_ref,
+        std::path::Path::new(base_image_path),
+    )
+    .expect("active lease snapshot should stay bound to the validated interop store");
 }
 
 #[cfg(unix)]

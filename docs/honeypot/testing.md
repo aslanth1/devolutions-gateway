@@ -113,11 +113,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 
 - `AGENTS.md` row `The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.` is stricter than a compile-only or skipped lane.
 - That row is only complete after the Rust `lab-e2e` path runs without skip against a prepared Tiny11-derived interop image store and produces live evidence on the current workstation or lab host.
+- The configured interop image store is now fail-closed by `testsuite::honeypot_control_plane::load_honeypot_interop_store_evidence`, which requires manifest-backed Windows 11 Pro x64 provenance fields, approval identity, relative in-store base-image paths, and attestation-to-base-image binding.
 - The positive-path proof anchor is `control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly`, which acquires one attested image-backed lease, verifies live RDP readiness with `xfreerdp +auth-only`, and proves recycle removes lease-scoped runtime artifacts.
 - The repeatability proof anchor is `control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_leaking_runtime_artifacts`, which runs that same acquire, RDP, recycle, and cleanup cycle twice against one control-plane instance and requires the pool to return to `Ready` after each cycle.
 - The independent-client proof anchor is `control_plane_external_client_interoperability_smoke_uses_xfreerdp`, which exercises the same prepared image store through an external RDP client flow instead of relying only on control-plane-local readiness checks.
-- The fail-closed negative control is `control_plane_reports_host_unavailable_when_base_image_digest_mismatches_on_acquire`, which proves acquire rejects a tampered trusted-image digest before lease use.
-- If the local machine does not have a prepared Tiny11-derived interop image store plus the explicit `DGW_HONEYPOT_INTEROP_*` inputs, this row must remain unchecked even when the gated tests compile and skip cleanly.
+- All three positive anchors must bind to the same validated interop store root and manifest attestation identity at lease time, so a generic `win11` or `win11-canary` lab only counts if it was first imported into that attested Tiny11-derived store through the documented consume path.
+- The fail-closed negative controls are `control_plane_reports_host_unavailable_when_base_image_digest_mismatches_on_acquire` plus the contract-tier interop-store evidence checks, which prove tampered or escaped base-image paths are rejected before lease use.
+- If the local machine does not have a prepared Tiny11-derived interop image store plus the explicit `DGW_HONEYPOT_INTEROP_*` inputs, this row must remain unchecked even when the gated tests compile and skip cleanly, and env presence alone is not enough without the validated store-binding checks above.
 
 ## Host Resource And Network Control Evidence
 

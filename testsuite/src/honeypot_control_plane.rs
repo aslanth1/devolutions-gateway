@@ -1,11 +1,12 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::LazyLock;
 
 use anyhow::Context as _;
 use honeypot_contracts::control_plane::HealthResponse;
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use typed_builder::TypedBuilder;
 
@@ -190,7 +191,7 @@ pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControl
         ));
     }
 
-    std::fs::write(path, document).with_context(|| format!("write control-plane config at {}", path.display()))
+    fs::write(path, document).with_context(|| format!("write control-plane config at {}", path.display()))
 }
 
 pub async fn read_health_response(port: u16) -> anyhow::Result<HealthResponse> {
@@ -317,4 +318,259 @@ pub fn find_unused_port() -> u16 {
         .local_addr()
         .expect("read ephemeral port")
         .port()
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoneypotInteropTrustedImage {
+    pub manifest_path: PathBuf,
+    pub pool_name: String,
+    pub vm_name: String,
+    pub attestation_ref: String,
+    pub base_image_path: PathBuf,
+    pub base_image_sha256: String,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoneypotInteropStoreEvidence {
+    pub image_store_root: PathBuf,
+    pub manifest_dir: PathBuf,
+    pub trusted_images: Vec<HoneypotInteropTrustedImage>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Deserialize)]
+struct HoneypotInteropManifestDocument {
+    pool_name: String,
+    vm_name: String,
+    attestation_ref: String,
+    base_image_path: PathBuf,
+    source_iso: HoneypotInteropSourceIsoRecord,
+    transformation: HoneypotInteropTransformationRecord,
+    base_image: HoneypotInteropBaseImageRecord,
+    approval: HoneypotInteropApprovalRecord,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Deserialize)]
+struct HoneypotInteropSourceIsoRecord {
+    acquisition_channel: String,
+    acquisition_date: String,
+    filename: String,
+    size_bytes: u64,
+    edition: String,
+    language: String,
+    sha256: String,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Deserialize)]
+struct HoneypotInteropTransformationRecord {
+    timestamp: String,
+    inputs: Vec<HoneypotInteropTransformationInputRecord>,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Deserialize)]
+struct HoneypotInteropTransformationInputRecord {
+    reference: String,
+    sha256: String,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Deserialize)]
+struct HoneypotInteropBaseImageRecord {
+    sha256: String,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Deserialize)]
+struct HoneypotInteropApprovalRecord {
+    approved_by: String,
+}
+
+#[cfg(unix)]
+pub fn load_honeypot_interop_store_evidence(
+    image_store_root: &Path,
+    manifest_dir: &Path,
+) -> anyhow::Result<HoneypotInteropStoreEvidence> {
+    const REQUIRED_WINDOWS_EDITION: &str = "Windows 11 Pro x64";
+
+    let image_store_root = image_store_root
+        .canonicalize()
+        .with_context(|| format!("canonicalize image store root {}", image_store_root.display()))?;
+    let manifest_dir = manifest_dir
+        .canonicalize()
+        .with_context(|| format!("canonicalize manifest dir {}", manifest_dir.display()))?;
+
+    anyhow::ensure!(
+        image_store_root.is_dir(),
+        "interop image store root must be a directory: {}",
+        image_store_root.display()
+    );
+    anyhow::ensure!(
+        manifest_dir.is_dir(),
+        "interop manifest dir must be a directory: {}",
+        manifest_dir.display()
+    );
+
+    let mut manifest_paths = fs::read_dir(&manifest_dir)
+        .with_context(|| format!("read interop manifest dir {}", manifest_dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("collect interop manifests from {}", manifest_dir.display()))?;
+    manifest_paths.retain(|path| path.extension().is_some_and(|extension| extension == "json"));
+    manifest_paths.sort();
+
+    anyhow::ensure!(
+        !manifest_paths.is_empty(),
+        "interop manifest dir {} does not contain any .json manifests",
+        manifest_dir.display()
+    );
+
+    let mut trusted_images = Vec::with_capacity(manifest_paths.len());
+
+    for manifest_path in manifest_paths {
+        let manifest_bytes =
+            fs::read(&manifest_path).with_context(|| format!("read interop manifest {}", manifest_path.display()))?;
+        let manifest: HoneypotInteropManifestDocument = serde_json::from_slice(&manifest_bytes)
+            .with_context(|| format!("parse interop manifest {}", manifest_path.display()))?;
+
+        ensure_non_empty_manifest_field(&manifest_path, "pool_name", &manifest.pool_name)?;
+        ensure_non_empty_manifest_field(&manifest_path, "vm_name", &manifest.vm_name)?;
+        ensure_non_empty_manifest_field(&manifest_path, "attestation_ref", &manifest.attestation_ref)?;
+        ensure_non_empty_manifest_field(
+            &manifest_path,
+            "source_iso.acquisition_channel",
+            &manifest.source_iso.acquisition_channel,
+        )?;
+        ensure_non_empty_manifest_field(
+            &manifest_path,
+            "source_iso.acquisition_date",
+            &manifest.source_iso.acquisition_date,
+        )?;
+        ensure_non_empty_manifest_field(&manifest_path, "source_iso.filename", &manifest.source_iso.filename)?;
+        anyhow::ensure!(
+            manifest.source_iso.size_bytes > 0,
+            "source_iso.size_bytes must be greater than zero in {}",
+            manifest_path.display()
+        );
+        anyhow::ensure!(
+            manifest.source_iso.edition.trim() == REQUIRED_WINDOWS_EDITION,
+            "source_iso.edition must be {REQUIRED_WINDOWS_EDITION} in {}",
+            manifest_path.display()
+        );
+        ensure_non_empty_manifest_field(&manifest_path, "source_iso.language", &manifest.source_iso.language)?;
+        validate_sha256_field(&manifest_path, "source_iso.sha256", &manifest.source_iso.sha256)?;
+        ensure_non_empty_manifest_field(
+            &manifest_path,
+            "transformation.timestamp",
+            &manifest.transformation.timestamp,
+        )?;
+        anyhow::ensure!(
+            !manifest.transformation.inputs.is_empty(),
+            "transformation.inputs must not be empty in {}",
+            manifest_path.display()
+        );
+        for (index, input) in manifest.transformation.inputs.iter().enumerate() {
+            ensure_non_empty_manifest_field(
+                &manifest_path,
+                &format!("transformation.inputs[{index}].reference"),
+                &input.reference,
+            )?;
+            validate_sha256_field(
+                &manifest_path,
+                &format!("transformation.inputs[{index}].sha256"),
+                &input.sha256,
+            )?;
+        }
+        validate_sha256_field(&manifest_path, "base_image.sha256", &manifest.base_image.sha256)?;
+        ensure_non_empty_manifest_field(&manifest_path, "approval.approved_by", &manifest.approval.approved_by)?;
+        anyhow::ensure!(
+            manifest.base_image_path.is_relative(),
+            "base_image_path must stay relative to the configured interop image store in {}",
+            manifest_path.display()
+        );
+
+        let base_image_path = image_store_root.join(&manifest.base_image_path);
+        let base_image_path = base_image_path
+            .canonicalize()
+            .with_context(|| format!("canonicalize interop base image {}", base_image_path.display()))?;
+        anyhow::ensure!(
+            base_image_path.starts_with(&image_store_root),
+            "interop base image {} escapes the configured image store root {}",
+            base_image_path.display(),
+            image_store_root.display()
+        );
+        anyhow::ensure!(
+            base_image_path.is_file(),
+            "interop base image must be a file: {}",
+            base_image_path.display()
+        );
+
+        trusted_images.push(HoneypotInteropTrustedImage {
+            manifest_path,
+            pool_name: manifest.pool_name,
+            vm_name: manifest.vm_name,
+            attestation_ref: manifest.attestation_ref,
+            base_image_path,
+            base_image_sha256: manifest.base_image.sha256.to_ascii_lowercase(),
+        });
+    }
+
+    Ok(HoneypotInteropStoreEvidence {
+        image_store_root,
+        manifest_dir,
+        trusted_images,
+    })
+}
+
+#[cfg(unix)]
+pub fn validate_honeypot_interop_lease_binding(
+    evidence: &HoneypotInteropStoreEvidence,
+    attestation_ref: &str,
+    base_image_path: &Path,
+) -> anyhow::Result<()> {
+    let base_image_path = base_image_path
+        .canonicalize()
+        .with_context(|| format!("canonicalize interop lease base image {}", base_image_path.display()))?;
+    anyhow::ensure!(
+        base_image_path.starts_with(&evidence.image_store_root),
+        "lease base image {} is outside the configured interop image store root {}",
+        base_image_path.display(),
+        evidence.image_store_root.display()
+    );
+    anyhow::ensure!(
+        evidence
+            .trusted_images
+            .iter()
+            .any(|trusted_image| trusted_image.attestation_ref == attestation_ref
+                && trusted_image.base_image_path == base_image_path),
+        "lease attestation_ref {attestation_ref} and base image {} are not bound to a validated interop manifest in {}",
+        base_image_path.display(),
+        evidence.manifest_dir.display()
+    );
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn ensure_non_empty_manifest_field(manifest_path: &Path, field_name: &str, value: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !value.trim().is_empty(),
+        "{field_name} must not be empty in {}",
+        manifest_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_sha256_field(manifest_path: &Path, field_name: &str, value: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{field_name} must be a 64-character lowercase or uppercase hex SHA-256 in {}",
+        manifest_path.display()
+    );
+    Ok(())
 }
