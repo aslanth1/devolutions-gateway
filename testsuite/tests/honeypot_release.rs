@@ -359,6 +359,76 @@ services:
 }
 
 #[test]
+fn control_plane_compose_runtime_contract_rejects_edge_network_exposure() {
+    let error = validate_honeypot_control_plane_compose_runtime_document(
+        r#"
+name: dgw-honeypot
+x-images:
+  control-plane: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+services:
+  control-plane:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    env_file:
+      - ./env/control-plane.env
+    networks:
+      - honeypot-control
+      - honeypot-edge
+    volumes:
+      - /srv/honeypot/run/qmp:/run/honeypot/qmp:rw
+      - /srv/honeypot/run/qga:/run/honeypot/qga:rw
+      - ./config/control-plane/config.toml:/etc/honeypot/control-plane/config.toml:ro
+      - ./secrets/control-plane:/run/secrets/honeypot/control-plane:ro
+  proxy:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+"#,
+    )
+    .expect_err("compose contract should reject control-plane edge-network exposure");
+
+    assert!(format!("{error:#}").contains("honeypot-control"), "{error:#}");
+}
+
+#[test]
+fn control_plane_compose_runtime_contract_rejects_published_ports() {
+    let error = validate_honeypot_control_plane_compose_runtime_document(
+        r#"
+name: dgw-honeypot
+x-images:
+  control-plane: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+services:
+  control-plane:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    env_file:
+      - ./env/control-plane.env
+    networks:
+      - honeypot-control
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - /srv/honeypot/run/qmp:/run/honeypot/qmp:rw
+      - /srv/honeypot/run/qga:/run/honeypot/qga:rw
+      - ./config/control-plane/config.toml:/etc/honeypot/control-plane/config.toml:ro
+      - ./secrets/control-plane:/run/secrets/honeypot/control-plane:ro
+  proxy:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+"#,
+    )
+    .expect_err("compose contract should reject published control-plane ports");
+
+    assert!(
+        format!("{error:#}").contains("must not publish host ports"),
+        "{error:#}"
+    );
+}
+
+#[test]
 fn control_plane_runtime_contract_rejects_localhost_bind_addr() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let compose_path = tempdir.path().join("compose.yaml");
@@ -550,6 +620,35 @@ services:
 }
 
 #[test]
+fn proxy_compose_runtime_contract_rejects_control_socket_mount() {
+    let error = validate_honeypot_proxy_compose_runtime_document(
+        r#"
+name: dgw-honeypot
+x-images:
+  control-plane: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+services:
+  control-plane:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+    env_file:
+      - ./env/proxy.env
+    volumes:
+      - ./config/proxy/gateway.json:/etc/honeypot/proxy/gateway.json:ro
+      - ./secrets/proxy:/run/secrets/honeypot/proxy:ro
+      - /srv/honeypot/run/qmp:/run/honeypot/qmp:rw
+  frontend:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+"#,
+    )
+    .expect_err("compose contract should reject proxy control-socket mount");
+
+    assert!(format!("{error:#}").contains("/run/honeypot/qmp"), "{error:#}");
+}
+
+#[test]
 fn proxy_runtime_contract_rejects_missing_control_plane_endpoint() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let compose_path = tempdir.path().join("compose.yaml");
@@ -685,6 +784,35 @@ services:
     .expect_err("compose contract should reject missing frontend env_file");
 
     assert!(format!("{error:#}").contains("env_file"), "{error:#}");
+}
+
+#[test]
+fn frontend_compose_runtime_contract_rejects_control_socket_mount() {
+    let error = validate_honeypot_frontend_compose_runtime_document(
+        r#"
+name: dgw-honeypot
+x-images:
+  control-plane: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+services:
+  control-plane:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/control-plane@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  proxy:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/proxy@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  frontend:
+    image: ghcr.io/fork-owner/devolutions-gateway-honeypot/frontend@sha256:3333333333333333333333333333333333333333333333333333333333333333
+    env_file:
+      - ./env/frontend.env
+    volumes:
+      - ./config/frontend/config.toml:/etc/honeypot/frontend/config.toml:ro
+      - ./secrets/frontend:/run/secrets/honeypot/frontend:ro
+      - /srv/honeypot/run/qga:/run/honeypot/qga:rw
+"#,
+    )
+    .expect_err("compose contract should reject frontend control-socket mount");
+
+    assert!(format!("{error:#}").contains("/run/honeypot/qga"), "{error:#}");
 }
 
 #[test]

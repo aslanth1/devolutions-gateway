@@ -86,6 +86,8 @@ impl QemuLaunchPlan {
             ]);
         }
 
+        validate_control_socket_isolation(&argv, &qmp_socket_path, qga_socket_path.as_deref())?;
+
         Ok(Self {
             qemu_binary_path: qemu_config.binary_path.clone(),
             vm_name: vm_name.to_owned(),
@@ -148,6 +150,48 @@ pub(crate) fn validate_qemu_runtime_contract(config: &ControlPlaneConfig) -> any
     Ok(())
 }
 
+fn validate_control_socket_isolation(
+    argv: &[String],
+    qmp_socket_path: &Path,
+    qga_socket_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        argv.windows(2)
+            .any(|window| window.first().map(String::as_str) == Some("-display")
+                && window.get(1).map(String::as_str) == Some("none")),
+        "qemu launch plan must stay headless with -display none",
+    );
+    anyhow::ensure!(
+        !argv.iter().any(|arg| arg == "-vnc"),
+        "qemu launch plan must not enable VNC control channels",
+    );
+    anyhow::ensure!(
+        !argv.iter().any(|arg| arg == "-monitor"),
+        "qemu launch plan must not expose monitor control channels",
+    );
+
+    let expected_qmp = format!("unix:{},server=on,wait=off", qmp_socket_path.display());
+    anyhow::ensure!(
+        argv.windows(2)
+            .any(|window| window.first().map(String::as_str) == Some("-qmp") && window.get(1) == Some(&expected_qmp)),
+        "qemu launch plan must keep qmp on unix:{}",
+        qmp_socket_path.display(),
+    );
+
+    if let Some(qga_socket_path) = qga_socket_path {
+        let expected_qga = format!("socket,id=qga0,path={},server=on,wait=off", qga_socket_path.display());
+        anyhow::ensure!(
+            argv.windows(2)
+                .any(|window| window.first().map(String::as_str) == Some("-chardev")
+                    && window.get(1) == Some(&expected_qga)),
+            "qemu launch plan must keep qga on {}",
+            qga_socket_path.display(),
+        );
+    }
+
+    Ok(())
+}
+
 fn network_argv(config: &ControlPlaneConfig, guest_rdp_port: u16) -> Vec<String> {
     let network = &config.runtime.qemu.network;
 
@@ -186,7 +230,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use super::QemuLaunchPlan;
+    use super::{QemuLaunchPlan, validate_control_socket_isolation};
     use crate::config::ControlPlaneConfig;
 
     #[test]
@@ -225,6 +269,11 @@ mod tests {
             "{:?}",
             plan.argv
         );
+        assert!(plan.argv.windows(2).any(|window| {
+            window.first().map(String::as_str) == Some("-display") && window.get(1).map(String::as_str) == Some("none")
+        }));
+        assert!(!plan.argv.iter().any(|arg| arg == "-vnc"));
+        assert!(!plan.argv.iter().any(|arg| arg == "-monitor"));
     }
 
     #[test]
@@ -251,6 +300,25 @@ mod tests {
             .expect_err("non-loopback user networking should fail");
 
         assert!(format!("{error:#}").contains("host_loopback_addr"), "{error:#}");
+    }
+
+    #[test]
+    fn qemu_launch_plan_rejects_exposed_control_channel_regression() {
+        let qmp_socket_path = Path::new("/run/honeypot/qmp/lease.sock");
+        let qga_socket_path = Path::new("/run/honeypot/qga/lease.sock");
+        let argv = vec![
+            "-display".to_owned(),
+            "none".to_owned(),
+            "-qmp".to_owned(),
+            "tcp:0.0.0.0:4444,server=on,wait=off".to_owned(),
+            "-chardev".to_owned(),
+            format!("socket,id=qga0,path={},server=on,wait=off", qga_socket_path.display()),
+        ];
+
+        let error = validate_control_socket_isolation(&argv, qmp_socket_path, Some(qga_socket_path))
+            .expect_err("tcp-based qmp channel should be rejected");
+
+        assert!(format!("{error:#}").contains("qmp"), "{error:#}");
     }
 
     fn test_config(root: &Path) -> ControlPlaneConfig {

@@ -26,6 +26,9 @@ const CONTROL_PLANE_ENV_FILE_REF: &str = "./env/control-plane.env";
 const CONTROL_PLANE_CONFIG_MOUNT: &str =
     "./config/control-plane/config.toml:/etc/honeypot/control-plane/config.toml:ro";
 const CONTROL_PLANE_SECRET_MOUNT: &str = "./secrets/control-plane:/run/secrets/honeypot/control-plane:ro";
+const CONTROL_PLANE_QMP_MOUNT: &str = "/srv/honeypot/run/qmp:/run/honeypot/qmp:rw";
+const CONTROL_PLANE_QGA_MOUNT: &str = "/srv/honeypot/run/qga:/run/honeypot/qga:rw";
+const CONTROL_PLANE_NETWORK: &str = "honeypot-control";
 const CONTROL_PLANE_BIND_ADDR: &str = "0.0.0.0:8080";
 const CONTROL_PLANE_DATA_DIR: &str = "/var/lib/honeypot/control-plane";
 const CONTROL_PLANE_IMAGE_STORE: &str = "/var/lib/honeypot/images";
@@ -135,6 +138,10 @@ struct HoneypotComposeService {
     env_file: Option<ComposePathRef>,
     #[serde(default)]
     volumes: Vec<String>,
+    #[serde(default)]
+    networks: Vec<String>,
+    #[serde(default)]
+    ports: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -378,6 +385,33 @@ pub fn validate_honeypot_control_plane_compose_runtime_document(data: &str) -> a
             .any(|volume| volume == CONTROL_PLANE_SECRET_MOUNT),
         "compose service control-plane must keep the secret mount separate at {CONTROL_PLANE_SECRET_MOUNT}",
     );
+    anyhow::ensure!(
+        service.volumes.iter().any(|volume| volume == CONTROL_PLANE_QMP_MOUNT),
+        "compose service control-plane must mount {CONTROL_PLANE_QMP_MOUNT}",
+    );
+    anyhow::ensure!(
+        service.volumes.iter().any(|volume| volume == CONTROL_PLANE_QGA_MOUNT),
+        "compose service control-plane must mount {CONTROL_PLANE_QGA_MOUNT}",
+    );
+    anyhow::ensure!(
+        service.networks == [CONTROL_PLANE_NETWORK],
+        "compose service control-plane must stay only on the {CONTROL_PLANE_NETWORK} network",
+    );
+    anyhow::ensure!(
+        service.ports.is_empty(),
+        "compose service control-plane must not publish host ports",
+    );
+    ensure_service_omits_control_socket_mounts(
+        "proxy",
+        compose.services.get("proxy").context("missing compose service proxy")?,
+    )?;
+    ensure_service_omits_control_socket_mounts(
+        "frontend",
+        compose
+            .services
+            .get("frontend")
+            .context("missing compose service frontend")?,
+    )?;
 
     Ok(())
 }
@@ -416,6 +450,7 @@ pub fn validate_honeypot_proxy_compose_runtime_document(data: &str) -> anyhow::R
         service.volumes.iter().any(|volume| volume == PROXY_SECRET_MOUNT),
         "compose service proxy must keep the secret mount separate at {PROXY_SECRET_MOUNT}",
     );
+    ensure_service_omits_control_socket_mounts("proxy", service)?;
 
     Ok(())
 }
@@ -457,6 +492,7 @@ pub fn validate_honeypot_frontend_compose_runtime_document(data: &str) -> anyhow
         service.volumes.iter().any(|volume| volume == FRONTEND_SECRET_MOUNT),
         "compose service frontend must keep the secret mount separate at {FRONTEND_SECRET_MOUNT}",
     );
+    ensure_service_omits_control_socket_mounts("frontend", service)?;
 
     Ok(())
 }
@@ -560,6 +596,27 @@ fn current_image_ref(entry: &HoneypotImageLockEntry) -> String {
 
 fn canonical_image_name(service: &str) -> String {
     format!("{CANONICAL_IMAGE_ROOT}/{service}")
+}
+
+fn ensure_service_omits_control_socket_mounts(
+    service_name: &str,
+    service: &HoneypotComposeService,
+) -> anyhow::Result<()> {
+    for socket_dir in [CONTROL_PLANE_QMP_DIR, CONTROL_PLANE_QGA_DIR] {
+        anyhow::ensure!(
+            !service
+                .volumes
+                .iter()
+                .any(|volume| volume_target_path(volume) == Some(socket_dir)),
+            "compose service {service_name} must not mount control socket path {socket_dir}",
+        );
+    }
+
+    Ok(())
+}
+
+fn volume_target_path(volume: &str) -> Option<&str> {
+    volume.split(':').nth(1)
 }
 
 fn validate_honeypot_control_plane_config(config: &ControlPlaneConfig) -> anyhow::Result<()> {
