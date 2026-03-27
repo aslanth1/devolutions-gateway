@@ -626,7 +626,7 @@ Pass when: Rust tests can swap `proxy` from `current` to `previous`, confirm the
 - [x] Add a `frontend` rollback drill test.
 Pass when: Rust tests can swap `frontend` from `current` to `previous`, confirm the stack still starts and serves traffic, then restore `previous` back to `current` using `honeypot/docker/images.lock`.
 
-- [ ] Add a downgraded-service rejoin health-recovery test.
+- [x] Add a downgraded-service rejoin health-recovery test.
 Pass when: a service rolled from `current` to `previous` can rejoin two current peers and recover its health without manual data repair.
 
 - [x] Add a downgraded-service contract-compatibility test.

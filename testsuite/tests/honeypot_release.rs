@@ -714,6 +714,38 @@ fn docker_compose_json(
         .with_context(|| format!("decode compose exec JSON response for service {service}"))
 }
 
+fn docker_compose_service_container_id(
+    compose_path: &Path,
+    project_name: &str,
+    service: &str,
+) -> anyhow::Result<String> {
+    let output = run_docker_compose(
+        compose_path,
+        project_name,
+        &["ps".to_owned(), "-q".to_owned(), service.to_owned()],
+    )?;
+    let container_id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    anyhow::ensure!(
+        !container_id.is_empty(),
+        "docker compose ps -q {service} returned no container id",
+    );
+    Ok(container_id)
+}
+
+fn docker_container_config_image(container_id: &str) -> anyhow::Result<String> {
+    let output = Command::new("docker")
+        .args(["inspect", "--format", "{{.Config.Image}}", container_id])
+        .output()
+        .with_context(|| format!("inspect docker container {container_id} image"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "docker inspect {container_id} failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 fn docker_compose_logs(compose_path: &Path, project_name: &str) -> String {
     run_docker_compose(
         compose_path,
@@ -797,7 +829,7 @@ fn assert_compose_stack_ready(compose_path: &Path, project_name: &str) -> anyhow
     Ok(())
 }
 
-fn cleanup_compose_project(compose_path: &Path, project_name: &str, resources: &DockerSmokeResources) -> Vec<String> {
+fn cleanup_compose_project_runtime_artifacts(compose_path: &Path, project_name: &str) -> Vec<String> {
     let down_result = run_docker_compose(
         compose_path,
         project_name,
@@ -826,6 +858,12 @@ fn cleanup_compose_project(compose_path: &Path, project_name: &str, resources: &
             Err(error) => cleanup_errors.push(format!("list {label}: {error:#}")),
         }
     }
+
+    cleanup_errors
+}
+
+fn cleanup_compose_project(compose_path: &Path, project_name: &str, resources: &DockerSmokeResources) -> Vec<String> {
+    let mut cleanup_errors = cleanup_compose_project_runtime_artifacts(compose_path, project_name);
 
     for image in [
         &resources.frontend_image,
@@ -1681,6 +1719,196 @@ async fn frontend_rollback_drill_restores_the_stack_through_images_lock_selectio
         (Ok(()), false) => panic!("frontend rollback cleanup failed: {}", cleanup_errors.join("; ")),
         (Err(test_error), true) => panic!("{test_error:#}"),
         (Err(test_error), false) => panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; ")),
+    }
+}
+
+#[tokio::test]
+async fn downgraded_service_rejoin_health_recovery() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping downgraded-service rejoin host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let rejoin_cases = [
+        (
+            "control-plane",
+            ServiceVersionSelection {
+                control_plane: ImageSlot::Previous,
+                proxy: ImageSlot::Current,
+                frontend: ImageSlot::Current,
+            },
+        ),
+        (
+            "proxy",
+            ServiceVersionSelection {
+                control_plane: ImageSlot::Current,
+                proxy: ImageSlot::Previous,
+                frontend: ImageSlot::Current,
+            },
+        ),
+        (
+            "frontend",
+            ServiceVersionSelection {
+                control_plane: ImageSlot::Current,
+                proxy: ImageSlot::Current,
+                frontend: ImageSlot::Previous,
+            },
+        ),
+    ];
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build current control-plane rejoin image")?;
+        build_honeypot_service_image("control-plane", &resources.control_plane_previous_image)
+            .context("build previous control-plane rejoin image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image).context("build current proxy rejoin image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_previous_image)
+            .context("build previous proxy rejoin image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image)
+            .context("build current frontend rejoin image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_previous_image)
+            .context("build previous frontend rejoin image")?;
+
+        for (service, downgraded_selection) in rejoin_cases {
+            let fixture = DockerComposeFixture::create(&resources, &lockfile)
+                .with_context(|| format!("create compose fixture for downgraded {service} rejoin"))?;
+            let project_name = format!("dgw-honeypot-rejoin-{service}-{}", Uuid::new_v4().simple());
+
+            let case_result: anyhow::Result<()> = async {
+                fixture
+                    .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+                    .with_context(|| format!("write compose selection for current/current/current before {service}"))?;
+                run_docker_compose(
+                    &fixture.compose_path,
+                    &project_name,
+                    &[
+                        "up".to_owned(),
+                        "-d".to_owned(),
+                        "--wait".to_owned(),
+                        "--no-build".to_owned(),
+                        "--remove-orphans".to_owned(),
+                    ],
+                )
+                .with_context(|| {
+                    format!(
+                        "docker compose up failed for current/current/current before downgraded {service} rejoin\n{}",
+                        docker_compose_logs(&fixture.compose_path, &project_name)
+                    )
+                })?;
+                assert_compose_stack_ready(&fixture.compose_path, &project_name)
+                    .with_context(|| format!("stack should be healthy before downgraded {service} rejoin"))?;
+
+                let mut before_ids = std::collections::BTreeMap::new();
+                for observed_service in ["control-plane", "proxy", "frontend"] {
+                    let container_id =
+                        docker_compose_service_container_id(&fixture.compose_path, &project_name, observed_service)
+                            .with_context(|| format!("capture container id for {observed_service}"))?;
+                    let configured_image = docker_container_config_image(&container_id)
+                        .with_context(|| format!("capture container image for {observed_service}"))?;
+                    assert_eq!(
+                        configured_image,
+                        resources.image_for(observed_service, ImageSlot::Current),
+                        "{observed_service} should start from the current image before downgraded {service} rejoin"
+                    );
+                    before_ids.insert(observed_service, container_id);
+                }
+
+                fixture
+                    .write_compose_selection(&resources, &lockfile, downgraded_selection)
+                    .with_context(|| format!("write downgraded compose selection for {service}"))?;
+                run_docker_compose(
+                    &fixture.compose_path,
+                    &project_name,
+                    &[
+                        "up".to_owned(),
+                        "-d".to_owned(),
+                        "--wait".to_owned(),
+                        "--no-build".to_owned(),
+                        "--no-deps".to_owned(),
+                        service.to_owned(),
+                    ],
+                )
+                .with_context(|| {
+                    format!(
+                        "docker compose up failed when rejoining downgraded {service}\n{}",
+                        docker_compose_logs(&fixture.compose_path, &project_name)
+                    )
+                })?;
+                assert_compose_stack_ready(&fixture.compose_path, &project_name)
+                    .with_context(|| format!("stack should recover after downgraded {service} rejoin"))?;
+
+                let mut after_ids = std::collections::BTreeMap::new();
+                for observed_service in ["control-plane", "proxy", "frontend"] {
+                    let container_id =
+                        docker_compose_service_container_id(&fixture.compose_path, &project_name, observed_service)
+                            .with_context(|| format!("capture rejoined container id for {observed_service}"))?;
+                    let configured_image = docker_container_config_image(&container_id)
+                        .with_context(|| format!("capture rejoined container image for {observed_service}"))?;
+                    let expected_slot = if observed_service == service {
+                        ImageSlot::Previous
+                    } else {
+                        ImageSlot::Current
+                    };
+                    let expected_slot_name = match expected_slot {
+                        ImageSlot::Current => "current",
+                        ImageSlot::Previous => "previous",
+                    };
+                    assert_eq!(
+                        configured_image,
+                        resources.image_for(observed_service, expected_slot),
+                        "{observed_service} should use the {} image after downgraded {service} rejoin",
+                        expected_slot_name
+                    );
+                    after_ids.insert(observed_service, container_id);
+                }
+
+                assert_ne!(
+                    before_ids[service], after_ids[service],
+                    "{service} should be recreated when rejoining as previous"
+                );
+                for peer_service in ["control-plane", "proxy", "frontend"] {
+                    if peer_service == service {
+                        continue;
+                    }
+                    assert_eq!(
+                        before_ids[peer_service], after_ids[peer_service],
+                        "{peer_service} should remain unchanged while downgraded {service} rejoins"
+                    );
+                }
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup_errors = cleanup_compose_project_runtime_artifacts(&fixture.compose_path, &project_name);
+            match (case_result, cleanup_errors.is_empty()) {
+                (Ok(()), true) => {}
+                (Ok(()), false) => {
+                    anyhow::bail!(
+                        "downgraded {service} rejoin cleanup failed: {}",
+                        cleanup_errors.join("; ")
+                    )
+                }
+                (Err(test_error), true) => return Err(test_error),
+                (Err(test_error), false) => {
+                    anyhow::bail!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; "))
+                }
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    let final_cleanup = resources.cleanup();
+    match (result, final_cleanup) {
+        (Ok(()), Ok(())) => {}
+        (Ok(()), Err(cleanup_error)) => panic!("downgraded-service rejoin image cleanup failed: {cleanup_error:#}"),
+        (Err(test_error), Ok(())) => panic!("{test_error:#}"),
+        (Err(test_error), Err(cleanup_error)) => panic!("{test_error:#}\ncleanup error: {cleanup_error:#}"),
     }
 }
 
