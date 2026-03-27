@@ -13,6 +13,7 @@ use crate::token::AccessScope;
 pub fn make_router<S>(state: DgwState) -> Router<S> {
     Router::new()
         .route("/system/terminate", post(terminate_all_sessions))
+        .route("/{id}/quarantine", post(quarantine_session))
         .route("/{id}/terminate", post(terminate_session))
         .with_state(state)
 }
@@ -53,6 +54,51 @@ pub(crate) async fn terminate_session(
         None => state.sessions.kill_session(session_id).await,
     }
     .map_err(HttpError::internal().err())?;
+
+    match kill_result {
+        KillResult::Success => Ok(()),
+        KillResult::NotFound => Err(HttpError::not_found().msg("session not found")),
+    }
+}
+
+/// Quarantine forcefully a running honeypot session and its guest lease
+#[cfg_attr(feature = "openapi", utoipa::path(
+    post,
+    operation_id = "QuarantineSession",
+    tag = "Sessions",
+    path = "/jet/session/{id}/quarantine",
+    params(
+        ("id" = Uuid, Path, description = "Session / association ID of the honeypot session to quarantine")
+    ),
+    responses(
+        (status = 200, description = "Session quarantine requested successfully"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Invalid or missing authorization token"),
+        (status = 403, description = "Insufficient permissions"),
+        (status = 404, description = "No running honeypot session found with provided ID"),
+        (status = 409, description = "Honeypot session kill is disabled"),
+        (status = 500, description = "Unexpected server error"),
+    ),
+    security(("scope_token" = ["gateway.honeypot.session.kill"])),
+))]
+pub(crate) async fn quarantine_session(
+    State(state): State<DgwState>,
+    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
+    scope_token: ScopeToken,
+) -> Result<(), HttpError> {
+    if !state.honeypot.is_enabled() {
+        return Err(HttpError::not_found().msg("honeypot mode is disabled"));
+    }
+
+    let conf = state.conf_handle.get_conf();
+    ensure_honeypot_session_kill_enabled(&conf)?;
+
+    let kill_metadata = authorize_quarantine_scope(&scope_token)?;
+    let kill_result = state
+        .sessions
+        .kill_session_with_metadata(session_id, kill_metadata)
+        .await
+        .map_err(HttpError::internal().err())?;
 
     match kill_result {
         KillResult::Success => Ok(()),
@@ -136,6 +182,15 @@ fn authorize_system_terminate_scope(scope_token: &ScopeToken) -> Result<SessionK
     match scope_token.0.scope {
         AccessScope::Wildcard | AccessScope::HoneypotSystemKill => {
             Ok(SessionKillMetadata::system_operator(scope_token.0.token_id()))
+        }
+        _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+    }
+}
+
+fn authorize_quarantine_scope(scope_token: &ScopeToken) -> Result<SessionKillMetadata, HttpError> {
+    match scope_token.0.scope {
+        AccessScope::Wildcard | AccessScope::HoneypotSessionKill | AccessScope::HoneypotSystemKill => {
+            Ok(SessionKillMetadata::operator_quarantine(scope_token.0.token_id()))
         }
         _ => Err(HttpError::forbidden().msg("invalid scope for route")),
     }

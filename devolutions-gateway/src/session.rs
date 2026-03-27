@@ -277,6 +277,7 @@ pub enum KillResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKillReason {
     OperatorRequested,
+    OperatorQuarantine,
     SessionTtlExpired,
     RecordingPolicyViolated,
     GatewayRequested,
@@ -286,6 +287,7 @@ impl SessionKillReason {
     pub fn as_reason_code(self) -> &'static str {
         match self {
             Self::OperatorRequested => "operator_requested",
+            Self::OperatorQuarantine => "operator_quarantine",
             Self::SessionTtlExpired => "session_ttl_expired",
             Self::RecordingPolicyViolated => "recording_policy_violated",
             Self::GatewayRequested => "gateway_requested",
@@ -306,6 +308,14 @@ impl SessionKillMetadata {
             scope: KillScope::Session,
             operator_id: Some(operator_id),
             reason: SessionKillReason::OperatorRequested,
+        }
+    }
+
+    pub fn operator_quarantine(operator_id: Uuid) -> Self {
+        Self {
+            scope: KillScope::Session,
+            operator_id: Some(operator_id),
+            reason: SessionKillReason::OperatorQuarantine,
         }
     }
 

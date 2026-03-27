@@ -123,6 +123,31 @@ impl FrontendRuntime {
         }
     }
 
+    async fn quarantine_session(&self, session_id: &str) -> Result<(), FrontendKillError> {
+        use reqwest::StatusCode as ReqwestStatusCode;
+
+        let quarantine_url = self
+            .config
+            .proxy
+            .quarantine_url(session_id)
+            .map_err(FrontendKillError::Proxy)?;
+        let response = self
+            .authorized(self.client.post(quarantine_url))
+            .send()
+            .await
+            .with_context(|| format!("request proxy session quarantine for {session_id}"))
+            .map_err(FrontendKillError::Proxy)?;
+
+        match response.status() {
+            ReqwestStatusCode::OK | ReqwestStatusCode::NO_CONTENT => Ok(()),
+            ReqwestStatusCode::NOT_FOUND => Err(FrontendKillError::NotFound),
+            ReqwestStatusCode::CONFLICT => Err(FrontendKillError::Conflict),
+            status => Err(FrontendKillError::Proxy(anyhow::anyhow!(
+                "proxy session quarantine failed with {status}"
+            ))),
+        }
+    }
+
     async fn kill_all_sessions(&self) -> Result<(), FrontendKillError> {
         use reqwest::StatusCode as ReqwestStatusCode;
 
@@ -242,6 +267,7 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
         .route("/tile/{id}", get(tile_handler))
         .route("/session/{id}", get(session_handler))
         .route("/session/{id}/kill", post(kill_handler))
+        .route("/session/{id}/quarantine", post(quarantine_handler))
         .route("/system/kill", post(system_kill_handler))
         .with_state(state);
 
@@ -404,6 +430,34 @@ async fn kill_handler(
         Err(FrontendKillError::Proxy(error)) => {
             frontend_error(StatusCode::BAD_GATEWAY, &format!("kill request failed: {error:#}"))
         }
+    }
+}
+
+async fn quarantine_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<OperatorTokenQuery>,
+) -> Response {
+    let access = match state
+        .runtime
+        .authorize_operator(&headers, query.token.as_deref(), RequiredScope::SessionKill)
+    {
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
+
+    match state.runtime.quarantine_session(&session_id).await {
+        Ok(()) => Html(render_quarantine_notice(&session_id, access.raw_token())).into_response(),
+        Err(FrontendKillError::NotFound) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
+        Err(FrontendKillError::Conflict) => frontend_error(
+            StatusCode::CONFLICT,
+            "session quarantine is unavailable for this honeypot session",
+        ),
+        Err(FrontendKillError::Proxy(error)) => frontend_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("quarantine request failed: {error:#}"),
+        ),
     }
 }
 
@@ -626,6 +680,21 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
     .kill-button:hover {{
       filter: brightness(1.05);
     }}
+    .quarantine-button {{
+      border: 0;
+      border-radius: 999px;
+      padding: 0.6rem 0.9rem;
+      font: inherit;
+      font-size: 0.9rem;
+      letter-spacing: 0.03em;
+      background: linear-gradient(135deg, #8b6c0d, #c29114);
+      color: #fffaf0;
+      cursor: pointer;
+      box-shadow: 0 0.7rem 1.4rem rgba(139, 108, 13, 0.18);
+    }}
+    .quarantine-button:hover {{
+      filter: brightness(1.05);
+    }}
     .focus-panel {{
       min-height: 22rem;
     }}
@@ -782,7 +851,12 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
               dropTile(sessionId, "This session has ended.");
               break;
             case "session.killed":
-              dropTile(sessionId, "This session was killed.");
+              dropTile(
+                sessionId,
+                payload.kill_reason === "operator_quarantine"
+                  ? "This session was quarantined."
+                  : "This session was killed."
+              );
               break;
             default:
               try {{
@@ -820,7 +894,7 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
     let state_label = session_state_label(session.state);
     let stream_label = stream_state_label(session.stream_state);
     let auth_query = operator_token_query(operator_token);
-    let kill_button = render_kill_button(session, operator_token, access.can_kill_sessions());
+    let action_buttons = render_session_action_buttons(session, operator_token, access.can_kill_sessions());
     let preview_label = session
         .stream_preview
         .as_ref()
@@ -849,7 +923,7 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
     <div class="tile-meta"><strong>Last event</strong><code>{last_event_id}</code></div>
     {preview_label}
   </a>
-  {kill_button}
+  {action_buttons}
 </article>"##,
         state_class = state_label.replace(' ', "-").to_ascii_lowercase(),
         state_label = escape_html(state_label),
@@ -857,7 +931,7 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
         vm_lease_id = escape_html(vm_lease_id),
         preview_label = preview_label,
         auth_query = auth_query,
-        kill_button = kill_button,
+        action_buttons = action_buttons,
     )
 }
 
@@ -869,7 +943,7 @@ fn render_focus_panel(
     let session_id = escape_html(&session.session_id);
     let state_label = escape_html(session_state_label(session.state));
     let stream_label = escape_html(stream_state_label(session.stream_state));
-    let focus_actions = render_focus_kill_button(session, access);
+    let focus_actions = render_focus_action_buttons(session, access);
     let body = if let Some(preview) = stream_preview {
         format!(
             r#"<div class="stream-stage">
@@ -925,6 +999,23 @@ fn render_kill_notice(session_id: &str, operator_token: &str) -> String {
     )
 }
 
+fn render_quarantine_notice(session_id: &str, operator_token: &str) -> String {
+    let auth_query = operator_token_query(operator_token);
+    let session_id = escape_html(session_id);
+
+    format!(
+        r#"<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>Quarantine requested</strong>
+      <p>Session <code>{session_id}</code> is waiting for the proxy to emit <code>session.killed</code> and then request a quarantined recycle.</p>
+      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>"#
+    )
+}
+
 fn render_system_kill_notice(operator_token: &str) -> String {
     let auth_query = operator_token_query(operator_token);
 
@@ -942,7 +1033,7 @@ fn render_system_kill_notice(operator_token: &str) -> String {
     )
 }
 
-fn render_kill_button(session: &BootstrapSession, operator_token: &str, can_kill_sessions: bool) -> String {
+fn render_session_action_buttons(session: &BootstrapSession, operator_token: &str, can_kill_sessions: bool) -> String {
     if !can_kill_sessions || !session_can_be_killed(session.state) {
         return String::new();
     }
@@ -952,6 +1043,15 @@ fn render_kill_button(session: &BootstrapSession, operator_token: &str, can_kill
 
     format!(
         r##"<div class="tile-actions">
+  <button
+    class="quarantine-button"
+    type="button"
+    hx-post="/session/{session_id}/quarantine?{auth_query}"
+    hx-target="#focus-panel"
+    hx-swap="innerHTML"
+    hx-confirm="Quarantine guest for session {session_id}?">
+    Quarantine guest
+  </button>
   <button
     class="kill-button"
     type="button"
@@ -985,7 +1085,7 @@ fn render_system_kill_button(access: &OperatorAccess) -> String {
     )
 }
 
-fn render_focus_kill_button(session: &BootstrapSession, access: &OperatorAccess) -> String {
+fn render_focus_action_buttons(session: &BootstrapSession, access: &OperatorAccess) -> String {
     if !access.can_kill_sessions() || !session_can_be_killed(session.state) {
         return String::new();
     }
@@ -995,6 +1095,15 @@ fn render_focus_kill_button(session: &BootstrapSession, access: &OperatorAccess)
 
     format!(
         r##"<div class="focus-actions">
+  <button
+    class="quarantine-button"
+    type="button"
+    hx-post="/session/{session_id}/quarantine?{auth_query}"
+    hx-target="#focus-panel"
+    hx-swap="innerHTML"
+    hx-confirm="Quarantine guest for session {session_id}?">
+    Quarantine guest
+  </button>
   <button
     class="kill-button"
     type="button"

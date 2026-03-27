@@ -458,7 +458,7 @@ Pass when: a session event includes enough data for the frontend to open, replay
 - [x] Add explicit guest assignment and recycle markers to session events.
 Pass when: the frontend can tell the difference between attacker disconnect, operator kill, no-lease failure, and VM recycle.
 
-- [ ] Add quarantine controls.
+- [x] Add quarantine controls.
 Pass when: the operator can quarantine a broken or suspicious session or guest without leaving live credential mappings behind.
 
 - [x] Add kill-switch controls.

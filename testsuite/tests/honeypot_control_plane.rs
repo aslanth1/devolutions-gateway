@@ -514,6 +514,7 @@ async fn control_plane_assigns_resets_streams_and_recycles_a_typed_lease() {
             session_id: "session-1".to_owned(),
             recycle_reason: "release_cleanup".to_owned(),
             quarantine_on_failure: true,
+            force_quarantine: false,
         },
     )
     .await
@@ -883,6 +884,7 @@ async fn control_plane_recycle_returns_capacity_to_the_same_pool() {
             session_id: "session-default-1".to_owned(),
             recycle_reason: "release_cleanup".to_owned(),
             quarantine_on_failure: true,
+            force_quarantine: false,
         },
     )
     .await
@@ -1317,10 +1319,87 @@ async fn control_plane_quarantines_simulated_recycle_failures() {
             session_id: "session-1".to_owned(),
             recycle_reason: "simulate_failure".to_owned(),
             quarantine_on_failure: true,
+            force_quarantine: false,
         },
     )
     .await
     .expect("recycle with simulated failure");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(recycle.recycle_state, RecycleState::Quarantined);
+    assert_eq!(recycle.pool_state, PoolState::Quarantined);
+    assert!(recycle.quarantined);
+
+    let health = read_authed_health_response(port).await.expect("read health response");
+    assert_eq!(health.active_lease_count, 0);
+    assert_eq!(health.quarantined_lease_count, 1);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[tokio::test]
+async fn control_plane_force_quarantines_active_leases() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 1);
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .qemu_binary_path(fixture.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request("session-quarantine"))
+            .await
+            .expect("acquire lease");
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-quarantine".to_owned(),
+            session_id: "session-quarantine".to_owned(),
+            release_reason: "operator_quarantine".to_owned(),
+            terminal_outcome: "killed".to_owned(),
+        },
+    )
+    .await
+    .expect("release lease for quarantine");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let (status_line, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-quarantine".to_owned(),
+            session_id: "session-quarantine".to_owned(),
+            recycle_reason: "operator_quarantine".to_owned(),
+            quarantine_on_failure: true,
+            force_quarantine: true,
+        },
+    )
+    .await
+    .expect("force quarantine lease");
 
     assert!(status_line.contains("200"), "{status_line}");
     assert_eq!(recycle.recycle_state, RecycleState::Quarantined);
@@ -1394,6 +1473,7 @@ async fn control_plane_quarantines_recycle_when_base_image_digest_mismatches() {
             session_id: "session-integrity".to_owned(),
             recycle_reason: "release_cleanup".to_owned(),
             quarantine_on_failure: true,
+            force_quarantine: false,
         },
     )
     .await
@@ -1484,6 +1564,7 @@ async fn control_plane_process_driver_assigns_and_recycles_a_typed_lease() {
             session_id: "session-process".to_owned(),
             recycle_reason: "release_cleanup".to_owned(),
             quarantine_on_failure: true,
+            force_quarantine: false,
         },
     )
     .await
@@ -1612,6 +1693,7 @@ async fn control_plane_process_driver_reports_stop_timeout_and_preserves_the_lea
         session_id: "session-process-timeout".to_owned(),
         recycle_reason: "release_cleanup".to_owned(),
         quarantine_on_failure: true,
+        force_quarantine: false,
     })
     .expect("serialize recycle request");
     let (status_line, body) = send_http_request(

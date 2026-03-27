@@ -254,7 +254,8 @@ impl LeaseRegistry {
             .ensure_supported_schema()
             .map_err(|error| LeaseError::invalid_request(error.to_string()))?;
 
-        let should_quarantine = request.recycle_reason.contains("simulate_failure") && request.quarantine_on_failure;
+        let should_quarantine = request.force_quarantine
+            || (request.recycle_reason.contains("simulate_failure") && request.quarantine_on_failure);
 
         if should_quarantine {
             let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;

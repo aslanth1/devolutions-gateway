@@ -58,7 +58,7 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Operator identity is established by a proxy-local authentication flow that follows the current web-app token pattern.
 - The proxy issues a long-lived operator app token after successful login and then exchanges it for short-lived scoped access tokens.
 - The `watch` role maps to `gateway.honeypot.watch` and may read bootstrap state, consume events, and request stream tokens when paired with `gateway.honeypot.stream.read`.
-- The `kill` role maps to `gateway.honeypot.session.kill` for single-session kills and `gateway.honeypot.system.kill` for global kill.
+- The `kill` role maps to `gateway.honeypot.session.kill` for single-session kills or quarantines and `gateway.honeypot.system.kill` for global kill.
 - The `propose` role maps to `gateway.honeypot.command.propose` and is reserved only.
 - The `approve` role maps to `gateway.honeypot.command.approve` and is reserved only.
 - Every operator-visible action must carry `operator_id`, `role`, `session_id` when present, `vm_lease_id` when present, `event_id` when present, and `correlation_id`.
@@ -109,7 +109,7 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 ### `recycle_vm`
 
 - Method and path: `POST /api/v1/vm/{vm_lease_id}/recycle`.
-- Request fields: `schema_version`, `request_id`, `session_id`, `recycle_reason`, and `quarantine_on_failure`.
+- Request fields: `schema_version`, `request_id`, `session_id`, `recycle_reason`, `quarantine_on_failure`, and `force_quarantine`.
 - Success fields: `schema_version`, `correlation_id`, `vm_lease_id`, `recycle_state`, `pool_state`, and `quarantined`.
 - Failure codes: `auth_failed`, `invalid_request`, `lease_not_found`, `recycle_failed`, `quarantined`, and `host_unavailable`.
 - `recycle_vm` discards the overlay or restores the clean snapshot and either returns the lease to the ready pool or moves it to quarantine.
@@ -202,11 +202,12 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Boot-timeout handling allows recycle but does not silently retry the attacker connection onto a second guest in the same session.
 - Recycle-failure handling emits `session.recycle.requested` followed by `host.recycled` with `quarantined = true`.
 - Recycle-failure handling must let operators distinguish a quarantined guest or image from an ordinary disconnect by `recycle_state` and `quarantine_reason`.
+- Explicit quarantine handling emits `session.killed` with `kill_reason = operator_quarantine`, then requests `recycle_vm` with `force_quarantine = true`, and must end with `host.recycled` marked `quarantined = true`.
 - Proxy or control-plane partition before lease assignment behaves like `no_lease` with an operator-visible degraded reason.
 - Proxy or control-plane partition after lease assignment leaves the attacker session in its current state when possible, marks the operator surface degraded, and queues recycle or kill work until connectivity returns or a timeout forces quarantine.
 - Stream-start failure does not disconnect the attacker session.
 - Stream-start failure emits `session.stream.failed`, keeps the session visible in bootstrap, and allows stream recovery by requesting a fresh stream token without reconnecting the attacker.
-- Single-session kill emits `session.killed`, revokes session-bound credentials, tears down active stream tokens, and requests `recycle_vm`.
+- Single-session kill or quarantine emits `session.killed`, revokes session-bound credentials, tears down active stream tokens, and requests `recycle_vm`.
 - Global kill first halts new intake, then emits `session.killed` for each live session, revokes all live stream and credential material, and requests recycle for every assigned lease.
 
 ## Observability Contract

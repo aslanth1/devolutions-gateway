@@ -140,6 +140,7 @@ pub struct RecycleVmRequest {
     pub session_id: String,
     pub recycle_reason: String,
     pub quarantine_on_failure: bool,
+    pub force_quarantine: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

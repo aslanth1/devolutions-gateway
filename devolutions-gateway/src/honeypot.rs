@@ -26,7 +26,7 @@ use crate::config::{
 use crate::credential::{AppCredentialMapping, CredentialBinding, CredentialProvisionRequest, CredentialStoreHandle};
 use crate::session::{
     HoneypotAttackerSource, HoneypotSessionMetadataPatch, HoneypotStreamMetadata, HoneypotTerminalMetadata,
-    HoneypotVmAssignment, RunningSessions, SessionInfo, SessionKillMetadata,
+    HoneypotVmAssignment, RunningSessions, SessionInfo, SessionKillMetadata, SessionKillReason,
 };
 use crate::token::{ApplicationProtocol, Protocol, SessionTtl};
 
@@ -460,10 +460,10 @@ impl HoneypotRuntime {
             return Ok(());
         };
 
-        let recycle_reason = if was_killed {
-            "session_killed"
-        } else {
-            "proxy_forwarding_ended"
+        let (recycle_reason, force_quarantine) = match kill.map(|kill| kill.reason) {
+            Some(SessionKillReason::OperatorQuarantine) => ("operator_quarantine", true),
+            Some(_) => ("session_killed", false),
+            None => ("proxy_forwarding_ended", false),
         };
 
         let release_request = ReleaseVmRequest {
@@ -501,6 +501,7 @@ impl HoneypotRuntime {
                     session_id: session.id.to_string(),
                     recycle_reason: recycle_reason.to_owned(),
                     quarantine_on_failure: true,
+                    force_quarantine,
                 },
             )
             .await
@@ -668,6 +669,7 @@ impl HoneypotRuntime {
                     session_id: session_id.to_owned(),
                     recycle_reason: "prepare_failed".to_owned(),
                     quarantine_on_failure: true,
+                    force_quarantine: false,
                 },
             )
             .await;
@@ -2498,6 +2500,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quarantine_kill_requests_force_quarantine_recycle_and_marks_events() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+
+        harness
+            .runtime
+            .record_session_started(&session)
+            .await
+            .expect("record started session");
+        harness
+            .runtime
+            .record_session_ended(&session, Some(SessionKillMetadata::operator_quarantine(Uuid::nil())))
+            .await
+            .expect("record quarantined session");
+
+        let recycle_requests = harness.state.recycle_requests.lock().clone();
+        assert_eq!(recycle_requests.len(), 1);
+        assert_eq!(recycle_requests[0].recycle_reason, "operator_quarantine");
+        assert!(recycle_requests[0].force_quarantine);
+
+        let (replay, _receiver) = harness.runtime.stream_from_cursor("0").expect("valid cursor");
+        assert_eq!(replay.len(), 5);
+        assert!(matches!(
+            &replay[2].payload,
+            EventPayload::SessionKilled { kill_reason, .. } if kill_reason == "operator_quarantine"
+        ));
+        assert!(matches!(
+            &replay[3].payload,
+            EventPayload::SessionRecycleRequested { recycle_reason, .. } if recycle_reason == "operator_quarantine"
+        ));
+        assert!(matches!(
+            &replay[4].payload,
+            EventPayload::HostRecycled {
+                recycle_state: RecycleState::Quarantined,
+                quarantined: true,
+                ..
+            }
+        ));
+
+        let patch = harness
+            .runtime
+            .session_metadata_patch(session.id)
+            .expect("session metadata after quarantine");
+        assert_eq!(patch.state, Some(SessionState::Recycled));
+        assert_eq!(
+            patch
+                .terminal
+                .as_ref()
+                .and_then(|terminal| terminal.kill_reason.as_deref()),
+            Some("operator_quarantine")
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn prepared_rdp_session_provisions_credentials_before_session_start() {
         let harness = test_runtime_with_control_plane().await;
         let session = test_session();
@@ -2835,7 +2893,7 @@ mod tests {
         State(state): State<TestControlPlaneState>,
         headers: HeaderMap,
         Path(vm_lease_id): Path<String>,
-        Json(_request): Json<RecycleVmRequest>,
+        Json(request): Json<RecycleVmRequest>,
     ) -> Response {
         assert_service_token(&headers);
 
@@ -2843,15 +2901,24 @@ mod tests {
             return (control_plane_test_error_status(error.error_code), Json(error)).into_response();
         }
 
+        state.recycle_requests.lock().push(request.clone());
         state.recycled.lock().push(vm_lease_id.clone());
 
         Json(RecycleVmResponse {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             correlation_id: format!("corr-recycle-{vm_lease_id}"),
             vm_lease_id,
-            recycle_state: RecycleState::Recycled,
-            pool_state: PoolState::Ready,
-            quarantined: false,
+            recycle_state: if request.force_quarantine {
+                RecycleState::Quarantined
+            } else {
+                RecycleState::Recycled
+            },
+            pool_state: if request.force_quarantine {
+                PoolState::Quarantined
+            } else {
+                PoolState::Ready
+            },
+            quarantined: request.force_quarantine,
         })
         .into_response()
     }
@@ -2885,6 +2952,7 @@ mod tests {
         acquired: Arc<Mutex<Vec<String>>>,
         released: Arc<Mutex<Vec<String>>>,
         recycled: Arc<Mutex<Vec<String>>>,
+        recycle_requests: Arc<Mutex<Vec<RecycleVmRequest>>>,
         acquire_error: Arc<Mutex<Option<ErrorResponse>>>,
         release_error: Arc<Mutex<Option<ErrorResponse>>>,
         recycle_error: Arc<Mutex<Option<ErrorResponse>>>,

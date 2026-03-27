@@ -1,6 +1,8 @@
 use crate::Versioned;
 use crate::auth::TokenScope;
-use crate::control_plane::{AcquireVmRequest, AttackerProtocol, HealthResponse, ServiceState, StreamPolicy};
+use crate::control_plane::{
+    AcquireVmRequest, AttackerProtocol, HealthResponse, RecycleVmRequest, ServiceState, StreamPolicy,
+};
 use crate::error::{ErrorCode, ErrorResponse};
 use crate::events::{EventEnvelope, EventPayload, SessionState, StreamState};
 use crate::frontend::{BootstrapResponse, BootstrapSession};
@@ -55,6 +57,23 @@ fn acquire_vm_request_rejects_unsupported_schema() {
         .expect_err("schema_version 2 should be rejected");
 
     assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
+}
+
+#[test]
+fn recycle_vm_request_round_trips_force_quarantine_flag() {
+    let request = RecycleVmRequest {
+        schema_version: crate::SCHEMA_VERSION,
+        request_id: "req-recycle-1".to_owned(),
+        session_id: "session-1".to_owned(),
+        recycle_reason: "operator_quarantine".to_owned(),
+        quarantine_on_failure: true,
+        force_quarantine: true,
+    };
+
+    let json = serde_json::to_string(&request).expect("serialize recycle request");
+    let decoded: RecycleVmRequest = serde_json::from_str(&json).expect("deserialize recycle request");
+
+    assert_eq!(decoded, request);
 }
 
 #[test]
