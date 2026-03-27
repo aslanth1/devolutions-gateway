@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use devolutions_gateway::config::{Conf as GatewayConf, dto as gateway_dto};
+use honeypot_contracts::SCHEMA_VERSION;
 use honeypot_control_plane::config::{CONTROL_PLANE_CONFIG_ENV, ControlPlaneConfig, DEFAULT_CONTROL_PLANE_CONFIG_PATH};
 use honeypot_frontend::config::{DEFAULT_FRONTEND_CONFIG_PATH, FrontendConfig};
 use serde::Deserialize;
@@ -88,6 +89,36 @@ pub struct HoneypotImageRevision {
     pub tag: String,
     pub digest: String,
     pub source_ref: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageSlot {
+    Current,
+    Previous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceVersionSelection {
+    pub control_plane: ImageSlot,
+    pub proxy: ImageSlot,
+    pub frontend: ImageSlot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServiceSchemaVersions {
+    pub control_plane: u32,
+    pub proxy: u32,
+    pub frontend: u32,
+}
+
+impl Default for ServiceSchemaVersions {
+    fn default() -> Self {
+        Self {
+            control_plane: SCHEMA_VERSION,
+            proxy: SCHEMA_VERSION,
+            frontend: SCHEMA_VERSION,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -225,6 +256,37 @@ pub fn validate_honeypot_release_inputs(lock_path: &Path, compose_path: &Path) -
     let compose_data = std::fs::read_to_string(compose_path)
         .with_context(|| format!("read compose file at {}", compose_path.display()))?;
     validate_honeypot_compose_document(&compose_data, &lockfile)
+}
+
+pub fn validate_mixed_version_contract_compatibility(
+    selection: ServiceVersionSelection,
+    schema_versions: ServiceSchemaVersions,
+) -> anyhow::Result<()> {
+    ensure_matching_schema_version("frontend", schema_versions.frontend, "proxy", schema_versions.proxy)?;
+    ensure_matching_schema_version(
+        "proxy",
+        schema_versions.proxy,
+        "control-plane",
+        schema_versions.control_plane,
+    )?;
+
+    match selection.frontend {
+        ImageSlot::Current => {}
+        ImageSlot::Previous => anyhow::ensure!(
+            selection.proxy == ImageSlot::Current,
+            "frontend previous requires proxy current for bootstrap, event replay, and stream-token compatibility",
+        ),
+    }
+
+    match selection.proxy {
+        ImageSlot::Current => {}
+        ImageSlot::Previous => anyhow::ensure!(
+            selection.control_plane == ImageSlot::Current,
+            "proxy previous requires control-plane current for internal RPC compatibility",
+        ),
+    }
+
+    Ok(())
 }
 
 pub fn validate_honeypot_control_plane_runtime_contract(
@@ -430,6 +492,20 @@ fn validate_service_entry(service: &'static str, entry: &HoneypotImageLockEntry)
     anyhow::ensure!(
         entry.current.digest != entry.previous.digest,
         "{service} current and previous digests must not be identical",
+    );
+
+    Ok(())
+}
+
+fn ensure_matching_schema_version(
+    left_service: &str,
+    left_version: u32,
+    right_service: &str,
+    right_version: u32,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        left_version == right_version,
+        "{left_service} schema_version {left_version} is incompatible with {right_service} schema_version {right_version}",
     );
 
     Ok(())

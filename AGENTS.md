@@ -629,7 +629,7 @@ Pass when: Rust tests can swap `frontend` from `current` to `previous`, confirm 
 - [ ] Add a downgraded-service rejoin health-recovery test.
 Pass when: a service rolled from `current` to `previous` can rejoin two current peers and recover its health without manual data repair.
 
-- [ ] Add a downgraded-service contract-compatibility test.
+- [x] Add a downgraded-service contract-compatibility test.
 Pass when: a service rolled from `current` to `previous` can continue exchanging versioned contracts with two current peers without manual data repair.
 
 - [ ] Add a restored-service rejoin health-recovery test.
