@@ -6791,6 +6791,7 @@ dependencies = [
  "sysevent-winevent",
  "tempfile",
  "test-utils",
+ "time",
  "tokio 1.49.0",
  "tokio-rustls",
  "tokio-tungstenite 0.26.2",

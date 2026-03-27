@@ -612,7 +612,7 @@ Pass when: the test sees the session in `/jet/sessions`, receives the frontend b
 - [x] Add a frontend stream lifecycle test.
 Pass when: the backend announces a stream, the frontend opens a tile, fullscreen works, and disconnect or recycle removes the tile.
 
-- [ ] Add a recycle-and-cleanup test.
+- [x] Add a recycle-and-cleanup test.
 Pass when: terminating a session removes the live session, expires the credential mapping, and returns the VM to a clean snapshot or overlay state.
 
 ### Milestone 5f: Rollback And Rejoin Verification
