@@ -39,6 +39,18 @@ static FAKE_QEMU_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
         .to_path_buf()
 });
 
+static HONEYPOT_MANUAL_HEADED_WRITER_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+    escargot::CargoBuild::new()
+        .manifest_path("Cargo.toml")
+        .bin("honeypot-manual-headed-writer")
+        .current_release()
+        .current_target()
+        .run()
+        .expect("build honeypot manual-headed writer")
+        .path()
+        .to_path_buf()
+});
+
 #[derive(Debug, Clone, TypedBuilder)]
 pub struct HoneypotControlPlaneTestConfig {
     #[builder(setter(into))]
@@ -113,6 +125,12 @@ pub fn honeypot_control_plane_tokio_cmd() -> tokio::process::Command {
 
 pub fn fake_qemu_bin_path() -> PathBuf {
     FAKE_QEMU_BIN_PATH.clone()
+}
+
+pub fn honeypot_manual_headed_writer_assert_cmd() -> assert_cmd::Command {
+    let mut cmd = assert_cmd::Command::new(&*HONEYPOT_MANUAL_HEADED_WRITER_BIN_PATH);
+    cmd.env("RUST_BACKTRACE", "0");
+    cmd
 }
 
 pub fn write_honeypot_control_plane_config(path: &Path, config: &HoneypotControlPlaneTestConfig) -> anyhow::Result<()> {
@@ -1325,6 +1343,22 @@ pub fn manual_headed_profile_dir(root: &Path, run_id: &str) -> anyhow::Result<Pa
 #[cfg(unix)]
 pub fn manual_headed_artifacts_root(root: &Path, run_id: &str) -> anyhow::Result<PathBuf> {
     Ok(manual_headed_profile_dir(root, run_id)?.join("artifacts"))
+}
+
+#[cfg(unix)]
+pub fn resolve_manual_headed_anchor_artifact_path(
+    root: &Path,
+    run_id: &str,
+    relpath: &Path,
+) -> anyhow::Result<PathBuf> {
+    manual_headed_anchor_artifact_path(root, run_id, relpath)
+}
+
+#[cfg(unix)]
+pub fn manual_headed_anchor_runtime_required(anchor_id: &str) -> anyhow::Result<bool> {
+    Ok(manual_headed_anchor_spec(anchor_id)
+        .ok_or_else(|| anyhow::anyhow!("manual-headed anchor id {} is not recognized", anchor_id))?
+        .runtime_required)
 }
 
 #[cfg(unix)]

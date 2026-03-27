@@ -1,0 +1,9 @@
+{
+  "storage_uri": "target/run-20260327-115026/artifacts/manual-headed-preflight",
+  "raw_vm_assets_in_git_history": false,
+  "retrieval_check": "directory-created",
+  "retention_window": {
+    "policy": "git-tracked-metadata-only",
+    "expires_at_unix_secs": 1774637426
+  }
+}

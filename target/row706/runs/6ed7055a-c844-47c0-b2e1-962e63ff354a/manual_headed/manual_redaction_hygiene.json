@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "row706_run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "anchor_id": "manual_redaction_hygiene",
+  "executed": true,
+  "status": "passed",
+  "producer": "manual-headed-writer",
+  "captured_at_unix_secs": 1774637512,
+  "source_artifact_relpath": "preflight/redaction-hygiene.json",
+  "source_artifact_sha256": "4b60ee5ae8677ed7a57f2fcf5916bef2b6255ee2ed6d787d959a79ed8c0afb7d",
+  "detail": "tracked evidence excludes plaintext RDP credentials and session tokens"
+}

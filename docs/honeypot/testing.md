@@ -127,6 +127,8 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `preflight_only` anchors may validate headed-display, Chrome, run identity, the approved Windows key source, the attested Tiny11 image-store or interop root declaration, redaction policy, and artifact-storage contract inputs before any guest boots.
 - `runtime_required` anchors must bind to machine-produced artifacts and a verified row-`706` runtime run before rows `704`, `707`, `710`, `713`, `716`, or the runtime portion of `722` may be treated as complete.
 - A preflight-only manual-headed run may end in `blocked_prereq`, but that disposition is never sufficient to complete row `735`.
+- The sanctioned non-test evidence writer is `cargo run -p testsuite --bin honeypot-manual-headed-writer -- <preflight|runtime|finalize> ...`.
+- Its `preflight` mode may record blocked prerequisites under an existing row-`706` run envelope before guest boot, while `runtime` mode refuses to write any runtime anchor unless `verify_row706_evidence_envelope` already passes for the same `run_id`.
 - The redaction lane still fails closed for tracked plaintext RDP credentials, session tokens, and similar secrets, but it now allows the single repo-local Windows provisioning key file documented in `WINDOWS11-LICENSE.md` for local Win11 host creation only.
 - That allowlist does not extend to manual-headed evidence, exports, screenshots, or any second tracked artifact; the provisioning key must stay confined to that one documented file or an approved mounted secret path.
 

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "row706_run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "anchor_id": "manual_artifact_storage",
+  "executed": true,
+  "status": "passed",
+  "producer": "manual-headed-writer",
+  "captured_at_unix_secs": 1774637512,
+  "source_artifact_relpath": "preflight/artifact-storage.json",
+  "source_artifact_sha256": "ac1d27ef020b4a6e050a390b16bc3fc0ee00e06bc2906121d79067767303832a",
+  "detail": "stored only lightweight manual-headed metadata under target/run-20260327-115026"
+}

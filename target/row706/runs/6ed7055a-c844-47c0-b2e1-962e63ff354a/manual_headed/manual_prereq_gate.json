@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "row706_run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "anchor_id": "manual_prereq_gate",
+  "executed": false,
+  "status": "blocked_prereq",
+  "producer": "manual-headed-writer",
+  "captured_at_unix_secs": 1774637496,
+  "source_artifact_relpath": "preflight/prereq-gate.json",
+  "source_artifact_sha256": "8bfb1054dca0df7c90af74489166a46e49edf6791b9ee14fee6da0c9382f7933",
+  "detail": "attested Tiny11 interop store not configured on this host"
+}

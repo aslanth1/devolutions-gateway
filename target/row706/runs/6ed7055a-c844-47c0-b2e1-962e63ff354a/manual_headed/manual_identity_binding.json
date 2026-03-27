@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "row706_run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "anchor_id": "manual_identity_binding",
+  "executed": true,
+  "status": "passed",
+  "producer": "manual-headed-writer",
+  "captured_at_unix_secs": 1774637512,
+  "source_artifact_relpath": "preflight/identity-binding.json",
+  "source_artifact_sha256": "3cc92880d55b4f8f56a89700a260fa5a76d12113eb3113cb0ace43a3f80d5271",
+  "detail": "bound manual preflight artifacts to the existing blocked row706 run envelope"
+}

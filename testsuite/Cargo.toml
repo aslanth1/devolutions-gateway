@@ -19,6 +19,10 @@ harness = true
 name = "fake-qemu"
 path = "src/fake_qemu_bin.rs"
 
+[[bin]]
+name = "honeypot-manual-headed-writer"
+path = "src/honeypot_manual_headed_writer_bin.rs"
+
 [dependencies]
 anyhow = "1.0"
 assert_cmd = "2.1"

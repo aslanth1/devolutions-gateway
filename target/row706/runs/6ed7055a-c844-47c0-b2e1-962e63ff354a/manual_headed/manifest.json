@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "created_at_unix_secs": 1774637496,
+  "status": "running",
+  "expected_anchor_ids": [
+    "manual_prereq_gate",
+    "manual_identity_binding",
+    "manual_stack_startup_shutdown",
+    "manual_tiny11_rdp_ready",
+    "manual_headed_qemu_chrome_observation",
+    "manual_bounded_interaction",
+    "manual_video_evidence",
+    "manual_redaction_hygiene",
+    "manual_artifact_storage"
+  ]
+}

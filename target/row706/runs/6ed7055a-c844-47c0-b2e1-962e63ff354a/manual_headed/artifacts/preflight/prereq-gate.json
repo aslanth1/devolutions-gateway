@@ -1,0 +1,10 @@
+{
+  "manual_lab_gate": true,
+  "headed_display_available": true,
+  "chrome_binary": "/usr/bin/google-chrome",
+  "chrome_version": "Google Chrome 146.0.7680.80",
+  "windows_provisioning_key_path": "WINDOWS11-LICENSE.md",
+  "row706_run_id": "6ed7055a-c844-47c0-b2e1-962e63ff354a",
+  "attested_tiny11_interop_root": null,
+  "blocked_reason": "attested Tiny11 interop store not configured on this host"
+}

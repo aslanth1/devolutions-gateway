@@ -1,0 +1,6 @@
+{
+  "tracked_rdp_credentials_present": false,
+  "tracked_session_tokens_present": false,
+  "repo_local_windows_key_confined_to": "WINDOWS11-LICENSE.md",
+  "manual_evidence_exports_redacted": true
+}

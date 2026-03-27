@@ -13,9 +13,10 @@ use testsuite::honeypot_control_plane::{
     MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE, MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION, ManualHeadedAnchorResult,
     ManualHeadedAnchorStatus, ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL, ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP,
     ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY, ROW706_EVIDENCE_SCHEMA_VERSION,
-    Row706AnchorResult, Row706AnchorStatus, manual_headed_artifacts_root, manual_headed_begin_run,
-    manual_headed_complete_run, row706_begin_run, row706_complete_run, verify_manual_headed_evidence_envelope,
-    verify_row706_evidence_envelope, write_manual_headed_anchor_result, write_row706_anchor_result,
+    Row706AnchorResult, Row706AnchorStatus, honeypot_manual_headed_writer_assert_cmd, manual_headed_artifacts_root,
+    manual_headed_begin_run, manual_headed_complete_run, row706_begin_run, row706_complete_run,
+    verify_manual_headed_evidence_envelope, verify_row706_evidence_envelope, write_manual_headed_anchor_result,
+    write_row706_anchor_result,
 };
 use uuid::Uuid;
 
@@ -223,6 +224,186 @@ fn manual_headed_profile_rejects_missing_session_binding_for_headed_observation(
     .expect_err("headed observation must require session_id");
     let rendered = format!("{error:#}");
     assert!(rendered.contains("requires session_id"), "{rendered}");
+}
+
+#[test]
+fn manual_headed_writer_preflight_records_blocked_prereq_anchor_without_row706_verification() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("preflight-prereq.json");
+    fs::write(
+        &source_artifact,
+        br#"{"manual_lab_gate":true,"headed_display_available":true,"chrome_binary":"google-chrome","windows_provisioning_key_path":"WINDOWS11-LICENSE.md","interop_store_status":"missing"}"#,
+    )
+    .expect("write preflight source artifact");
+
+    honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "preflight",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+            "--status",
+            "blocked_prereq",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "preflight/prereq.json",
+            "--detail",
+            "attested Tiny11 interop store not configured on this host",
+        ])
+        .assert()
+        .success();
+
+    let result_path = evidence_root
+        .join("runs")
+        .join(&run_id)
+        .join("manual_headed")
+        .join(format!("{MANUAL_HEADED_ANCHOR_PREREQ_GATE}.json"));
+    let result: ManualHeadedAnchorResult =
+        serde_json::from_slice(&fs::read(&result_path).expect("read manual-headed result"))
+            .expect("parse manual-headed result");
+    assert!(!result.executed);
+    assert_eq!(result.status, ManualHeadedAnchorStatus::BlockedPrereq);
+}
+
+#[test]
+fn manual_headed_writer_runtime_rejects_unverified_row706_run() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("runtime-stack.json");
+    fs::write(
+        &source_artifact,
+        br#"{"services":{"control-plane":{"status":"healthy"},"proxy":{"status":"healthy"},"frontend":{"status":"healthy"}},"teardown_disposition":"not_started"}"#,
+    )
+    .expect("write runtime source artifact");
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "runtime",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+            "--status",
+            "passed",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "runtime/stack.json",
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(rendered.contains("requires a verified row706 run"), "{rendered}");
+    assert!(
+        !evidence_root
+            .join("runs")
+            .join(&run_id)
+            .join("manual_headed")
+            .join(format!("{MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN}.json"))
+            .exists()
+    );
+}
+
+#[test]
+fn manual_headed_writer_runtime_accepts_verified_stack_anchor() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("runtime-stack.json");
+    fs::write(
+        &source_artifact,
+        br#"{"services":{"control-plane":{"status":"healthy"},"proxy":{"status":"healthy"},"frontend":{"status":"healthy"}},"teardown_disposition":"clean_shutdown"}"#,
+    )
+    .expect("write runtime source artifact");
+    write_verified_row706_run(&evidence_root, &run_id);
+
+    honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "runtime",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+            "--status",
+            "passed",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "runtime/stack.json",
+        ])
+        .assert()
+        .success();
+
+    let result_path = evidence_root
+        .join("runs")
+        .join(&run_id)
+        .join("manual_headed")
+        .join(format!("{MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN}.json"));
+    assert!(result_path.is_file());
+}
+
+#[test]
+fn manual_headed_writer_runtime_rejects_weak_video_metadata() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("video-metadata.json");
+    fs::write(
+        &source_artifact,
+        br#"{"video_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","timestamp_window":{"start_unix_secs":1,"end_unix_secs":2},"storage_uri":"target/manual/video.webm","retention_window":{"policy":"manual-review","expires_at_unix_secs":3},"session_id":"session-1","vm_lease_id":"lease-1"}"#,
+    )
+    .expect("write video metadata artifact");
+    write_verified_row706_run(&evidence_root, &run_id);
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "runtime",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+            "--status",
+            "passed",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "runtime/video-metadata.json",
+            "--session-id",
+            SESSION_ID,
+            "--vm-lease-id",
+            VM_LEASE_ID,
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(rendered.contains("duration_floor_secs"), "{rendered}");
 }
 
 fn write_verified_row706_run(evidence_root: &Path, run_id: &str) {

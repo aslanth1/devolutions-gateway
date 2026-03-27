@@ -1,0 +1,8 @@
+{
+  "services": {
+    "control-plane": { "status": "not_started" },
+    "proxy": { "status": "not_started" },
+    "frontend": { "status": "not_started" }
+  },
+  "teardown_disposition": "not_attempted"
+}
