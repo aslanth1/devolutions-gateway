@@ -617,7 +617,7 @@ Pass when: terminating a session removes the live session, expires the credentia
 
 ### Milestone 5f: Rollback And Rejoin Verification
 
-- [ ] Add a `control-plane` rollback drill test.
+- [x] Add a `control-plane` rollback drill test.
 Pass when: Rust tests can swap `control-plane` from `current` to `previous`, confirm the stack still starts and serves traffic, then restore `previous` back to `current` using `honeypot/docker/images.lock`.
 
 - [ ] Add a `proxy` rollback drill test.

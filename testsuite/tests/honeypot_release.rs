@@ -40,6 +40,15 @@ fn expected_image_ref(lockfile: &HoneypotImagesLock, service: &'static str, slot
     format!("{}/{}@{}", entry.registry, entry.image, digest)
 }
 
+fn selected_slot(selection: ServiceVersionSelection, service: &str) -> ImageSlot {
+    match service {
+        "control-plane" => selection.control_plane,
+        "proxy" => selection.proxy,
+        "frontend" => selection.frontend,
+        _ => panic!("unsupported service name: {service}"),
+    }
+}
+
 fn compose_document_for_selection(lockfile: &HoneypotImagesLock, selection: ServiceVersionSelection) -> String {
     let mut compose_data =
         std::fs::read_to_string(repo_relative_path(HONEYPOT_COMPOSE_PATH)).expect("read on-disk compose file");
@@ -231,8 +240,11 @@ struct DockerSmokeResources {
     proxy_container: String,
     frontend_container: String,
     control_plane_image: String,
+    control_plane_previous_image: String,
     proxy_image: String,
+    proxy_previous_image: String,
     frontend_image: String,
+    frontend_previous_image: String,
 }
 
 impl DockerSmokeResources {
@@ -244,8 +256,23 @@ impl DockerSmokeResources {
             proxy_container: format!("dgw-honeypot-proxy-smoke-{suffix}"),
             frontend_container: format!("dgw-honeypot-frontend-smoke-{suffix}"),
             control_plane_image: format!("dgw-honeypot-control-plane:smoke-{suffix}"),
+            control_plane_previous_image: format!("dgw-honeypot-control-plane:previous-smoke-{suffix}"),
             proxy_image: format!("dgw-honeypot-proxy:smoke-{suffix}"),
+            proxy_previous_image: format!("dgw-honeypot-proxy:previous-smoke-{suffix}"),
             frontend_image: format!("dgw-honeypot-frontend:smoke-{suffix}"),
+            frontend_previous_image: format!("dgw-honeypot-frontend:previous-smoke-{suffix}"),
+        }
+    }
+
+    fn image_for(&self, service: &'static str, slot: ImageSlot) -> &str {
+        match (service, slot) {
+            ("control-plane", ImageSlot::Current) => &self.control_plane_image,
+            ("control-plane", ImageSlot::Previous) => &self.control_plane_previous_image,
+            ("proxy", ImageSlot::Current) => &self.proxy_image,
+            ("proxy", ImageSlot::Previous) => &self.proxy_previous_image,
+            ("frontend", ImageSlot::Current) => &self.frontend_image,
+            ("frontend", ImageSlot::Previous) => &self.frontend_previous_image,
+            _ => panic!("unsupported service/slot combination for {service}"),
         }
     }
 
@@ -266,7 +293,14 @@ impl DockerSmokeResources {
             errors.push(format!("remove network {}: {error:#}", self.network_name));
         }
 
-        for image in [&self.frontend_image, &self.proxy_image, &self.control_plane_image] {
+        for image in [
+            &self.frontend_image,
+            &self.frontend_previous_image,
+            &self.proxy_image,
+            &self.proxy_previous_image,
+            &self.control_plane_image,
+            &self.control_plane_previous_image,
+        ] {
             if let Err(error) = remove_docker_image_if_exists(image) {
                 errors.push(format!("remove image {image}: {error:#}"));
             }
@@ -283,6 +317,11 @@ impl DockerSmokeResources {
 struct DockerComposeFixture {
     _root: tempfile::TempDir,
     compose_path: PathBuf,
+    image_store_dir: PathBuf,
+    lease_store_dir: PathBuf,
+    quarantine_store_dir: PathBuf,
+    qmp_dir: PathBuf,
+    qga_dir: PathBuf,
 }
 
 impl DockerComposeFixture {
@@ -383,39 +422,69 @@ impl DockerComposeFixture {
 
         write_trusted_image_fixture(&image_store_dir)?;
 
-        let mut compose_data = std::fs::read_to_string(repo_relative_path(HONEYPOT_COMPOSE_PATH))
-            .context("read checked-in compose file")?;
-        validate_honeypot_compose_document(&compose_data, lockfile)
-            .context("checked-in compose must satisfy the pinned lockfile contract before runtime bring-up")?;
+        let compose_path = root.path().join("compose.yaml");
+        let fixture = Self {
+            _root: root,
+            compose_path,
+            image_store_dir,
+            lease_store_dir,
+            quarantine_store_dir,
+            qmp_dir,
+            qga_dir,
+        };
+        fixture.write_compose_selection(resources, lockfile, ServiceVersionSelection::default())?;
 
-        for (service, image) in [
-            ("control-plane", resources.control_plane_image.as_str()),
-            ("proxy", resources.proxy_image.as_str()),
-            ("frontend", resources.frontend_image.as_str()),
-        ] {
-            compose_data = rewrite_compose_image_ref(&compose_data, service, image, true, true);
+        Ok(fixture)
+    }
+
+    fn write_compose_selection(
+        &self,
+        resources: &DockerSmokeResources,
+        lockfile: &HoneypotImagesLock,
+        selection: ServiceVersionSelection,
+    ) -> anyhow::Result<()> {
+        let mut compose_data = compose_document_for_selection(lockfile, selection);
+        validate_honeypot_compose_document_for_selection(
+            &compose_data,
+            lockfile,
+            selection,
+            ServiceSchemaVersions::default(),
+        )
+        .context("checked-in compose must satisfy the pinned lockfile contract before runtime bring-up")?;
+
+        for service in ["control-plane", "proxy", "frontend"] {
+            compose_data = rewrite_compose_image_ref(
+                &compose_data,
+                service,
+                resources.image_for(service, selected_slot(selection, service)),
+                true,
+                true,
+            );
         }
 
         for (from, to) in [
             (
                 "/srv/honeypot/images:/var/lib/honeypot/images:rw",
-                format!("{}:/var/lib/honeypot/images:rw", image_store_dir.display()),
+                format!("{}:/var/lib/honeypot/images:rw", self.image_store_dir.display()),
             ),
             (
                 "/srv/honeypot/leases:/var/lib/honeypot/leases:rw",
-                format!("{}:/var/lib/honeypot/leases:rw", lease_store_dir.display()),
+                format!("{}:/var/lib/honeypot/leases:rw", self.lease_store_dir.display()),
             ),
             (
                 "/srv/honeypot/quarantine:/var/lib/honeypot/quarantine:rw",
-                format!("{}:/var/lib/honeypot/quarantine:rw", quarantine_store_dir.display()),
+                format!(
+                    "{}:/var/lib/honeypot/quarantine:rw",
+                    self.quarantine_store_dir.display()
+                ),
             ),
             (
                 "/srv/honeypot/run/qmp:/run/honeypot/qmp:rw",
-                format!("{}:/run/honeypot/qmp:rw", qmp_dir.display()),
+                format!("{}:/run/honeypot/qmp:rw", self.qmp_dir.display()),
             ),
             (
                 "/srv/honeypot/run/qga:/run/honeypot/qga:rw",
-                format!("{}:/run/honeypot/qga:rw", qga_dir.display()),
+                format!("{}:/run/honeypot/qga:rw", self.qga_dir.display()),
             ),
         ] {
             compose_data = compose_data.replace(from, &to);
@@ -424,14 +493,8 @@ impl DockerComposeFixture {
         compose_data = compose_data.replace("\"0.0.0.0:8443:8443\"", "\"127.0.0.1::8443\"");
         compose_data = compose_data.replace("\"127.0.0.1:8080:8080\"", "\"127.0.0.1::8080\"");
 
-        let compose_path = root.path().join("compose.yaml");
-        std::fs::write(&compose_path, compose_data)
-            .with_context(|| format!("write executable compose fixture at {}", compose_path.display()))?;
-
-        Ok(Self {
-            _root: root,
-            compose_path,
-        })
+        std::fs::write(&self.compose_path, compose_data)
+            .with_context(|| format!("write executable compose fixture at {}", self.compose_path.display()))
     }
 }
 
@@ -649,6 +712,135 @@ fn docker_compose_json(
     let output = run_docker_compose(compose_path, project_name, &args)?;
     serde_json::from_slice(&output.stdout)
         .with_context(|| format!("decode compose exec JSON response for service {service}"))
+}
+
+fn docker_compose_logs(compose_path: &Path, project_name: &str) -> String {
+    run_docker_compose(
+        compose_path,
+        project_name,
+        &["logs".to_owned(), "--no-color".to_owned()],
+    )
+    .map(|output| {
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        match (stdout.is_empty(), stderr.is_empty()) {
+            (false, false) => format!("{stdout}\n{stderr}"),
+            (false, true) => stdout,
+            (true, false) => stderr,
+            (true, true) => String::new(),
+        }
+    })
+    .unwrap_or_else(|error| format!("failed to read compose logs: {error:#}"))
+}
+
+fn assert_compose_stack_ready(compose_path: &Path, project_name: &str) -> anyhow::Result<()> {
+    let control_plane_health_auth = format!(
+        "Authorization: Bearer {}",
+        honeypot_scope_token("gateway.honeypot.control-plane")
+    );
+    let control_plane_health = docker_compose_json(
+        compose_path,
+        project_name,
+        "control-plane",
+        &[
+            "-fsS",
+            "-H",
+            control_plane_health_auth.as_str(),
+            "http://127.0.0.1:8080/api/v1/health",
+        ],
+    )
+    .with_context(|| {
+        format!(
+            "read control-plane compose health\n{}",
+            docker_compose_logs(compose_path, project_name)
+        )
+    })?;
+    assert_eq!(control_plane_health["service_state"], "ready");
+    assert_eq!(control_plane_health["trusted_image_count"], 1);
+    assert_eq!(control_plane_health["kvm_available"], true);
+
+    let proxy_health = docker_compose_json(
+        compose_path,
+        project_name,
+        "proxy",
+        &[
+            "-fsS",
+            "-H",
+            "Accept: application/json",
+            "http://127.0.0.1:8080/jet/health",
+        ],
+    )
+    .with_context(|| {
+        format!(
+            "read proxy compose health\n{}",
+            docker_compose_logs(compose_path, project_name)
+        )
+    })?;
+    assert_eq!(proxy_health["honeypot"]["service_state"], "ready");
+    assert_eq!(proxy_health["honeypot"]["control_plane_reachable"], true);
+
+    let frontend_health = docker_compose_json(
+        compose_path,
+        project_name,
+        "frontend",
+        &["-fsS", "http://127.0.0.1:8080/health"],
+    )
+    .with_context(|| {
+        format!(
+            "read frontend compose health\n{}",
+            docker_compose_logs(compose_path, project_name)
+        )
+    })?;
+    assert_eq!(frontend_health["service_state"], "ready");
+    assert_eq!(frontend_health["proxy_bootstrap_reachable"], true);
+
+    Ok(())
+}
+
+fn cleanup_compose_project(compose_path: &Path, project_name: &str, resources: &DockerSmokeResources) -> Vec<String> {
+    let down_result = run_docker_compose(
+        compose_path,
+        project_name,
+        &[
+            "down".to_owned(),
+            "-v".to_owned(),
+            "--remove-orphans".to_owned(),
+            "--timeout".to_owned(),
+            "10".to_owned(),
+        ],
+    );
+    let mut cleanup_errors = Vec::new();
+    if let Err(error) = down_result {
+        cleanup_errors.push(format!("docker compose down: {error:#}"));
+    }
+
+    let project_label = format!("com.docker.compose.project={project_name}");
+    for (resource, label) in [
+        ("container", "containers"),
+        ("network", "networks"),
+        ("volume", "volumes"),
+    ] {
+        match docker_filtered_names(resource, &project_label) {
+            Ok(names) if names.is_empty() => {}
+            Ok(names) => cleanup_errors.push(format!("leftover {label}: {}", names.join(", "))),
+            Err(error) => cleanup_errors.push(format!("list {label}: {error:#}")),
+        }
+    }
+
+    for image in [
+        &resources.frontend_image,
+        &resources.frontend_previous_image,
+        &resources.proxy_image,
+        &resources.proxy_previous_image,
+        &resources.control_plane_image,
+        &resources.control_plane_previous_image,
+    ] {
+        if let Err(error) = remove_docker_image_if_exists(image) {
+            cleanup_errors.push(format!("remove image {image}: {error:#}"));
+        }
+    }
+
+    cleanup_errors
 }
 
 #[test]
@@ -1124,25 +1316,6 @@ async fn compose_bring_up_starts_the_three_service_stack_and_tears_it_down_clean
     let project_name = format!("dgw-honeypot-compose-{}", Uuid::new_v4().simple());
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
-    let compose_logs = || {
-        run_docker_compose(
-            &fixture.compose_path,
-            &project_name,
-            &["logs".to_owned(), "--no-color".to_owned()],
-        )
-        .map(|output| {
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            match (stdout.is_empty(), stderr.is_empty()) {
-                (false, false) => format!("{stdout}\n{stderr}"),
-                (false, true) => stdout,
-                (true, false) => stderr,
-                (true, true) => String::new(),
-            }
-        })
-        .unwrap_or_else(|error| format!("failed to read compose logs: {error:#}"))
-    };
-
     let result: anyhow::Result<()> = async {
         build_honeypot_service_image("control-plane", &resources.control_plane_image)
             .context("build control-plane compose image")?;
@@ -1160,99 +1333,132 @@ async fn compose_bring_up_starts_the_three_service_stack_and_tears_it_down_clean
                 "--remove-orphans".to_owned(),
             ],
         )
-        .with_context(|| format!("docker compose up failed\n{}", compose_logs()))?;
+        .with_context(|| {
+            format!(
+                "docker compose up failed\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
 
-        let control_plane_health_auth = format!(
-            "Authorization: Bearer {}",
-            honeypot_scope_token("gateway.honeypot.control-plane")
-        );
-        let control_plane_health = docker_compose_json(
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)?;
+
+        Ok(())
+    }
+    .await;
+    let cleanup_errors = cleanup_compose_project(&fixture.compose_path, &project_name, &resources);
+
+    match (result, cleanup_errors.is_empty()) {
+        (Ok(()), true) => {}
+        (Ok(()), false) => panic!("compose bring-up cleanup failed: {}", cleanup_errors.join("; ")),
+        (Err(test_error), true) => panic!("{test_error:#}"),
+        (Err(test_error), false) => panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; ")),
+    }
+}
+
+#[tokio::test]
+async fn control_plane_rollback_drill_restores_the_stack_through_images_lock_selection() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping control-plane rollback host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let project_name = format!("dgw-honeypot-rollback-{}", Uuid::new_v4().simple());
+    let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build current control-plane rollback image")?;
+        build_honeypot_service_image("control-plane", &resources.control_plane_previous_image)
+            .context("build previous control-plane rollback image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy rollback image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image).context("build frontend rollback image")?;
+
+        fixture
+            .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+            .context("write compose selection for current/current/current")?;
+        run_docker_compose(
             &fixture.compose_path,
             &project_name,
-            "control-plane",
             &[
-                "-fsS",
-                "-H",
-                control_plane_health_auth.as_str(),
-                "http://127.0.0.1:8080/api/v1/health",
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
             ],
         )
-        .with_context(|| format!("read control-plane compose health\n{}", compose_logs()))?;
-        assert_eq!(control_plane_health["service_state"], "ready");
-        assert_eq!(control_plane_health["trusted_image_count"], 1);
-        assert_eq!(control_plane_health["kvm_available"], true);
+        .with_context(|| {
+            format!(
+                "docker compose up failed for current/current/current\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should be healthy before rollback")?;
 
-        let proxy_health = docker_compose_json(
+        let rolled_back_selection = ServiceVersionSelection {
+            control_plane: ImageSlot::Previous,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Current,
+        };
+        fixture
+            .write_compose_selection(&resources, &lockfile, rolled_back_selection)
+            .context("write compose selection for previous/current/current")?;
+        run_docker_compose(
             &fixture.compose_path,
             &project_name,
-            "proxy",
             &[
-                "-fsS",
-                "-H",
-                "Accept: application/json",
-                "http://127.0.0.1:8080/jet/health",
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
             ],
         )
-        .with_context(|| format!("read proxy compose health\n{}", compose_logs()))?;
-        assert_eq!(proxy_health["honeypot"]["service_state"], "ready");
-        assert_eq!(proxy_health["honeypot"]["control_plane_reachable"], true);
+        .with_context(|| {
+            format!(
+                "docker compose up failed for previous/current/current\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should stay healthy after control-plane rollback")?;
 
-        let frontend_health = docker_compose_json(
+        fixture
+            .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+            .context("write compose selection for restored control-plane current slot")?;
+        run_docker_compose(
             &fixture.compose_path,
             &project_name,
-            "frontend",
-            &["-fsS", "http://127.0.0.1:8080/health"],
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
         )
-        .with_context(|| format!("read frontend compose health\n{}", compose_logs()))?;
-        assert_eq!(frontend_health["service_state"], "ready");
-        assert_eq!(frontend_health["proxy_bootstrap_reachable"], true);
+        .with_context(|| {
+            format!(
+                "docker compose up failed when restoring control-plane current\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should recover after restoring control-plane current")?;
 
         Ok(())
     }
     .await;
 
-    let down_result = run_docker_compose(
-        &fixture.compose_path,
-        &project_name,
-        &[
-            "down".to_owned(),
-            "-v".to_owned(),
-            "--remove-orphans".to_owned(),
-            "--timeout".to_owned(),
-            "10".to_owned(),
-        ],
-    );
-    let mut cleanup_errors = Vec::new();
-    if let Err(error) = down_result {
-        cleanup_errors.push(format!("docker compose down: {error:#}"));
-    }
-
-    let project_label = format!("com.docker.compose.project={project_name}");
-    for (resource, label) in [
-        ("container", "containers"),
-        ("network", "networks"),
-        ("volume", "volumes"),
-    ] {
-        match docker_filtered_names(resource, &project_label) {
-            Ok(names) if names.is_empty() => {}
-            Ok(names) => cleanup_errors.push(format!("leftover {label}: {}", names.join(", "))),
-            Err(error) => cleanup_errors.push(format!("list {label}: {error:#}")),
-        }
-    }
-
-    for image in [
-        &resources.frontend_image,
-        &resources.proxy_image,
-        &resources.control_plane_image,
-    ] {
-        if let Err(error) = remove_docker_image_if_exists(image) {
-            cleanup_errors.push(format!("remove image {image}: {error:#}"));
-        }
-    }
+    let cleanup_errors = cleanup_compose_project(&fixture.compose_path, &project_name, &resources);
 
     match (result, cleanup_errors.is_empty()) {
         (Ok(()), true) => {}
-        (Ok(()), false) => panic!("compose bring-up cleanup failed: {}", cleanup_errors.join("; ")),
+        (Ok(()), false) => panic!("control-plane rollback cleanup failed: {}", cleanup_errors.join("; ")),
         (Err(test_error), true) => panic!("{test_error:#}"),
         (Err(test_error), false) => panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; ")),
     }
