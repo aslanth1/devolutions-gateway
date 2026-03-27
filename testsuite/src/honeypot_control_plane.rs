@@ -1598,6 +1598,9 @@ pub fn validate_manual_headed_anchor_artifact(
         MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => {
             validate_manual_headed_stack_startup_shutdown_artifact(artifact_path)
         }
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => {
+            validate_manual_headed_video_evidence_artifact(artifact_path, session_id, vm_lease_id)
+        }
         _ => {
             let _ = (session_id, vm_lease_id);
             Ok(())
@@ -2006,6 +2009,110 @@ fn validate_manual_headed_stack_startup_shutdown_artifact(artifact_path: &Path) 
 }
 
 #[cfg(unix)]
+fn validate_manual_headed_video_evidence_artifact(
+    artifact_path: &Path,
+    session_id: Option<&str>,
+    vm_lease_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let document = read_json_document(artifact_path)?;
+    let object = document.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "video evidence artifact {} must be a json object",
+            artifact_path.display()
+        )
+    })?;
+
+    let video_sha256 = object.get("video_sha256").and_then(Value::as_str).ok_or_else(|| {
+        anyhow::anyhow!(
+            "video evidence artifact {} must provide video_sha256",
+            artifact_path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        manual_headed_value_is_sha256_hex(video_sha256),
+        "video evidence artifact {} must provide a 64-character hex video_sha256",
+        artifact_path.display()
+    );
+    anyhow::ensure!(
+        object
+            .get("duration_floor_secs")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0),
+        "video evidence artifact {} must provide duration_floor_secs > 0",
+        artifact_path.display()
+    );
+    validate_manual_headed_timestamp_window(object.get("timestamp_window"), artifact_path)?;
+    validate_manual_headed_nonempty_json_string(object.get("storage_uri"), "storage_uri", artifact_path)?;
+    validate_manual_headed_retention_window(object.get("retention_window"), artifact_path)?;
+    validate_manual_headed_optional_matching_json_string(
+        object.get("session_id"),
+        "session_id",
+        session_id,
+        artifact_path,
+    )?;
+    validate_manual_headed_optional_matching_json_string(
+        object.get("vm_lease_id"),
+        "vm_lease_id",
+        vm_lease_id,
+        artifact_path,
+    )?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_timestamp_window(value: Option<&Value>, artifact_path: &Path) -> anyhow::Result<()> {
+    let window = value.and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "video evidence artifact {} must provide timestamp_window.start_unix_secs and timestamp_window.end_unix_secs",
+            artifact_path.display()
+        )
+    })?;
+    let start = window.get("start_unix_secs").and_then(Value::as_u64).ok_or_else(|| {
+        anyhow::anyhow!(
+            "video evidence artifact {} must provide timestamp_window.start_unix_secs",
+            artifact_path.display()
+        )
+    })?;
+    let end = window.get("end_unix_secs").and_then(Value::as_u64).ok_or_else(|| {
+        anyhow::anyhow!(
+            "video evidence artifact {} must provide timestamp_window.end_unix_secs",
+            artifact_path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        start > 0 && end >= start,
+        "video evidence artifact {} must provide a valid timestamp window",
+        artifact_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_retention_window(value: Option<&Value>, artifact_path: &Path) -> anyhow::Result<()> {
+    let retention_window = value.and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "video evidence artifact {} must provide retention_window.policy and retention_window.expires_at_unix_secs",
+            artifact_path.display()
+        )
+    })?;
+    validate_manual_headed_nonempty_json_string(
+        retention_window.get("policy"),
+        "retention_window.policy",
+        artifact_path,
+    )?;
+    anyhow::ensure!(
+        retention_window
+            .get("expires_at_unix_secs")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0),
+        "video evidence artifact {} must provide retention_window.expires_at_unix_secs > 0",
+        artifact_path.display()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
 fn read_json_document(path: &Path) -> anyhow::Result<Value> {
     let bytes = fs::read(path).with_context(|| format!("read json artifact {}", path.display()))?;
     serde_json::from_slice(&bytes).with_context(|| format!("parse json artifact {}", path.display()))
@@ -2026,6 +2133,34 @@ fn validate_manual_headed_nonempty_json_string(
         field
     );
     Ok(())
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_optional_matching_json_string(
+    value: Option<&Value>,
+    field: &str,
+    expected: Option<&str>,
+    artifact_path: &Path,
+) -> anyhow::Result<()> {
+    if let Some(expected) = expected {
+        let actual = value
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("artifact {} must provide {}", artifact_path.display(), field))?;
+        anyhow::ensure!(
+            actual == expected,
+            "artifact {} {} {} does not match requested {}",
+            artifact_path.display(),
+            field,
+            actual,
+            expected
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn manual_headed_value_is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.as_bytes().iter().all(u8::is_ascii_hexdigit)
 }
 
 #[cfg(unix)]

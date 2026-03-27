@@ -35,12 +35,9 @@ use anyhow::Context as _;
 #[cfg(unix)]
 use anyhow::{bail, ensure};
 #[cfg(unix)]
-use serde_json::Value;
-#[cfg(unix)]
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use testsuite::honeypot_control_plane::{
-    MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN, MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
     MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION, ManualHeadedAnchorResult, ManualHeadedAnchorStatus,
     manual_headed_anchor_runtime_required, manual_headed_begin_run, manual_headed_complete_run,
     manual_headed_profile_dir, resolve_manual_headed_anchor_artifact_path, row706_default_evidence_dir,
@@ -243,143 +240,7 @@ fn validate_anchor_artifact(
     session_id: Option<&str>,
     vm_lease_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    match anchor_id {
-        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => {
-            validate_manual_headed_anchor_artifact(anchor_id, artifact_path, session_id, vm_lease_id)
-        }
-        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE => validate_video_metadata_artifact(artifact_path, session_id, vm_lease_id),
-        _ => Ok(()),
-    }
-}
-
-#[cfg(unix)]
-fn validate_video_metadata_artifact(
-    artifact_path: &Path,
-    session_id: Option<&str>,
-    vm_lease_id: Option<&str>,
-) -> anyhow::Result<()> {
-    let document = read_json_document(artifact_path)?;
-    let Some(object) = document.as_object() else {
-        bail!(
-            "video evidence artifact {} must be a json object",
-            artifact_path.display()
-        );
-    };
-
-    validate_nonempty_string_field(object.get("video_sha256"), "video_sha256", artifact_path)?;
-    ensure!(
-        object
-            .get("video_sha256")
-            .and_then(Value::as_str)
-            .is_some_and(is_sha256_hex),
-        "video evidence artifact {} must provide a 64-character hex video_sha256",
-        artifact_path.display()
-    );
-    ensure!(
-        object
-            .get("duration_floor_secs")
-            .and_then(Value::as_u64)
-            .is_some_and(|value| value > 0),
-        "video evidence artifact {} must provide duration_floor_secs > 0",
-        artifact_path.display()
-    );
-    validate_timestamp_window(object.get("timestamp_window"), artifact_path)?;
-    validate_nonempty_string_field(object.get("storage_uri"), "storage_uri", artifact_path)?;
-    validate_retention_window(object.get("retention_window"), artifact_path)?;
-    validate_optional_matching_string_field(object.get("session_id"), "session_id", session_id, artifact_path)?;
-    validate_optional_matching_string_field(object.get("vm_lease_id"), "vm_lease_id", vm_lease_id, artifact_path)?;
-
-    Ok(())
-}
-
-#[cfg(unix)]
-fn read_json_document(path: &Path) -> anyhow::Result<Value> {
-    let bytes = fs::read(path).with_context(|| format!("read json artifact {}", path.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("parse json artifact {}", path.display()))
-}
-
-#[cfg(unix)]
-fn validate_timestamp_window(value: Option<&Value>, artifact_path: &Path) -> anyhow::Result<()> {
-    let Some(window) = value.and_then(Value::as_object) else {
-        bail!(
-            "video evidence artifact {} must provide timestamp_window.start_unix_secs and timestamp_window.end_unix_secs",
-            artifact_path.display()
-        );
-    };
-    let start = window.get("start_unix_secs").and_then(Value::as_u64).ok_or_else(|| {
-        anyhow::anyhow!(
-            "video evidence artifact {} must provide timestamp_window.start_unix_secs",
-            artifact_path.display()
-        )
-    })?;
-    let end = window.get("end_unix_secs").and_then(Value::as_u64).ok_or_else(|| {
-        anyhow::anyhow!(
-            "video evidence artifact {} must provide timestamp_window.end_unix_secs",
-            artifact_path.display()
-        )
-    })?;
-    ensure!(
-        start > 0 && end >= start,
-        "video evidence artifact {} must provide a valid timestamp window",
-        artifact_path.display()
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-fn validate_retention_window(value: Option<&Value>, artifact_path: &Path) -> anyhow::Result<()> {
-    let Some(retention_window) = value.and_then(Value::as_object) else {
-        bail!(
-            "video evidence artifact {} must provide retention_window.policy and retention_window.expires_at_unix_secs",
-            artifact_path.display()
-        );
-    };
-    validate_nonempty_string_field(retention_window.get("policy"), "retention_window.policy", artifact_path)?;
-    ensure!(
-        retention_window
-            .get("expires_at_unix_secs")
-            .and_then(Value::as_u64)
-            .is_some_and(|value| value > 0),
-        "video evidence artifact {} must provide retention_window.expires_at_unix_secs > 0",
-        artifact_path.display()
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-fn validate_nonempty_string_field(value: Option<&Value>, field: &str, artifact_path: &Path) -> anyhow::Result<()> {
-    ensure!(
-        value
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.trim().is_empty()),
-        "artifact {} must provide a non-empty {}",
-        artifact_path.display(),
-        field
-    );
-    Ok(())
-}
-
-#[cfg(unix)]
-fn validate_optional_matching_string_field(
-    value: Option<&Value>,
-    field: &str,
-    expected: Option<&str>,
-    artifact_path: &Path,
-) -> anyhow::Result<()> {
-    if let Some(expected) = expected {
-        let actual = value
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("artifact {} must provide {}", artifact_path.display(), field))?;
-        ensure!(
-            actual == expected,
-            "artifact {} {} {} does not match requested {}",
-            artifact_path.display(),
-            field,
-            actual,
-            expected
-        );
-    }
-    Ok(())
+    validate_manual_headed_anchor_artifact(anchor_id, artifact_path, session_id, vm_lease_id)
 }
 
 #[cfg(unix)]
@@ -498,11 +359,6 @@ fn now_unix_secs() -> anyhow::Result<u64> {
         .duration_since(UNIX_EPOCH)
         .context("system clock must be after unix epoch")?;
     Ok(duration.as_secs())
-}
-
-#[cfg(unix)]
-fn is_sha256_hex(value: &str) -> bool {
-    value.len() == 64 && value.as_bytes().iter().all(u8::is_ascii_hexdigit)
 }
 
 #[cfg(unix)]

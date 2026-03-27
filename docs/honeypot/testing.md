@@ -143,6 +143,11 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - Each service entry must declare `evidence_kind` as `health` or `bootstrap` plus `startup_status` as `healthy`, `ready`, or `reachable`.
 - Teardown evidence must record `teardown_disposition` as `clean_shutdown` or `explicit_failure`.
 - If `teardown_disposition` is `explicit_failure`, the artifact must also provide non-empty `failure_code` and `failure_reason` fields so teardown failure is explicit instead of implied.
+- The `manual_video_evidence` runtime anchor is now machine-validated in the shared verifier path rather than only at writer time.
+- Its artifact must be a JSON object with `video_sha256`, `duration_floor_secs`, `timestamp_window`, `storage_uri`, and `retention_window`.
+- `video_sha256` must be a 64-character hex digest, `duration_floor_secs` must be greater than zero, and `timestamp_window.start_unix_secs` plus `timestamp_window.end_unix_secs` must form a valid ordered range.
+- `retention_window` must provide both a non-empty policy string and a positive `expires_at_unix_secs`, and `storage_uri` must remain non-empty so the approved artifact backend can be re-read later.
+- When the runtime video anchor is bound to a `session_id` or `vm_lease_id`, the metadata artifact must carry matching values instead of detached or free-form notes.
 - A preflight-only manual-headed run may end in `blocked_prereq`, but that disposition is never sufficient to complete row `735`.
 - The sanctioned non-test evidence writer is `cargo run -p testsuite --bin honeypot-manual-headed-writer -- <preflight|runtime|finalize> ...`.
 - Its `preflight` mode may record blocked prerequisites under an existing row-`706` run envelope before guest boot, while `runtime` mode refuses to write any runtime anchor unless `verify_row706_evidence_envelope` already passes for the same `run_id`.

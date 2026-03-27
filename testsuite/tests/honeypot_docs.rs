@@ -226,6 +226,21 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         &testing,
         "`teardown_disposition` as `clean_shutdown` or `explicit_failure`",
     );
+    assert_contains(
+        testing_path,
+        &testing,
+        "The `manual_video_evidence` runtime anchor is now machine-validated in the shared verifier path rather than only at writer time.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`video_sha256`, `duration_floor_secs`, `timestamp_window`, `storage_uri`, and `retention_window`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "the metadata artifact must carry matching values instead of detached or free-form notes",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -243,6 +258,16 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         runbook_path,
         &runbook,
         "a non-empty failure code and a non-empty failure reason",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "write one machine-readable JSON artifact that records `video_sha256`, `duration_floor_secs`, `timestamp_window`, `storage_uri`, and `retention_window`",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "ensure the stored `session_id` and `vm_lease_id` match the runtime anchor invocation",
     );
 }
 

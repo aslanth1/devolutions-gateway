@@ -716,7 +716,7 @@ Pass when: the run records the non-headless QEMU launch path, the Chrome fronten
 - [ ] Add a bounded manual interaction checklist.
 Pass when: the run records a bounded mouse, keyboard, and guest-browsing interaction window whose timestamps are tied to the same `run_id`, `session_id`, and `vm_lease_id`.
 
-- [ ] Add a video-evidence checklist for manual-headed runs.
+- [x] Add a video-evidence checklist for manual-headed runs.
 Pass when: a reviewable video artifact is saved through the approved artifact path and the committed evidence index records its digest, duration floor, timestamp window, storage URI, and retention window.
 
 - [x] Add a redaction and credential-handling checklist for manual-headed runs.

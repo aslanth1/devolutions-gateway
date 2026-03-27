@@ -207,6 +207,96 @@ fn manual_headed_profile_rejects_weak_stack_startup_shutdown_artifact() {
 }
 
 #[test]
+fn manual_headed_profile_rejects_weak_video_evidence_artifact() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        "runtime/rdp.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/interaction.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        Path::new("runtime/video.json"),
+        br#"{"video_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","timestamp_window":{"start_unix_secs":1,"end_unix_secs":5},"storage_uri":"target/manual/video.webm","retention_window":{"policy":"manual-review","expires_at_unix_secs":10},"session_id":"session-1","vm_lease_id":"lease-1"}"#,
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("weak video evidence artifact should fail verification");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("duration_floor_secs"), "{rendered}");
+}
+
+#[test]
 fn manual_headed_profile_rejects_runtime_anchor_without_verified_row706_binding() {
     let tempdir = tempdir().expect("create tempdir");
     let evidence_root = tempdir.path().join("row706");
