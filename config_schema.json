@@ -879,6 +879,10 @@
           "type": "string",
           "description": "Path to lib XMF files."
         },
+        "honeypot_backend_credentials_file": {
+          "type": "string",
+          "description": "Override the honeypot backend credential file path for development and tests."
+        },
         "enable_unstable": {
           "type": "boolean",
           "default": false,

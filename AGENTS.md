@@ -601,7 +601,7 @@ Pass when: the lab tears down without orphaned QEMU processes, sockets, overlays
 
 ### Milestone 5d: Control-Plane And Proxy End-To-End Flows
 
-- [ ] Add an end-to-end credential replacement test.
+- [x] Add an end-to-end credential replacement test.
 Pass when: the test provisions a VM, posts a credential mapping, opens an attacker-facing RDP connection, and proves the VM received the backend credentials instead of the attacker credentials.
 
 - [x] Add a session visibility and replay test.

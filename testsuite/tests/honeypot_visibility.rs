@@ -29,7 +29,8 @@ use honeypot_contracts::events::{EventEnvelope, EventPayload, KillScope, Session
 use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
 use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse, StreamTransport};
 use http_body_util::BodyExt as _;
-use serde_json::Value;
+use serde_json::{Value, json};
+use tempfile::TempDir;
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
@@ -43,16 +44,19 @@ const CAPTURE_SOURCE_REF: &str = "recording://visibility/source";
 const PROVISIONER_PUBLIC_KEY_DATA: &str = "mMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA4vuqLOkl1pWobt6su1XO9VskgCAwevEGs6kkNjJQBwkGnPKYLmNF1E/af1yCocfVn/OnPf9e4x+lXVyZ6LMDJxFxu+axdgOq3Ld392J1iAEbfvwlyRFnEXFOJNyylqg3bY6LvnWHL/XZczVdMD9xYfq2sO9bg3xjRW4s7r9EEYOFjqVT3VFznH9iWJVtcSEKukmS/3uKoO6lGhacvu0HhjXXdgq0R8zvR4XRJ9Fcnf0f9Ypoc+i6L80NVjrRCeVOH+Ld/2fA9bocpfLarcVqG3RjS+qgOtpyCc0jWVFF4zaGQ7LUDFkEIYILkICeMMn2ll29hmZNzsJzZJ9s6NocgQIDAQAB";
 const PROVISIONER_PRIVATE_KEY_DATA: &str = "mMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDi+6os6SXWlahu3qy7Vc71WySAIDB68QazqSQ2MlAHCQac8pguY0XUT9p/XIKhx9Wf86c9/17jH6VdXJnoswMnEXG75rF2A6rct3f3YnWIARt+/CXJEWcRcU4k3LKWqDdtjou+dYcv9dlzNV0wP3Fh+raw71uDfGNFbizuv0QRg4WOpVPdUXOcf2JYlW1xIQq6SZL/e4qg7qUaFpy+7QeGNdd2CrRHzO9HhdEn0Vyd/R/1imhz6LovzQ1WOtEJ5U4f4t3/Z8D1uhyl8tqtxWobdGNL6qA62nIJzSNZUUXjNoZDstQMWQQhgguQgJ4wyfaWXb2GZk3OwnNkn2zo2hyBAgMBAAECggEBAKCO0GOQUDmoB0rVrG2fVxPrcrhHDMQKNmljnb/Qexde5RSj7c3yXvS9v5sTvzvc9Vl9qrGKMH6MZhbSZ/RYnERIbKEzoBgQpA4YoX2WYfjgf6ilh7zg2H1YHqSokJNNTlfq2yLQU94zE6wQ9WgpmHRsOkqSJbOuizITqyj+lpGjl8dBAeOCD9HsnOGQiwsQD+joZ3yDRdFKSaBBtbklTYDyAmPvmp2G5A00UIo7KeOcNv59MPHnFBxMj0/z+QPKlqLQMsjL8vQX5DU2t/K4jdFHWGL8NZcz7KsCfh2Aa0vWEnroRzPPhKuBSBtaykbvfTcGrvRioesPq3EUdUqjQSECgYEA52UlMYeRYiTWsGq69lFWSlBjlRKhEMpg0Tp05z7J/A9X+ytB+6dZ37hk5asq84adRp7pnCEHV3SbczGq5ULFQBEqtFWPlD348zB8xxdBpAw3NAkVVDpAXBREhxXOnQm7MMmaXLH6d4Gv4kc6jKTC62w7cUUSlkIhlWSw5pSuVh0CgYEA+x5rJ4MQ6A/OKh058QY3ydRJw/sV54oxIFIIuJDw4I4eMsJ5Ht7MW5Pl1VQj+XuJRgMeqgZMQIIAcf5JNXqcesswVwdXy4awtw3TZV1Hi47Or7qHrFA/DtG4lNeDtyaWNuOtNnGw+LuqEmuu8BsWhB7yTHWJW7z+k6qO90CnArUCgYEA5ew66NwsObkhGmrzG432kCEQ0i+Qm358dWoAf0aErVERuyFgjw3a39H5b7yFETXRUTrWJa0r/lp/nBbeGLAgD2j/ZfEemc56cCrd0XXqY3c/4xSjfO3kxZnd/dxNUP06Y1/vYev3VIgonE7qfpW4mPUSm5pmvac4d5l1rahPEoECgYBUvAToRj+ULpEggNAmVjTI88sYSEcx492DzGqI7M961jm2Ywy/r+pBFHy/KS8iZd8CMtdMA+gC9Fr2HBnT49WdUaa0FxQ25vIGMrIcSAd2Pe/cOBLDwCgm9flUsAwP5wNU7ipqbp6Kr7hJkvBqsJk+Z7rWteptfC5i4XBwWe6A6QJ/Ddv+9vZe89uMdq+PThhELBHK+twZKawpKXYvzKlvPfMVisY+m9m37t7wK8PJexWOI9loVif6+ZIdWpXXntwrz94hYld/6+qK+sSt8EGmcJpAAI3zkp/ZMXhio0fy27sPaTlKlS6GNx/gPXRj6NHg/nu6lMmQ/EpLi1lyExPc8Q";
 const CREDENTIAL_TEST_TOKEN: &str = "eyJhbGciOiJSUzI1NiIsImtpZCI6ImtpZC0xIiwidHlwIjoiSldUIn0.eyJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAxMTEifQ.c2ln";
+const PREFLIGHT_SCOPE_BEARER: &str = "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IlNDT1BFIn0.eyJqdGkiOiI5YTdkZWRhOC1jNmM2LTQ1YzAtODZlYi01MGJiMzI4YWFjMjMiLCJleHAiOjAsInNjb3BlIjoiZ2F0ZXdheS5wcmVmbGlnaHQifQ.dTazZemDS08Fy13Hx7wxDoOxQ2oNFaaEYMSFDQHCWiUdlYv4NMQh6N_GQok3wdiSJf384fvLKccYe1fipRepLlinUAqcEum68ngvGuUVP78xYb_vC3ZDqFi6nvd1BLp621XgzsCbOyBZHhLXHgzwVNTpnbt9laTTaHh8_rSYLaujBOpidWS6vKIZqOE66beqygSprPt3y0LYFTQWGYq21jJ73uW6htdWrmXbDUUjdvG7ymnKb-7Scs5y03jjSTr4QB1rH_3Z8DsfuuxFCIBd8V2yu192PrWooAdMKboLSjvmdFiD509lljoaNoGLBv9hmmQyiLQr-rsUllXBD6UpTQ";
 const WILDCARD_BEARER: &str = "Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IlNDT1BFIn0.eyJqdGkiOiI5YTdkZWRhOC1jNmM2LTQ1YzAtODZlYi01MGJiMzI4YWFjMjMiLCJleHAiOjAsInNjb3BlIjoiKiJ9.dTazZemDS08Fy13Hx7wxDoOxQ2oNFaaEYMSFDQHCWiUdlYv4NMQh6N_GQok3wdiSJf384fvLKccYe1fipRepLlinUAqcEum68ngvGuUVP78xYb_vC3ZDqFi6nvd1BLp621XgzsCbOyBZHhLXHgzwVNTpnbt9laTTaHh8_rSYLaujBOpidWS6vKIZqOE66beqygSprPt3y0LYFTQWGYq21jJ73uW6htdWrmXbDUUjdvG7ymnKb-7Scs5y03jjSTr4QB1rH_3Z8DsfuuxFCIBd8V2yu192PrWooAdMKboLSjvmdFiD509lljoaNoGLBv9hmmQyiLQr-rsUllXBD6UpTQ";
 
 #[derive(Clone, Default)]
 struct FakeControlPlaneObservedCalls {
+    acquired: Arc<tokio::sync::Mutex<Vec<AcquireVmRequest>>>,
     released: Arc<tokio::sync::Mutex<Vec<(String, ReleaseVmRequest)>>>,
     recycled: Arc<tokio::sync::Mutex<Vec<(String, RecycleVmRequest)>>>,
 }
 
 struct HandlesGuard {
     shutdown_handle: devolutions_gateway_task::ShutdownHandle,
+    _backend_credentials_dir: TempDir,
 }
 
 impl Drop for HandlesGuard {
@@ -99,7 +103,11 @@ impl FakeControlPlaneServer {
     }
 }
 
-async fn fake_acquire_handler(headers: HeaderMap, Json(request): Json<AcquireVmRequest>) -> Json<AcquireVmResponse> {
+async fn fake_acquire_handler(
+    State(calls): State<FakeControlPlaneObservedCalls>,
+    headers: HeaderMap,
+    Json(request): Json<AcquireVmRequest>,
+) -> Json<AcquireVmResponse> {
     assert_eq!(
         headers.get(AUTHORIZATION).and_then(|value| value.to_str().ok()),
         Some("Bearer visibility-test-token")
@@ -110,6 +118,7 @@ async fn fake_acquire_handler(headers: HeaderMap, Json(request): Json<AcquireVmR
         honeypot_contracts::control_plane::StreamPolicy::GatewayRecording
     );
     assert_eq!(request.attacker_protocol, AttackerProtocol::Rdp);
+    calls.acquired.lock().await.push(request.clone());
 
     Json(AcquireVmResponse {
         schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -193,7 +202,23 @@ async fn fake_recycle_handler(
     })
 }
 
-async fn make_router(control_plane_endpoint: &str) -> anyhow::Result<(Router, DgwState, HandlesGuard)> {
+async fn make_router(
+    control_plane_endpoint: &str,
+    backend_credentials: &Value,
+) -> anyhow::Result<(Router, DgwState, HandlesGuard)> {
+    let backend_credentials_dir = tempfile::tempdir().context("create backend credentials tempdir")?;
+    let backend_credentials_path = backend_credentials_dir.path().join("backend-credentials.json");
+    std::fs::write(
+        &backend_credentials_path,
+        serde_json::to_vec_pretty(backend_credentials).context("serialize backend credential mappings")?,
+    )
+    .with_context(|| {
+        format!(
+            "write backend credential mappings into {}",
+            backend_credentials_path.display()
+        )
+    })?;
+    let backend_credentials_path = backend_credentials_path.to_string_lossy().into_owned();
     let config = format!(
         r#"{{
     "ProvisionerPublicKeyData": {{
@@ -222,7 +247,8 @@ async fn make_router(control_plane_endpoint: &str) -> anyhow::Result<(Router, Dg
         }}
     }},
     "__debug__": {{
-        "disable_token_validation": true
+        "disable_token_validation": true,
+        "honeypot_backend_credentials_file": "{backend_credentials_path}"
     }}
 }}"#
     );
@@ -243,7 +269,14 @@ async fn make_router(control_plane_endpoint: &str) -> anyhow::Result<(Router, Dg
     let app = devolutions_gateway::make_http_service(state.clone())
         .layer(MockConnectInfo(SocketAddr::from(([0, 0, 0, 0], 3000))));
 
-    Ok((app, state, HandlesGuard { shutdown_handle }))
+    Ok((
+        app,
+        state,
+        HandlesGuard {
+            shutdown_handle,
+            _backend_credentials_dir: backend_credentials_dir,
+        },
+    ))
 }
 
 fn live_session(session_id: Uuid) -> SessionInfo {
@@ -316,10 +349,18 @@ fn get_request(uri: &str) -> anyhow::Result<Request<Body>> {
 }
 
 fn post_json_request<T: serde::Serialize>(uri: &str, body: &T) -> anyhow::Result<Request<Body>> {
+    post_json_request_with_auth(uri, WILDCARD_BEARER, body)
+}
+
+fn post_json_request_with_auth<T: serde::Serialize>(
+    uri: &str,
+    authorization: &str,
+    body: &T,
+) -> anyhow::Result<Request<Body>> {
     Ok(Request::builder()
         .method("POST")
         .uri(uri)
-        .header(AUTHORIZATION, WILDCARD_BEARER)
+        .header(AUTHORIZATION, authorization)
         .header(CONTENT_TYPE, "application/json")
         .body(Body::from(serde_json::to_vec(body)?))?)
 }
@@ -398,10 +439,171 @@ fn credential_mapping() -> AppCredentialMapping {
     }
 }
 
+fn backend_credential_mapping() -> AppCredentialMapping {
+    AppCredentialMapping {
+        proxy: AppCredential::UsernamePassword {
+            username: "backend-proxy-user".to_owned(),
+            password: Password::from("backend-proxy-password"),
+        },
+        target: AppCredential::UsernamePassword {
+            username: "backend-target-user".to_owned(),
+            password: Password::from("backend-target-password"),
+        },
+    }
+}
+
+fn assert_username_password(credential: &AppCredential, expected_username: &str, expected_password: &str) {
+    match credential {
+        AppCredential::UsernamePassword { username, password } => {
+            assert_eq!(username, expected_username);
+            assert_eq!(password.expose_secret(), expected_password);
+        }
+    }
+}
+
+#[tokio::test]
+async fn honeypot_credential_replacement_uses_backend_mapping_on_prepare() -> anyhow::Result<()> {
+    let control_plane = FakeControlPlaneServer::spawn().await?;
+    let session_id = Uuid::new_v4();
+    let backend_credential_ref = format!("honeypot-backend-credential:{session_id}");
+    let backend_credentials = json!({
+        backend_credential_ref.clone(): backend_credential_mapping(),
+    });
+    let (app, state, _guard) = make_router(&control_plane.endpoint, &backend_credentials).await?;
+    let credential_token_id = extract_jti(CREDENTIAL_TEST_TOKEN).context("extract credential token id")?;
+
+    let response = app
+        .clone()
+        .oneshot(post_json_request_with_auth(
+            "/jet/preflight",
+            PREFLIGHT_SCOPE_BEARER,
+            &json!([{
+                "id": Uuid::new_v4(),
+                "kind": "provision-credentials",
+                "token": CREDENTIAL_TEST_TOKEN,
+                "proxy_credential": {
+                    "kind": "username-password",
+                    "username": "attacker",
+                    "password": "proxy-password",
+                },
+                "target_credential": {
+                    "kind": "username-password",
+                    "username": "Administrator",
+                    "password": "target-password",
+                },
+                "time_to_live": 900,
+            }]),
+        )?)
+        .await
+        .context("post preflight credential mapping")?;
+    assert_eq!(response.status(), StatusCode::OK);
+    let preflight_body: Value =
+        serde_json::from_slice(&collect_response_body(response).await?).context("decode preflight response")?;
+    assert_eq!(preflight_body.as_array().map(Vec::len), Some(1));
+    assert_eq!(preflight_body[0]["kind"].as_str(), Some("ack"));
+
+    let provisioned_entry = state
+        .credential_store
+        .get(credential_token_id)
+        .context("credential entry should exist after preflight")?;
+    assert!(
+        provisioned_entry.binding.is_none(),
+        "preflight should not bind the session yet"
+    );
+    let provisioned_mapping = provisioned_entry
+        .mapping
+        .as_ref()
+        .context("preflight credential mapping should exist")?;
+    assert_username_password(&provisioned_mapping.proxy, "attacker", "proxy-password");
+    assert_username_password(&provisioned_mapping.target, "Administrator", "target-password");
+
+    let session = live_session(session_id);
+    state
+        .honeypot
+        .prepare_rdp_session(
+            session.id,
+            session.application_protocol.clone(),
+            session.time_to_live,
+            CREDENTIAL_TEST_TOKEN,
+            "127.0.0.1:4444".parse().context("parse attacker address")?,
+        )
+        .await
+        .context("prepare honeypot session")?;
+
+    let replaced_entry = state
+        .credential_store
+        .get(credential_token_id)
+        .context("credential entry should still exist after prepare")?;
+    let binding = replaced_entry
+        .binding
+        .as_ref()
+        .context("honeypot prepare should bind the credential mapping")?;
+    assert_eq!(binding.session_id, Some(session_id));
+    assert_eq!(binding.vm_lease_id.as_deref(), Some(LEASE_ID));
+    assert_eq!(
+        binding.backend_credential_ref.as_deref(),
+        Some(backend_credential_ref.as_str())
+    );
+
+    let replaced_mapping = replaced_entry
+        .mapping
+        .as_ref()
+        .context("replaced credential mapping should exist")?;
+    assert_username_password(&replaced_mapping.proxy, "backend-proxy-user", "backend-proxy-password");
+    assert_username_password(
+        &replaced_mapping.target,
+        "backend-target-user",
+        "backend-target-password",
+    );
+
+    let acquired = control_plane.calls.acquired.lock().await.clone();
+    assert_eq!(acquired.len(), 1);
+    assert_eq!(acquired[0].session_id, session_id.to_string());
+    assert_eq!(acquired[0].backend_credential_ref, backend_credential_ref);
+
+    state
+        .honeypot
+        .abort_prepared_session(session_id)
+        .await
+        .context("abort prepared honeypot session")?;
+    assert!(
+        state.credential_store.get(credential_token_id).is_none(),
+        "prepared credential mapping should be revoked on abort"
+    );
+
+    let (released, recycled) = {
+        let mut observed = None;
+        for _ in 0..20 {
+            let released = control_plane.calls.released.lock().await.clone();
+            let recycled = control_plane.calls.recycled.lock().await.clone();
+            if released.len() == 1 && recycled.len() == 1 {
+                observed = Some((released, recycled));
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        observed.context("wait for prepare-abort release and recycle calls")?
+    };
+    assert_eq!(released[0].0, LEASE_ID);
+    assert_eq!(released[0].1.session_id, session_id.to_string());
+    assert_eq!(released[0].1.release_reason, "prepare_failed");
+    assert_eq!(released[0].1.terminal_outcome, "prepare_failed");
+    assert_eq!(recycled[0].0, LEASE_ID);
+    assert_eq!(recycled[0].1.session_id, session_id.to_string());
+    assert_eq!(recycled[0].1.recycle_reason, "prepare_failed");
+    assert!(recycled[0].1.quarantine_on_failure);
+    assert!(!recycled[0].1.force_quarantine);
+
+    control_plane.shutdown().await;
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result<()> {
     let control_plane = FakeControlPlaneServer::spawn().await?;
-    let (app, state, _guard) = make_router(&control_plane.endpoint).await?;
+    let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
     let session_id = Uuid::new_v4();
     let session = live_session(session_id);
 
@@ -548,7 +750,7 @@ async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result
 #[tokio::test]
 async fn honeypot_terminate_recycles_vm_and_cleans_up_live_state() -> anyhow::Result<()> {
     let control_plane = FakeControlPlaneServer::spawn().await?;
-    let (app, state, _guard) = make_router(&control_plane.endpoint).await?;
+    let (app, state, _guard) = make_router(&control_plane.endpoint, &json!({})).await?;
     let session_id = Uuid::new_v4();
     let session = live_session(session_id);
     let credential_token_id = extract_jti(CREDENTIAL_TEST_TOKEN).context("extract credential token id")?;

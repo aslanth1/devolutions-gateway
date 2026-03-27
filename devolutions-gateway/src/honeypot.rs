@@ -190,7 +190,12 @@ impl HoneypotRuntime {
             kill_switch: HoneypotKillSwitchRuntime::from_conf(&conf.honeypot.kill_switch),
             control_plane: HoneypotControlPlaneClient::from_conf(&conf.honeypot.control_plane)?,
             credential_store,
-            backend_credentials: HoneypotBackendCredentialResolver::new(HONEYPOT_BACKEND_CREDENTIALS_PATH),
+            backend_credentials: HoneypotBackendCredentialResolver::new(
+                conf.debug
+                    .honeypot_backend_credentials_file
+                    .clone()
+                    .unwrap_or_else(|| Utf8PathBuf::from(HONEYPOT_BACKEND_CREDENTIALS_PATH)),
+            ),
             requested_ready_timeout_secs: u32::try_from(conf.honeypot.control_plane.request_timeout.as_secs())
                 .unwrap_or(u32::MAX)
                 .max(1),

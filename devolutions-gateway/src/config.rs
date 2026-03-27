@@ -2190,6 +2190,9 @@ pub mod dto {
         /// Path to the XMF shared library (Cadeau) for runtime loading
         pub lib_xmf_path: Option<Utf8PathBuf>,
 
+        /// Override the honeypot backend credential file path for development and tests
+        pub honeypot_backend_credentials_file: Option<Utf8PathBuf>,
+
         /// WebSocket keep-alive interval in seconds
         ///
         /// The interval in seconds before a Ping message is sent to the other end.
@@ -2219,6 +2222,7 @@ pub mod dto {
                 log_directives: None,
                 capture_path: None,
                 lib_xmf_path: None,
+                honeypot_backend_credentials_file: None,
                 enable_unstable: false,
                 kerberos: None,
                 ws_keep_alive_interval: ws_keep_alive_interval_default_value(),
