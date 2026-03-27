@@ -632,7 +632,7 @@ Pass when: a service rolled from `current` to `previous` can rejoin two current 
 - [x] Add a downgraded-service contract-compatibility test.
 Pass when: a service rolled from `current` to `previous` can continue exchanging versioned contracts with two current peers without manual data repair.
 
-- [ ] Add a restored-service rejoin health-recovery test.
+- [x] Add a restored-service rejoin health-recovery test.
 Pass when: a service restored from `previous` back to `current` can rejoin its peers and recover its health without manual data repair.
 
 - [x] Add a restored-service contract-compatibility test.

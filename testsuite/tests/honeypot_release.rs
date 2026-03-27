@@ -498,6 +498,12 @@ impl DockerComposeFixture {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ComposeServiceState {
+    container_id: String,
+    configured_image: String,
+}
+
 fn write_trusted_image_fixture(image_store: &Path) -> anyhow::Result<()> {
     let manifest_dir = image_store.join("manifests");
     std::fs::create_dir_all(&manifest_dir).with_context(|| format!("create {}", manifest_dir.display()))?;
@@ -744,6 +750,69 @@ fn docker_container_config_image(container_id: &str) -> anyhow::Result<String> {
     );
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn capture_compose_service_states(
+    compose_path: &Path,
+    project_name: &str,
+) -> anyhow::Result<std::collections::BTreeMap<&'static str, ComposeServiceState>> {
+    let mut states = std::collections::BTreeMap::new();
+    for service in ["control-plane", "proxy", "frontend"] {
+        let container_id = docker_compose_service_container_id(compose_path, project_name, service)
+            .with_context(|| format!("capture container id for {service}"))?;
+        let configured_image = docker_container_config_image(&container_id)
+            .with_context(|| format!("capture container image for {service}"))?;
+        states.insert(
+            service,
+            ComposeServiceState {
+                container_id,
+                configured_image,
+            },
+        );
+    }
+
+    Ok(states)
+}
+
+fn assert_compose_service_selection(
+    states: &std::collections::BTreeMap<&'static str, ComposeServiceState>,
+    resources: &DockerSmokeResources,
+    selection: ServiceVersionSelection,
+    context: &str,
+) {
+    for service in ["control-plane", "proxy", "frontend"] {
+        let expected_slot = selected_slot(selection, service);
+        let expected_slot_name = match expected_slot {
+            ImageSlot::Current => "current",
+            ImageSlot::Previous => "previous",
+        };
+        assert_eq!(
+            states[service].configured_image,
+            resources.image_for(service, expected_slot),
+            "{service} should use the {expected_slot_name} image {context}"
+        );
+    }
+}
+
+fn assert_only_service_recreated(
+    before_states: &std::collections::BTreeMap<&'static str, ComposeServiceState>,
+    after_states: &std::collections::BTreeMap<&'static str, ComposeServiceState>,
+    recreated_service: &str,
+    context: &str,
+) {
+    assert_ne!(
+        before_states[recreated_service].container_id, after_states[recreated_service].container_id,
+        "{recreated_service} should be recreated {context}"
+    );
+    for peer_service in ["control-plane", "proxy", "frontend"] {
+        if peer_service == recreated_service {
+            continue;
+        }
+        assert_eq!(
+            before_states[peer_service].container_id, after_states[peer_service].container_id,
+            "{peer_service} should remain unchanged {context}"
+        );
+    }
 }
 
 fn docker_compose_logs(compose_path: &Path, project_name: &str) -> String {
@@ -1801,20 +1870,14 @@ async fn downgraded_service_rejoin_health_recovery() {
                 assert_compose_stack_ready(&fixture.compose_path, &project_name)
                     .with_context(|| format!("stack should be healthy before downgraded {service} rejoin"))?;
 
-                let mut before_ids = std::collections::BTreeMap::new();
-                for observed_service in ["control-plane", "proxy", "frontend"] {
-                    let container_id =
-                        docker_compose_service_container_id(&fixture.compose_path, &project_name, observed_service)
-                            .with_context(|| format!("capture container id for {observed_service}"))?;
-                    let configured_image = docker_container_config_image(&container_id)
-                        .with_context(|| format!("capture container image for {observed_service}"))?;
-                    assert_eq!(
-                        configured_image,
-                        resources.image_for(observed_service, ImageSlot::Current),
-                        "{observed_service} should start from the current image before downgraded {service} rejoin"
-                    );
-                    before_ids.insert(observed_service, container_id);
-                }
+                let before_states = capture_compose_service_states(&fixture.compose_path, &project_name)
+                    .context("capture pre-rejoin compose service states")?;
+                assert_compose_service_selection(
+                    &before_states,
+                    &resources,
+                    ServiceVersionSelection::default(),
+                    &format!("before downgraded {service} rejoin"),
+                );
 
                 fixture
                     .write_compose_selection(&resources, &lockfile, downgraded_selection)
@@ -1840,44 +1903,20 @@ async fn downgraded_service_rejoin_health_recovery() {
                 assert_compose_stack_ready(&fixture.compose_path, &project_name)
                     .with_context(|| format!("stack should recover after downgraded {service} rejoin"))?;
 
-                let mut after_ids = std::collections::BTreeMap::new();
-                for observed_service in ["control-plane", "proxy", "frontend"] {
-                    let container_id =
-                        docker_compose_service_container_id(&fixture.compose_path, &project_name, observed_service)
-                            .with_context(|| format!("capture rejoined container id for {observed_service}"))?;
-                    let configured_image = docker_container_config_image(&container_id)
-                        .with_context(|| format!("capture rejoined container image for {observed_service}"))?;
-                    let expected_slot = if observed_service == service {
-                        ImageSlot::Previous
-                    } else {
-                        ImageSlot::Current
-                    };
-                    let expected_slot_name = match expected_slot {
-                        ImageSlot::Current => "current",
-                        ImageSlot::Previous => "previous",
-                    };
-                    assert_eq!(
-                        configured_image,
-                        resources.image_for(observed_service, expected_slot),
-                        "{observed_service} should use the {} image after downgraded {service} rejoin",
-                        expected_slot_name
-                    );
-                    after_ids.insert(observed_service, container_id);
-                }
-
-                assert_ne!(
-                    before_ids[service], after_ids[service],
-                    "{service} should be recreated when rejoining as previous"
+                let after_states = capture_compose_service_states(&fixture.compose_path, &project_name)
+                    .context("capture post-rejoin compose service states")?;
+                assert_compose_service_selection(
+                    &after_states,
+                    &resources,
+                    downgraded_selection,
+                    &format!("after downgraded {service} rejoin"),
                 );
-                for peer_service in ["control-plane", "proxy", "frontend"] {
-                    if peer_service == service {
-                        continue;
-                    }
-                    assert_eq!(
-                        before_ids[peer_service], after_ids[peer_service],
-                        "{peer_service} should remain unchanged while downgraded {service} rejoins"
-                    );
-                }
+                assert_only_service_recreated(
+                    &before_states,
+                    &after_states,
+                    service,
+                    &format!("while downgraded {service} rejoins"),
+                );
 
                 Ok(())
             }
@@ -1907,6 +1946,166 @@ async fn downgraded_service_rejoin_health_recovery() {
     match (result, final_cleanup) {
         (Ok(()), Ok(())) => {}
         (Ok(()), Err(cleanup_error)) => panic!("downgraded-service rejoin image cleanup failed: {cleanup_error:#}"),
+        (Err(test_error), Ok(())) => panic!("{test_error:#}"),
+        (Err(test_error), Err(cleanup_error)) => panic!("{test_error:#}\ncleanup error: {cleanup_error:#}"),
+    }
+}
+
+#[tokio::test]
+async fn restored_service_rejoin_health_recovery() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping restored-service rejoin host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let restore_cases = [
+        (
+            "control-plane",
+            ServiceVersionSelection {
+                control_plane: ImageSlot::Previous,
+                proxy: ImageSlot::Current,
+                frontend: ImageSlot::Current,
+            },
+        ),
+        (
+            "proxy",
+            ServiceVersionSelection {
+                control_plane: ImageSlot::Current,
+                proxy: ImageSlot::Previous,
+                frontend: ImageSlot::Current,
+            },
+        ),
+        (
+            "frontend",
+            ServiceVersionSelection {
+                control_plane: ImageSlot::Current,
+                proxy: ImageSlot::Current,
+                frontend: ImageSlot::Previous,
+            },
+        ),
+    ];
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build current control-plane restore image")?;
+        build_honeypot_service_image("control-plane", &resources.control_plane_previous_image)
+            .context("build previous control-plane restore image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image).context("build current proxy restore image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_previous_image)
+            .context("build previous proxy restore image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image)
+            .context("build current frontend restore image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_previous_image)
+            .context("build previous frontend restore image")?;
+
+        for (service, downgraded_selection) in restore_cases {
+            let fixture = DockerComposeFixture::create(&resources, &lockfile)
+                .with_context(|| format!("create compose fixture for restored {service} rejoin"))?;
+            let project_name = format!("dgw-honeypot-restore-{service}-{}", Uuid::new_v4().simple());
+
+            let case_result: anyhow::Result<()> = async {
+                fixture
+                    .write_compose_selection(&resources, &lockfile, downgraded_selection)
+                    .with_context(|| format!("write downgraded compose selection for restored {service}"))?;
+                run_docker_compose(
+                    &fixture.compose_path,
+                    &project_name,
+                    &[
+                        "up".to_owned(),
+                        "-d".to_owned(),
+                        "--wait".to_owned(),
+                        "--no-build".to_owned(),
+                        "--remove-orphans".to_owned(),
+                    ],
+                )
+                .with_context(|| {
+                    format!(
+                        "docker compose up failed for downgraded baseline before restoring {service}\n{}",
+                        docker_compose_logs(&fixture.compose_path, &project_name)
+                    )
+                })?;
+                assert_compose_stack_ready(&fixture.compose_path, &project_name)
+                    .with_context(|| format!("stack should be healthy before restored {service} rejoin"))?;
+
+                let before_states = capture_compose_service_states(&fixture.compose_path, &project_name)
+                    .context("capture pre-restore compose service states")?;
+                assert_compose_service_selection(
+                    &before_states,
+                    &resources,
+                    downgraded_selection,
+                    &format!("before restored {service} rejoin"),
+                );
+
+                fixture
+                    .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+                    .with_context(|| format!("write restored compose selection for {service}"))?;
+                run_docker_compose(
+                    &fixture.compose_path,
+                    &project_name,
+                    &[
+                        "up".to_owned(),
+                        "-d".to_owned(),
+                        "--wait".to_owned(),
+                        "--no-build".to_owned(),
+                        "--no-deps".to_owned(),
+                        service.to_owned(),
+                    ],
+                )
+                .with_context(|| {
+                    format!(
+                        "docker compose up failed when restoring {service} to current\n{}",
+                        docker_compose_logs(&fixture.compose_path, &project_name)
+                    )
+                })?;
+                assert_compose_stack_ready(&fixture.compose_path, &project_name)
+                    .with_context(|| format!("stack should recover after restored {service} rejoin"))?;
+
+                let after_states = capture_compose_service_states(&fixture.compose_path, &project_name)
+                    .context("capture post-restore compose service states")?;
+                assert_compose_service_selection(
+                    &after_states,
+                    &resources,
+                    ServiceVersionSelection::default(),
+                    &format!("after restored {service} rejoin"),
+                );
+                assert_only_service_recreated(
+                    &before_states,
+                    &after_states,
+                    service,
+                    &format!("while restored {service} rejoins"),
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup_errors = cleanup_compose_project_runtime_artifacts(&fixture.compose_path, &project_name);
+            match (case_result, cleanup_errors.is_empty()) {
+                (Ok(()), true) => {}
+                (Ok(()), false) => {
+                    anyhow::bail!(
+                        "restored {service} rejoin cleanup failed: {}",
+                        cleanup_errors.join("; ")
+                    )
+                }
+                (Err(test_error), true) => return Err(test_error),
+                (Err(test_error), false) => {
+                    anyhow::bail!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; "))
+                }
+            }
+        }
+
+        Ok(())
+    }
+    .await;
+
+    let final_cleanup = resources.cleanup();
+    match (result, final_cleanup) {
+        (Ok(()), Ok(())) => {}
+        (Ok(()), Err(cleanup_error)) => panic!("restored-service rejoin image cleanup failed: {cleanup_error:#}"),
         (Err(test_error), Ok(())) => panic!("{test_error:#}"),
         (Err(test_error), Err(cleanup_error)) => panic!("{test_error:#}\ncleanup error: {cleanup_error:#}"),
     }
