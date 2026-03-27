@@ -89,6 +89,11 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - For the startup or shutdown capture, write one machine-readable JSON artifact that records ordered startup and teardown timestamps, exactly three service entries named `control-plane`, `proxy`, and `frontend`, and one teardown disposition of `clean_shutdown` or `explicit_failure`.
 - Each recorded service entry must state whether the evidence came from `health` or `bootstrap` plus a startup status of `healthy`, `ready`, or `reachable`.
 - If teardown ends in `explicit_failure`, record both a non-empty failure code and a non-empty failure reason before the run may be finalized.
+- For Tiny11 plus RDP-ready proof, write one machine-readable JSON artifact that records `probe`, `identity`, `provenance`, and `key_source`.
+- Keep `probe.method`, `probe.endpoint`, and `probe.evidence_ref` non-empty, keep `probe.captured_at_unix_secs` positive, and keep `probe.ready` set to `true`.
+- Keep `identity.vm_lease_id` aligned with the runtime anchor invocation, and keep `identity.session_id` aligned too whenever the artifact records one.
+- Keep `provenance.row706_run_id`, `provenance.attestation_ref`, and `provenance.interop_store_root` aligned with the verified row-`706` envelope so the Tiny11 lineage stays bound to the same run.
+- Keep `key_source.class` to `repo_allowlisted_windows_license` or `non_git_secret_alias`, keep `key_source.alias` free of raw product-key material and absolute or host-specific paths, and use `WINDOWS11-LICENSE.md` only for the allowlisted repo-local case.
 - For video evidence, write one machine-readable JSON artifact that records `video_sha256`, `duration_floor_secs`, `timestamp_window`, `storage_uri`, and `retention_window`.
 - Keep the timestamp window ordered, keep the retention policy and expiry explicit, and ensure the stored `session_id` and `vm_lease_id` match the runtime anchor invocation whenever those identifiers exist.
 - For headed QEMU plus Chrome observation, write one machine-readable JSON artifact that records `qemu_display_mode`, `qemu_launch_reference`, `browser_family`, `frontend_access_path`, and `correlation_snapshot`.

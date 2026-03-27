@@ -229,6 +229,26 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
     assert_contains(
         testing_path,
         &testing,
+        "The `manual_tiny11_rdp_ready` runtime anchor is now machine-validated in the shared verifier path rather than left as a free-form provisioning note.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`probe`, `identity`, `provenance`, and `key_source` sections",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`provenance.row706_run_id`, `provenance.attestation_ref`, and `provenance.interop_store_root` must match the verified row-`706` envelope",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`key_source.class` must be `repo_allowlisted_windows_license` or `non_git_secret_alias`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
         "The `manual_video_evidence` runtime anchor is now machine-validated in the shared verifier path rather than only at writer time.",
     );
     assert_contains(
@@ -293,6 +313,21 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
         runbook_path,
         &runbook,
         "a non-empty failure code and a non-empty failure reason",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "write one machine-readable JSON artifact that records `probe`, `identity`, `provenance`, and `key_source`",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Keep `provenance.row706_run_id`, `provenance.attestation_ref`, and `provenance.interop_store_root` aligned with the verified row-`706` envelope",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "keep `key_source.alias` free of raw product-key material and absolute or host-specific paths",
     );
     assert_contains(
         runbook_path,

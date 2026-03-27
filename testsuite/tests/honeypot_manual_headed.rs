@@ -207,6 +207,230 @@ fn manual_headed_profile_rejects_weak_stack_startup_shutdown_artifact() {
 }
 
 #[test]
+fn manual_headed_profile_rejects_weak_tiny11_rdp_ready_artifact() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        Path::new("runtime/rdp.json"),
+        serde_json::json!({
+            "probe": {
+                "method": "xfreerdp_auth_only",
+                "endpoint": "tcp://127.0.0.1:3389",
+                "captured_at_unix_secs": 1u64,
+                "ready": false,
+                "evidence_ref": "rdp://auth-only"
+            },
+            "identity": {
+                "vm_lease_id": VM_LEASE_ID
+            },
+            "provenance": {
+                "row706_run_id": run_id,
+                "attestation_ref": "attestation/tiny11-1",
+                "interop_store_root": evidence_root.join("interop-store").display().to_string()
+            },
+            "key_source": {
+                "class": "repo_allowlisted_windows_license",
+                "alias": "WINDOWS11-LICENSE.md"
+            }
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/interaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("weak Tiny11 RDP-ready artifact should fail verification");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("probe.ready = true"), "{rendered}");
+}
+
+#[test]
+fn manual_headed_profile_rejects_tiny11_rdp_ready_provenance_mismatch_with_row706() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+
+    write_verified_row706_run(&evidence_root, &run_id);
+    manual_headed_begin_run(&evidence_root, &run_id).expect("begin manual-headed run");
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_PREREQ_GATE,
+        None,
+        None,
+        "preflight/prereq.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_IDENTITY_BINDING,
+        None,
+        None,
+        "preflight/identity.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN,
+        None,
+        None,
+        "runtime/stack.json",
+    );
+    write_manual_anchor_with_body(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        None,
+        Some(VM_LEASE_ID),
+        Path::new("runtime/rdp.json"),
+        serde_json::json!({
+            "probe": {
+                "method": "xfreerdp_auth_only",
+                "endpoint": "tcp://127.0.0.1:3389",
+                "captured_at_unix_secs": 1u64,
+                "ready": true,
+                "evidence_ref": "rdp://auth-only"
+            },
+            "identity": {
+                "vm_lease_id": VM_LEASE_ID
+            },
+            "provenance": {
+                "row706_run_id": run_id,
+                "attestation_ref": "attestation/tiny11-other",
+                "interop_store_root": evidence_root.join("interop-store").display().to_string()
+            },
+            "key_source": {
+                "class": "repo_allowlisted_windows_license",
+                "alias": "WINDOWS11-LICENSE.md"
+            }
+        })
+        .to_string()
+        .as_bytes(),
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/qemu-chrome.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/interaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_VIDEO_EVIDENCE,
+        Some(SESSION_ID),
+        Some(VM_LEASE_ID),
+        "runtime/video.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_REDACTION_HYGIENE,
+        None,
+        None,
+        "preflight/redaction.json",
+    );
+    write_manual_anchor(
+        &evidence_root,
+        &run_id,
+        MANUAL_HEADED_ANCHOR_ARTIFACT_STORAGE,
+        None,
+        None,
+        "preflight/storage.json",
+    );
+
+    manual_headed_complete_run(&evidence_root, &run_id).expect("complete manual-headed run");
+
+    let error = verify_manual_headed_evidence_envelope(&evidence_root, &run_id)
+        .expect_err("Tiny11 RDP-ready artifact provenance drift should fail verification");
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("attestation_ref"), "{rendered}");
+}
+
+#[test]
 fn manual_headed_profile_rejects_weak_video_evidence_artifact() {
     let tempdir = tempdir().expect("create tempdir");
     let evidence_root = tempdir.path().join("row706");
@@ -1035,6 +1259,72 @@ fn manual_headed_writer_runtime_rejects_weak_stack_anchor() {
 }
 
 #[test]
+fn manual_headed_writer_runtime_rejects_tiny11_rdp_ready_key_source_path_leak() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    let source_artifact = tempdir.path().join("rdp-ready.json");
+    fs::write(
+        &source_artifact,
+        serde_json::json!({
+            "probe": {
+                "method": "xfreerdp_auth_only",
+                "endpoint": "tcp://127.0.0.1:3389",
+                "captured_at_unix_secs": 1u64,
+                "ready": true,
+                "evidence_ref": "rdp://auth-only"
+            },
+            "identity": {
+                "vm_lease_id": VM_LEASE_ID
+            },
+            "provenance": {
+                "row706_run_id": run_id,
+                "attestation_ref": "attestation/tiny11-1",
+                "interop_store_root": evidence_root.join("interop-store").display().to_string()
+            },
+            "key_source": {
+                "class": "non_git_secret_alias",
+                "alias": "/run/secrets/windows-product-key"
+            }
+        })
+        .to_string(),
+    )
+    .expect("write Tiny11 RDP-ready artifact");
+    write_verified_row706_run(&evidence_root, &run_id);
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "runtime",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+            "--anchor-id",
+            MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+            "--status",
+            "passed",
+            "--producer",
+            "integration-test",
+            "--artifact",
+            &source_artifact.display().to_string(),
+            "--artifact-relpath",
+            "runtime/rdp-ready.json",
+            "--vm-lease-id",
+            VM_LEASE_ID,
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(
+        rendered.contains("must not expose an absolute or host-specific path"),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn manual_headed_writer_runtime_rejects_weak_video_metadata() {
     let tempdir = tempdir().expect("create tempdir");
     let evidence_root = tempdir.path().join("row706");
@@ -1301,7 +1591,7 @@ fn write_manual_anchor(
     relpath: &str,
 ) {
     let relpath = Path::new(relpath);
-    let body = manual_anchor_artifact_body(anchor_id, session_id, vm_lease_id);
+    let body = manual_anchor_artifact_body(evidence_root, run_id, anchor_id, session_id, vm_lease_id);
     write_manual_anchor_with_body(
         evidence_root,
         run_id,
@@ -1345,7 +1635,13 @@ fn write_manual_anchor_with_body(
     .expect("write manual-headed anchor");
 }
 
-fn manual_anchor_artifact_body(anchor_id: &str, session_id: Option<&str>, vm_lease_id: Option<&str>) -> String {
+fn manual_anchor_artifact_body(
+    evidence_root: &Path,
+    run_id: &str,
+    anchor_id: &str,
+    session_id: Option<&str>,
+    vm_lease_id: Option<&str>,
+) -> String {
     match anchor_id {
         MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => serde_json::json!({
             "startup_captured_at_unix_secs": 1u64,
@@ -1365,6 +1661,29 @@ fn manual_anchor_artifact_body(anchor_id: &str, session_id: Option<&str>, vm_lea
                 }
             },
             "teardown_disposition": "clean_shutdown"
+        })
+        .to_string(),
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY => serde_json::json!({
+            "probe": {
+                "method": "xfreerdp_auth_only",
+                "endpoint": "tcp://127.0.0.1:3389",
+                "captured_at_unix_secs": 1u64,
+                "ready": true,
+                "evidence_ref": "rdp://auth-only"
+            },
+            "identity": {
+                "session_id": session_id,
+                "vm_lease_id": vm_lease_id
+            },
+            "provenance": {
+                "row706_run_id": run_id,
+                "attestation_ref": "attestation/tiny11-1",
+                "interop_store_root": evidence_root.join("interop-store").display().to_string()
+            },
+            "key_source": {
+                "class": "repo_allowlisted_windows_license",
+                "alias": "WINDOWS11-LICENSE.md"
+            }
         })
         .to_string(),
         MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION => serde_json::json!({

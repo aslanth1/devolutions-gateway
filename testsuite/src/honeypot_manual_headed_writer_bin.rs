@@ -111,12 +111,53 @@ fn run_record_command(mode: CommandMode, command: RecordCommand) -> anyhow::Resu
     }
 
     if mode == CommandMode::Runtime {
-        verify_row706_evidence_envelope(&command.evidence_root, &command.run_id).with_context(|| {
-            format!(
-                "runtime manual-headed evidence requires a verified row706 run {}",
-                command.run_id
-            )
-        })?;
+        let row706_envelope =
+            verify_row706_evidence_envelope(&command.evidence_root, &command.run_id).with_context(|| {
+                format!(
+                    "runtime manual-headed evidence requires a verified row706 run {}",
+                    command.run_id
+                )
+            })?;
+        ensure_manual_headed_run_started(&command.evidence_root, &command.run_id)?;
+        let copied_artifact_path = ingest_artifact(
+            &command.evidence_root,
+            &command.run_id,
+            &command.artifact_path,
+            &command.artifact_relpath,
+        )?;
+        validate_anchor_artifact(
+            &command.anchor_id,
+            &copied_artifact_path,
+            command.session_id.as_deref(),
+            command.vm_lease_id.as_deref(),
+            Some(&row706_envelope),
+            Some(&command.run_id),
+        )?;
+
+        let result = ManualHeadedAnchorResult {
+            schema_version: MANUAL_HEADED_EVIDENCE_SCHEMA_VERSION,
+            run_id: command.run_id.clone(),
+            row706_run_id: command.run_id.clone(),
+            anchor_id: command.anchor_id.clone(),
+            executed: command.status != ManualHeadedAnchorStatus::BlockedPrereq,
+            status: command.status,
+            producer: command.producer,
+            captured_at_unix_secs: command.captured_at_unix_secs,
+            source_artifact_relpath: command.artifact_relpath,
+            source_artifact_sha256: sha256_file_hex(&copied_artifact_path)?,
+            session_id: command.session_id,
+            vm_lease_id: command.vm_lease_id,
+            detail: command.detail,
+        };
+        write_manual_headed_anchor_result(&command.evidence_root, &command.run_id, &result)
+            .with_context(|| format!("write manual-headed anchor {}", result.anchor_id))?;
+
+        println!(
+            "recorded runtime anchor {} under run {}",
+            result.anchor_id, result.run_id
+        );
+
+        return Ok(());
     }
 
     ensure_manual_headed_run_started(&command.evidence_root, &command.run_id)?;
@@ -131,6 +172,8 @@ fn run_record_command(mode: CommandMode, command: RecordCommand) -> anyhow::Resu
         &copied_artifact_path,
         command.session_id.as_deref(),
         command.vm_lease_id.as_deref(),
+        None,
+        None,
     )?;
 
     let result = ManualHeadedAnchorResult {
@@ -239,8 +282,17 @@ fn validate_anchor_artifact(
     artifact_path: &Path,
     session_id: Option<&str>,
     vm_lease_id: Option<&str>,
+    row706_envelope: Option<&testsuite::honeypot_control_plane::Row706EvidenceEnvelope>,
+    row706_run_id: Option<&str>,
 ) -> anyhow::Result<()> {
-    validate_manual_headed_anchor_artifact(anchor_id, artifact_path, session_id, vm_lease_id)
+    validate_manual_headed_anchor_artifact(
+        anchor_id,
+        artifact_path,
+        session_id,
+        vm_lease_id,
+        row706_envelope,
+        row706_run_id,
+    )
 }
 
 #[cfg(unix)]

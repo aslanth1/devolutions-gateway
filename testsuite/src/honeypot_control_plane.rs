@@ -1515,6 +1515,14 @@ impl ManualHeadedTimeWindow {
 }
 
 #[cfg(unix)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManualHeadedTiny11RdpReadyArtifact {
+    session_id: Option<String>,
+    vm_lease_id: String,
+    row706_run_id: String,
+}
+
+#[cfg(unix)]
 #[derive(Debug, Clone, Copy)]
 struct ManualHeadedAnchorSpec {
     id: &'static str,
@@ -1613,10 +1621,22 @@ pub fn validate_manual_headed_anchor_artifact(
     artifact_path: &Path,
     session_id: Option<&str>,
     vm_lease_id: Option<&str>,
+    row706_envelope: Option<&Row706EvidenceEnvelope>,
+    row706_run_id: Option<&str>,
 ) -> anyhow::Result<()> {
     match anchor_id {
         MANUAL_HEADED_ANCHOR_STACK_STARTUP_SHUTDOWN => {
             validate_manual_headed_stack_startup_shutdown_artifact(artifact_path)
+        }
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY => {
+            let _ = validate_manual_headed_tiny11_rdp_ready_artifact(
+                artifact_path,
+                session_id,
+                vm_lease_id,
+                row706_envelope,
+                row706_run_id,
+            )?;
+            Ok(())
         }
         MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION => {
             validate_manual_headed_qemu_chrome_observation_artifact(artifact_path, session_id, vm_lease_id)
@@ -1628,7 +1648,7 @@ pub fn validate_manual_headed_anchor_artifact(
             validate_manual_headed_video_evidence_artifact(artifact_path, session_id, vm_lease_id)
         }
         _ => {
-            let _ = (session_id, vm_lease_id);
+            let _ = (session_id, vm_lease_id, row706_envelope, row706_run_id);
             Ok(())
         }
     }
@@ -1838,6 +1858,20 @@ pub fn verify_manual_headed_evidence_envelope(
                 MANUAL_HEADED_ANCHOR_TINY11_RDP_READY
             )
         })?;
+    let rdp_ready_row706 = verify_row706_evidence_envelope(root, &rdp_ready.row706_run_id).with_context(|| {
+        format!(
+            "manual-headed Tiny11 RDP-ready anchor {} requires a verified row706 run {}",
+            MANUAL_HEADED_ANCHOR_TINY11_RDP_READY, rdp_ready.row706_run_id
+        )
+    })?;
+    let rdp_ready_path = manual_headed_anchor_artifact_path(root, run_id, &rdp_ready.source_artifact_relpath)?;
+    let rdp_ready_artifact = validate_manual_headed_tiny11_rdp_ready_artifact(
+        &rdp_ready_path,
+        rdp_ready.session_id.as_deref(),
+        rdp_ready.vm_lease_id.as_deref(),
+        Some(&rdp_ready_row706),
+        Some(&rdp_ready.row706_run_id),
+    )?;
     let headed_observation = by_anchor_id
         .get(MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION)
         .copied()
@@ -1852,6 +1886,26 @@ pub fn verify_manual_headed_evidence_envelope(
         "manual-headed anchors {} and {} must bind to the same vm_lease_id",
         MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
         MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+    );
+    if let Some(rdp_ready_session_id) = rdp_ready_artifact.session_id.as_deref() {
+        anyhow::ensure!(
+            headed_observation.session_id.as_deref() == Some(rdp_ready_session_id),
+            "manual-headed anchors {} and {} must bind to the same session_id when Tiny11 RDP-ready evidence records one",
+            MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+            MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+        );
+    }
+    anyhow::ensure!(
+        rdp_ready_artifact.vm_lease_id == headed_observation.vm_lease_id.as_deref().unwrap_or_default(),
+        "manual-headed anchors {} and {} must bind to the same vm_lease_id inside the Tiny11 RDP-ready artifact",
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        MANUAL_HEADED_ANCHOR_HEADED_QEMU_CHROME_OBSERVATION
+    );
+    anyhow::ensure!(
+        rdp_ready_artifact.row706_run_id == rdp_ready.row706_run_id,
+        "manual-headed anchor {} must keep artifact provenance.row706_run_id aligned with row706_run_id {}",
+        MANUAL_HEADED_ANCHOR_TINY11_RDP_READY,
+        rdp_ready.row706_run_id
     );
     let bounded_interaction = by_anchor_id
         .get(MANUAL_HEADED_ANCHOR_BOUNDED_INTERACTION)
@@ -1993,11 +2047,25 @@ fn read_manual_headed_anchor_results(
             result.anchor_id,
             artifact_path.display()
         );
+        let row706_envelope = if result.anchor_id == MANUAL_HEADED_ANCHOR_TINY11_RDP_READY {
+            Some(
+                verify_row706_evidence_envelope(root, &result.row706_run_id).with_context(|| {
+                    format!(
+                        "manual-headed Tiny11 RDP-ready anchor {} requires a verified row706 run {}",
+                        result.anchor_id, result.row706_run_id
+                    )
+                })?,
+            )
+        } else {
+            None
+        };
         validate_manual_headed_anchor_artifact(
             &result.anchor_id,
             &artifact_path,
             result.session_id.as_deref(),
             result.vm_lease_id.as_deref(),
+            row706_envelope.as_ref(),
+            Some(&result.row706_run_id),
         )
         .with_context(|| {
             format!(
@@ -2110,6 +2178,204 @@ fn validate_manual_headed_stack_startup_shutdown_artifact(artifact_path: &Path) 
             artifact_path.display()
         ),
     }
+}
+
+#[cfg(unix)]
+fn validate_manual_headed_tiny11_rdp_ready_artifact(
+    artifact_path: &Path,
+    session_id: Option<&str>,
+    vm_lease_id: Option<&str>,
+    row706_envelope: Option<&Row706EvidenceEnvelope>,
+    row706_run_id: Option<&str>,
+) -> anyhow::Result<ManualHeadedTiny11RdpReadyArtifact> {
+    let document = read_json_document(artifact_path)?;
+    let object = document.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Tiny11 RDP-ready artifact {} must be a json object",
+            artifact_path.display()
+        )
+    })?;
+
+    let probe = object.get("probe").and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Tiny11 RDP-ready artifact {} must provide probe",
+            artifact_path.display()
+        )
+    })?;
+    validate_manual_headed_nonempty_json_string(probe.get("method"), "probe.method", artifact_path)?;
+    validate_manual_headed_nonempty_json_string(probe.get("endpoint"), "probe.endpoint", artifact_path)?;
+    anyhow::ensure!(
+        probe
+            .get("captured_at_unix_secs")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0),
+        "Tiny11 RDP-ready artifact {} must provide probe.captured_at_unix_secs > 0",
+        artifact_path.display()
+    );
+    anyhow::ensure!(
+        probe.get("ready").and_then(Value::as_bool) == Some(true),
+        "Tiny11 RDP-ready artifact {} must provide probe.ready = true",
+        artifact_path.display()
+    );
+    validate_manual_headed_nonempty_json_string(probe.get("evidence_ref"), "probe.evidence_ref", artifact_path)?;
+
+    let identity = object.get("identity").and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Tiny11 RDP-ready artifact {} must provide identity",
+            artifact_path.display()
+        )
+    })?;
+    let actual_vm_lease_id = identity
+        .get("vm_lease_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("artifact {} must provide identity.vm_lease_id", artifact_path.display()))?;
+    anyhow::ensure!(
+        !actual_vm_lease_id.trim().is_empty(),
+        "artifact {} must provide a non-empty identity.vm_lease_id",
+        artifact_path.display()
+    );
+    if let Some(expected_vm_lease_id) = vm_lease_id {
+        anyhow::ensure!(
+            actual_vm_lease_id == expected_vm_lease_id,
+            "artifact {} identity.vm_lease_id {} does not match requested {}",
+            artifact_path.display(),
+            actual_vm_lease_id,
+            expected_vm_lease_id
+        );
+    }
+    let actual_session_id =
+        read_manual_headed_optional_json_string(identity.get("session_id"), "identity.session_id", artifact_path)?;
+    if let Some(expected_session_id) = session_id {
+        anyhow::ensure!(
+            actual_session_id.as_deref() == Some(expected_session_id),
+            "artifact {} identity.session_id {:?} does not match requested {}",
+            artifact_path.display(),
+            actual_session_id,
+            expected_session_id
+        );
+    }
+
+    let provenance = object.get("provenance").and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Tiny11 RDP-ready artifact {} must provide provenance",
+            artifact_path.display()
+        )
+    })?;
+    let actual_row706_run_id = provenance.get("row706_run_id").and_then(Value::as_str).ok_or_else(|| {
+        anyhow::anyhow!(
+            "artifact {} must provide provenance.row706_run_id",
+            artifact_path.display()
+        )
+    })?;
+    anyhow::ensure!(
+        !actual_row706_run_id.trim().is_empty(),
+        "artifact {} must provide a non-empty provenance.row706_run_id",
+        artifact_path.display()
+    );
+    if let Some(expected_row706_run_id) = row706_run_id {
+        anyhow::ensure!(
+            actual_row706_run_id == expected_row706_run_id,
+            "artifact {} provenance.row706_run_id {} does not match requested {}",
+            artifact_path.display(),
+            actual_row706_run_id,
+            expected_row706_run_id
+        );
+    }
+    let actual_attestation_ref = provenance
+        .get("attestation_ref")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "artifact {} must provide provenance.attestation_ref",
+                artifact_path.display()
+            )
+        })?;
+    anyhow::ensure!(
+        !actual_attestation_ref.trim().is_empty(),
+        "artifact {} must provide a non-empty provenance.attestation_ref",
+        artifact_path.display()
+    );
+    let actual_interop_store_root = provenance
+        .get("interop_store_root")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "artifact {} must provide provenance.interop_store_root",
+                artifact_path.display()
+            )
+        })?;
+    anyhow::ensure!(
+        !actual_interop_store_root.trim().is_empty(),
+        "artifact {} must provide a non-empty provenance.interop_store_root",
+        artifact_path.display()
+    );
+    if let Some(row706_envelope) = row706_envelope {
+        anyhow::ensure!(
+            actual_attestation_ref == row706_envelope.attestation_ref,
+            "artifact {} provenance.attestation_ref {} does not match verified row706 attestation_ref {}",
+            artifact_path.display(),
+            actual_attestation_ref,
+            row706_envelope.attestation_ref
+        );
+        anyhow::ensure!(
+            actual_interop_store_root == row706_envelope.image_store_root.to_string_lossy(),
+            "artifact {} provenance.interop_store_root {} does not match verified row706 image_store_root {}",
+            artifact_path.display(),
+            actual_interop_store_root,
+            row706_envelope.image_store_root.display()
+        );
+    }
+
+    let key_source = object.get("key_source").and_then(Value::as_object).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Tiny11 RDP-ready artifact {} must provide key_source",
+            artifact_path.display()
+        )
+    })?;
+    let key_source_class = key_source
+        .get("class")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("artifact {} must provide key_source.class", artifact_path.display()))?;
+    anyhow::ensure!(
+        matches!(
+            key_source_class,
+            "repo_allowlisted_windows_license" | "non_git_secret_alias"
+        ),
+        "Tiny11 RDP-ready artifact {} must use key_source.class repo_allowlisted_windows_license or non_git_secret_alias",
+        artifact_path.display()
+    );
+    let key_source_alias = key_source
+        .get("alias")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("artifact {} must provide key_source.alias", artifact_path.display()))?;
+    anyhow::ensure!(
+        !key_source_alias.trim().is_empty(),
+        "artifact {} must provide a non-empty key_source.alias",
+        artifact_path.display()
+    );
+    anyhow::ensure!(
+        !manual_headed_value_looks_like_windows_product_key(key_source_alias),
+        "Tiny11 RDP-ready artifact {} key_source.alias must not contain raw Windows product key material",
+        artifact_path.display()
+    );
+    anyhow::ensure!(
+        !manual_headed_value_looks_like_absolute_or_host_path(key_source_alias),
+        "Tiny11 RDP-ready artifact {} key_source.alias must not expose an absolute or host-specific path",
+        artifact_path.display()
+    );
+    if key_source_class == "repo_allowlisted_windows_license" {
+        anyhow::ensure!(
+            key_source_alias == "WINDOWS11-LICENSE.md",
+            "Tiny11 RDP-ready artifact {} must use key_source.alias WINDOWS11-LICENSE.md for repo_allowlisted_windows_license",
+            artifact_path.display()
+        );
+    }
+
+    Ok(ManualHeadedTiny11RdpReadyArtifact {
+        session_id: actual_session_id,
+        vm_lease_id: actual_vm_lease_id.to_owned(),
+        row706_run_id: actual_row706_run_id.to_owned(),
+    })
 }
 
 #[cfg(unix)]
@@ -2439,6 +2705,31 @@ fn read_json_document(path: &Path) -> anyhow::Result<Value> {
 }
 
 #[cfg(unix)]
+fn read_manual_headed_optional_json_string(
+    value: Option<&Value>,
+    field: &str,
+    artifact_path: &Path,
+) -> anyhow::Result<Option<String>> {
+    match value {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => {
+            anyhow::ensure!(
+                !value.trim().is_empty(),
+                "artifact {} must provide a non-empty {} when present",
+                artifact_path.display(),
+                field
+            );
+            Ok(Some(value.clone()))
+        }
+        _ => Err(anyhow::anyhow!(
+            "artifact {} must provide {} as a string when present",
+            artifact_path.display(),
+            field
+        )),
+    }
+}
+
+#[cfg(unix)]
 fn validate_manual_headed_nonempty_json_string(
     value: Option<&Value>,
     field: &str,
@@ -2476,6 +2767,28 @@ fn validate_manual_headed_optional_matching_json_string(
         );
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn manual_headed_value_looks_like_windows_product_key(value: &str) -> bool {
+    let candidate = value.trim();
+    let groups: Vec<_> = candidate.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .all(|group| group.len() == 5 && group.chars().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit()))
+}
+
+#[cfg(unix)]
+fn manual_headed_value_looks_like_absolute_or_host_path(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with('/')
+        || value.starts_with("~/")
+        || value.starts_with(".\\")
+        || value.starts_with("..\\")
+        || value.starts_with("../")
+        || value.contains('\\')
+        || value.as_bytes().get(1).is_some_and(|byte| *byte == b':')
 }
 
 #[cfg(unix)]

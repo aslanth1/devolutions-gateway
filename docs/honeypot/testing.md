@@ -143,6 +143,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - Each service entry must declare `evidence_kind` as `health` or `bootstrap` plus `startup_status` as `healthy`, `ready`, or `reachable`.
 - Teardown evidence must record `teardown_disposition` as `clean_shutdown` or `explicit_failure`.
 - If `teardown_disposition` is `explicit_failure`, the artifact must also provide non-empty `failure_code` and `failure_reason` fields so teardown failure is explicit instead of implied.
+- The `manual_tiny11_rdp_ready` runtime anchor is now machine-validated in the shared verifier path rather than left as a free-form provisioning note.
+- Its artifact must be a JSON object with `probe`, `identity`, `provenance`, and `key_source` sections.
+- `probe.method`, `probe.endpoint`, and `probe.evidence_ref` must stay non-empty, `probe.captured_at_unix_secs` must be positive, and `probe.ready` must be `true`.
+- `identity.vm_lease_id` must match the bound runtime anchor identity, and `identity.session_id` must also match whenever the artifact chooses to record it.
+- `provenance.row706_run_id`, `provenance.attestation_ref`, and `provenance.interop_store_root` must match the verified row-`706` envelope instead of drifting into detached lineage notes.
+- `key_source.class` must be `repo_allowlisted_windows_license` or `non_git_secret_alias`, and `key_source.alias` must name the approved source without storing raw Windows key material or an absolute or host-specific path.
+- When `key_source.class` is `repo_allowlisted_windows_license`, the alias is fixed to `WINDOWS11-LICENSE.md`.
 - The `manual_video_evidence` runtime anchor is now machine-validated in the shared verifier path rather than only at writer time.
 - Its artifact must be a JSON object with `video_sha256`, `duration_floor_secs`, `timestamp_window`, `storage_uri`, and `retention_window`.
 - `video_sha256` must be a 64-character hex digest, `duration_floor_secs` must be greater than zero, and `timestamp_window.start_unix_secs` plus `timestamp_window.end_unix_secs` must form a valid ordered range.
