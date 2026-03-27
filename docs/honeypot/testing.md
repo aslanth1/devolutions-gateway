@@ -32,6 +32,8 @@ It must keep the default test path CI-safe and must fail closed before any lab-o
 - `lab-e2e` may use prepared Windows images, QEMU lifecycle, live stream validation, recycle behavior, and attacker-to-frontend flows that are out of scope for the default suite.
 - `lab-e2e` must not run in ordinary CI or on an unprepared workstation.
 - `lab-e2e` is opt-in and must not run unless `DGW_HONEYPOT_LAB_E2E=1` is set.
+- The external-client interoperability smoke test additionally requires a prepared image store plus guest credentials through `DGW_HONEYPOT_INTEROP_IMAGE_STORE`, `DGW_HONEYPOT_INTEROP_RDP_USERNAME`, and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD`.
+- Optional overrides for that smoke lane are `DGW_HONEYPOT_INTEROP_MANIFEST_DIR`, `DGW_HONEYPOT_INTEROP_QEMU_BINARY`, `DGW_HONEYPOT_INTEROP_KVM_PATH`, `DGW_HONEYPOT_INTEROP_POOL`, `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS`, `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_XFREERDP_PATH`.
 
 ## Explicit Lab Gate
 

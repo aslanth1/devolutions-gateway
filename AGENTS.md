@@ -670,7 +670,7 @@ Pass when: failed recycle or rollback attempts are surfaced clearly and do not s
 - [x] Add host-side control-socket isolation checks.
 Pass when: QMP, QGA, VNC, and similar control channels are not exposed to untrusted networks or weak filesystem permissions.
 
-- [ ] Add an external-client interoperability smoke test.
+- [x] Add an external-client interoperability smoke test.
 Pass when: the lab proves the guest accepts a non-project RDP client path as an independent compatibility check.
 
 ## Milestone 6: Hardening and Operational Readiness

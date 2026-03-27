@@ -19,6 +19,28 @@ const CONTROL_PLANE_CONFIG_ENV: &str = "HONEYPOT_CONTROL_PLANE_CONFIG";
 const CONTROL_PLANE_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAxMDEiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3QuY29udHJvbC1wbGFuZSJ9.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 const HONEYPOT_WATCH_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDMiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Qud2F0Y2gifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 const DEFAULT_BACKEND_CREDENTIAL_REF: &str = "backend-credential-default";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_IMAGE_STORE_ENV: &str = "DGW_HONEYPOT_INTEROP_IMAGE_STORE";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_MANIFEST_DIR_ENV: &str = "DGW_HONEYPOT_INTEROP_MANIFEST_DIR";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_QEMU_BINARY_ENV: &str = "DGW_HONEYPOT_INTEROP_QEMU_BINARY";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_KVM_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_KVM_PATH";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_RDP_USERNAME_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_USERNAME";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_RDP_PASSWORD_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_PASSWORD";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_RDP_DOMAIN_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_DOMAIN";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_RDP_SECURITY_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_SECURITY";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_POOL_ENV: &str = "DGW_HONEYPOT_INTEROP_POOL";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV: &str = "DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS";
+#[cfg(unix)]
+const HONEYPOT_INTEROP_XFREERDP_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_PATH";
 
 async fn read_authed_health_response(port: u16) -> anyhow::Result<honeypot_contracts::control_plane::HealthResponse> {
     read_health_response_with_bearer_token(port, Some(CONTROL_PLANE_SCOPE_TOKEN)).await
@@ -2065,6 +2087,132 @@ async fn control_plane_lab_harness_teardown_cleans_runtime_artifacts_on_posix_ho
 
 #[cfg(unix)]
 #[tokio::test]
+async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
+        eprintln!("skipping lab-e2e external-client interoperability test: {error:#}");
+        return;
+    }
+
+    if !external_client_interop_env_is_configured() {
+        eprintln!(
+            "skipping lab-e2e external-client interoperability test: set {} {} and {}",
+            HONEYPOT_INTEROP_IMAGE_STORE_ENV, HONEYPOT_INTEROP_RDP_USERNAME_ENV, HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
+        );
+        return;
+    }
+
+    let interop = load_external_client_interop_config().expect("load external-client interoperability config");
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let data_dir = tempdir.path().join("data");
+    let lease_store = tempdir.path().join("leases");
+    let quarantine_store = tempdir.path().join("quarantine");
+    let qmp_dir = tempdir.path().join("qmp");
+    let qga_dir = tempdir.path().join("qga");
+    let secret_dir = tempdir.path().join("secrets");
+
+    fs::create_dir_all(&data_dir).expect("create data dir");
+    fs::create_dir_all(&lease_store).expect("create lease store");
+    fs::create_dir_all(&quarantine_store).expect("create quarantine store");
+    fs::create_dir_all(&qmp_dir).expect("create qmp dir");
+    fs::create_dir_all(&qga_dir).expect("create qga dir");
+    fs::create_dir_all(&secret_dir).expect("create secret dir");
+    write_backend_credential_store(
+        &secret_dir.join("backend-credentials.json"),
+        &interop.rdp_username,
+        &interop.rdp_password,
+        interop.rdp_domain.as_deref(),
+    );
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(data_dir)
+        .image_store(interop.image_store.clone())
+        .manifest_dir(interop.manifest_dir.clone())
+        .lease_store(lease_store)
+        .quarantine_store(quarantine_store)
+        .qmp_dir(qmp_dir)
+        .qga_dir(qga_dir)
+        .secret_dir(secret_dir)
+        .kvm_path(interop.kvm_path.clone())
+        .enable_guest_agent(false)
+        .lifecycle_driver("process")
+        .stop_timeout_secs(10)
+        .qemu_binary_path(interop.qemu_binary_path.clone())
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let acquire_request = acquire_request_with_pool_and_timeout(
+        "session-external-client-interop",
+        &interop.requested_pool,
+        interop.ready_timeout_secs,
+    );
+    let (_, acquire): (String, AcquireVmResponse) =
+        post_authed_json_response(port, "/api/v1/vm/acquire", &acquire_request)
+            .await
+            .expect("acquire external-client interoperability lease");
+
+    wait_for_xfreerdp_auth_only(
+        &interop,
+        &acquire.guest_rdp_addr,
+        acquire.guest_rdp_port,
+        std::time::Duration::from_secs(u64::from(interop.ready_timeout_secs)),
+    )
+    .expect("xfreerdp should complete auth-only smoke");
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-external-client-interop-1".to_owned(),
+            session_id: "session-external-client-interop".to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .expect("release lease");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let (_, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-external-client-interop-1".to_owned(),
+            session_id: "session-external-client-interop".to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+            force_quarantine: false,
+        },
+    )
+    .await
+    .expect("recycle lease");
+    assert_eq!(recycle.recycle_state, RecycleState::Recycled);
+    assert_eq!(recycle.pool_state, PoolState::Ready);
+
+    let health = read_authed_health_response(port)
+        .await
+        .expect("read health response after recycle");
+    assert_eq!(health.service_state, ServiceState::Ready);
+    assert_eq!(health.active_lease_count, 0);
+    assert_eq!(health.quarantined_lease_count, 0);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn control_plane_process_driver_reports_qemu_startup_failures() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
     let port = find_unused_port();
@@ -2247,6 +2395,17 @@ fn acquire_request(session_id: &str) -> AcquireVmRequest {
     acquire_request_for_pool(session_id, "default")
 }
 
+fn acquire_request_with_pool_and_timeout(
+    session_id: &str,
+    requested_pool: &str,
+    requested_ready_timeout_secs: u16,
+) -> AcquireVmRequest {
+    AcquireVmRequest {
+        requested_ready_timeout_secs: u32::from(requested_ready_timeout_secs),
+        ..acquire_request_for_pool(session_id, requested_pool)
+    }
+}
+
 fn acquire_request_for_pool(session_id: &str, requested_pool: &str) -> AcquireVmRequest {
     AcquireVmRequest {
         schema_version: honeypot_contracts::SCHEMA_VERSION,
@@ -2298,25 +2457,12 @@ fn create_runtime_fixture(root: &std::path::Path, manifest_count: usize) -> Runt
     fs::create_dir_all(&secret_dir).expect("create secret dir");
     fs::write(&kvm_path, []).expect("create fake kvm device");
     fs::write(&qemu_binary_path, []).expect("create fake qemu binary");
-    fs::write(
-        secret_dir.join("backend-credentials.json"),
-        serde_json::to_vec_pretty(&serde_json::json!({
-            DEFAULT_BACKEND_CREDENTIAL_REF: {
-                "proxy_credential": {
-                    "kind": "username-password",
-                    "username": "operator",
-                    "password": "attacker-password"
-                },
-                "target_credential": {
-                    "kind": "username-password",
-                    "username": "backend-user",
-                    "password": "backend-password"
-                }
-            }
-        }))
-        .expect("serialize backend credentials"),
-    )
-    .expect("write backend credential store");
+    write_backend_credential_store(
+        &secret_dir.join("backend-credentials.json"),
+        "backend-user",
+        "backend-password",
+        None,
+    );
 
     let mut manifest_paths = Vec::new();
     let mut base_image_paths = Vec::new();
@@ -2436,6 +2582,189 @@ fn rewrite_manifest_guest_rdp_port(manifest_path: &std::path::Path, guest_rdp_po
         serde_json::to_vec_pretty(&manifest).expect("serialize manifest with updated guest rdp port"),
     )
     .expect("write manifest with updated guest rdp port");
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+struct ExternalClientInteropConfig {
+    image_store: std::path::PathBuf,
+    manifest_dir: std::path::PathBuf,
+    qemu_binary_path: std::path::PathBuf,
+    kvm_path: std::path::PathBuf,
+    xfreerdp_path: std::path::PathBuf,
+    requested_pool: String,
+    ready_timeout_secs: u16,
+    rdp_username: String,
+    rdp_password: String,
+    rdp_domain: Option<String>,
+    rdp_security: Option<String>,
+}
+
+#[cfg(unix)]
+fn external_client_interop_env_is_configured() -> bool {
+    std::env::var_os(HONEYPOT_INTEROP_IMAGE_STORE_ENV).is_some()
+        && std::env::var_os(HONEYPOT_INTEROP_RDP_USERNAME_ENV).is_some()
+        && std::env::var_os(HONEYPOT_INTEROP_RDP_PASSWORD_ENV).is_some()
+}
+
+#[cfg(unix)]
+fn load_external_client_interop_config() -> anyhow::Result<ExternalClientInteropConfig> {
+    let image_store = required_env_path(HONEYPOT_INTEROP_IMAGE_STORE_ENV)?;
+    let manifest_dir =
+        optional_env_path(HONEYPOT_INTEROP_MANIFEST_DIR_ENV).unwrap_or_else(|| image_store.join("manifests"));
+    let qemu_binary_path = optional_env_path(HONEYPOT_INTEROP_QEMU_BINARY_ENV)
+        .unwrap_or_else(|| std::path::PathBuf::from("/usr/bin/qemu-system-x86_64"));
+    let kvm_path =
+        optional_env_path(HONEYPOT_INTEROP_KVM_PATH_ENV).unwrap_or_else(|| std::path::PathBuf::from("/dev/kvm"));
+    let xfreerdp_path =
+        optional_env_path(HONEYPOT_INTEROP_XFREERDP_PATH_ENV).unwrap_or_else(|| std::path::PathBuf::from("xfreerdp"));
+    let requested_pool = std::env::var(HONEYPOT_INTEROP_POOL_ENV).unwrap_or_else(|_| "default".to_owned());
+    let ready_timeout_secs = std::env::var(HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV)
+        .ok()
+        .map(|value| value.parse::<u16>())
+        .transpose()
+        .expect("ready timeout env should be a u16")
+        .unwrap_or(120);
+    let rdp_username = required_env_string(HONEYPOT_INTEROP_RDP_USERNAME_ENV)?;
+    let rdp_password = required_env_string(HONEYPOT_INTEROP_RDP_PASSWORD_ENV)?;
+    let rdp_domain = optional_env_string(HONEYPOT_INTEROP_RDP_DOMAIN_ENV);
+    let rdp_security = optional_env_string(HONEYPOT_INTEROP_RDP_SECURITY_ENV);
+
+    Ok(ExternalClientInteropConfig {
+        image_store,
+        manifest_dir,
+        qemu_binary_path,
+        kvm_path,
+        xfreerdp_path,
+        requested_pool,
+        ready_timeout_secs,
+        rdp_username,
+        rdp_password,
+        rdp_domain,
+        rdp_security,
+    })
+}
+
+#[cfg(unix)]
+fn required_env_path(name: &str) -> anyhow::Result<std::path::PathBuf> {
+    std::env::var_os(name)
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("missing required environment variable {name}"))
+}
+
+#[cfg(unix)]
+fn optional_env_path(name: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os(name).map(std::path::PathBuf::from)
+}
+
+#[cfg(unix)]
+fn required_env_string(name: &str) -> anyhow::Result<String> {
+    std::env::var(name).map_err(|_| anyhow::anyhow!("missing required environment variable {name}"))
+}
+
+#[cfg(unix)]
+fn optional_env_string(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|value| !value.trim().is_empty())
+}
+
+fn write_backend_credential_store(
+    path: &std::path::Path,
+    target_username: &str,
+    target_password: &str,
+    target_domain: Option<&str>,
+) {
+    let target_credential = if let Some(domain) = target_domain {
+        serde_json::json!({
+            "kind": "username-password",
+            "domain": domain,
+            "username": target_username,
+            "password": target_password
+        })
+    } else {
+        serde_json::json!({
+            "kind": "username-password",
+            "username": target_username,
+            "password": target_password
+        })
+    };
+
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            DEFAULT_BACKEND_CREDENTIAL_REF: {
+                "proxy_credential": {
+                    "kind": "username-password",
+                    "username": "operator",
+                    "password": "attacker-password"
+                },
+                "target_credential": target_credential
+            }
+        }))
+        .expect("serialize backend credentials"),
+    )
+    .expect("write backend credential store");
+}
+
+#[cfg(unix)]
+fn wait_for_xfreerdp_auth_only(
+    interop: &ExternalClientInteropConfig,
+    guest_rdp_addr: &str,
+    guest_rdp_port: u16,
+    timeout: std::time::Duration,
+) -> anyhow::Result<()> {
+    let deadline = std::time::Instant::now() + timeout;
+    let last_error = loop {
+        match run_xfreerdp_auth_only(interop, guest_rdp_addr, guest_rdp_port) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let rendered_error = format!("{error:#}");
+                if std::time::Instant::now() >= deadline {
+                    break rendered_error;
+                }
+
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+    };
+
+    anyhow::bail!("xfreerdp auth-only smoke did not succeed before timeout: {last_error}");
+}
+
+#[cfg(unix)]
+fn run_xfreerdp_auth_only(
+    interop: &ExternalClientInteropConfig,
+    guest_rdp_addr: &str,
+    guest_rdp_port: u16,
+) -> anyhow::Result<()> {
+    let mut command = std::process::Command::new(&interop.xfreerdp_path);
+    command
+        .arg(format!("/v:{guest_rdp_addr}:{guest_rdp_port}"))
+        .arg(format!("/u:{}", interop.rdp_username))
+        .arg(format!("/p:{}", interop.rdp_password))
+        .arg("+auth-only")
+        .arg("/cert:ignore")
+        .arg("/timeout:10000");
+
+    if let Some(rdp_domain) = &interop.rdp_domain {
+        command.arg(format!("/d:{rdp_domain}"));
+    }
+
+    if let Some(rdp_security) = &interop.rdp_security {
+        command.arg(format!("/sec:{rdp_security}"));
+    }
+
+    let output = command
+        .output()
+        .map_err(|error| anyhow::anyhow!("spawn {}: {error}", interop.xfreerdp_path.display()))?;
+
+    anyhow::ensure!(
+        output.status.success(),
+        "xfreerdp exited with status {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(())
 }
 
 #[cfg(unix)]
