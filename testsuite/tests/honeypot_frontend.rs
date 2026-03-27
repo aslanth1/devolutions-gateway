@@ -29,9 +29,9 @@ const HONEYPOT_STREAM_READ_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1
 
 #[derive(Clone)]
 struct MockProxyState {
-    bootstrap: BootstrapResponse,
-    events_body: String,
-    stream_tokens: HashMap<String, StreamTokenResponse>,
+    bootstrap: Arc<Mutex<BootstrapResponse>>,
+    events_body: Arc<Mutex<String>>,
+    stream_tokens: Arc<Mutex<HashMap<String, StreamTokenResponse>>>,
     observed_tokens: Arc<Mutex<Vec<String>>>,
     terminated_sessions: Arc<Mutex<Vec<String>>>,
     quarantined_sessions: Arc<Mutex<Vec<String>>>,
@@ -280,6 +280,213 @@ async fn frontend_events_route_proxies_proxy_sse() {
     assert!(headers.contains("text/event-stream"), "{headers}");
     assert!(body.contains("event: session.started"));
     assert!(body.contains("global_cursor\":\"7\""));
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_stream_lifecycle_promotes_live_tile_and_removes_it_after_recycle() {
+    let session_id = Uuid::new_v4().to_string();
+    let stream_id = "stream-lifecycle".to_owned();
+    let stream_endpoint = format!("/jet/honeypot/session/{session_id}/stream?stream_id={stream_id}");
+    let token_path = authed_path(
+        format!("/session/{session_id}").as_str(),
+        HONEYPOT_STREAM_READ_SCOPE_TOKEN,
+    );
+
+    let mut stream_tokens = HashMap::new();
+    stream_tokens.insert(
+        session_id.clone(),
+        StreamTokenResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "stream-token-lifecycle".to_owned(),
+            session_id: session_id.clone(),
+            vm_lease_id: "lease-lifecycle".to_owned(),
+            stream_id: stream_id.clone(),
+            stream_endpoint: stream_endpoint.clone(),
+            transport: StreamTransport::Websocket,
+            issued_at: "2026-03-26T12:00:00Z".to_owned(),
+            expires_at: "2026-03-26T12:05:00Z".to_owned(),
+        },
+    );
+
+    let state = mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-lifecycle-empty".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "30".to_owned(),
+            sessions: Vec::new(),
+        },
+        "id: 31\nevent: session.stream.ready\ndata: {\"event_kind\":\"session.stream.ready\",\"session_id\":\"pending\",\"global_cursor\":\"31\"}\n\n"
+            .to_owned(),
+        stream_tokens,
+    );
+    let lifecycle_state = state.clone();
+
+    let (
+        proxy_addr,
+        proxy_handle,
+        observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(state).await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let (status_line, _headers, body) = read_http_response(port, &authed_path("/", HONEYPOT_WATCH_SCOPE_TOKEN))
+        .await
+        .expect("read initial dashboard");
+    let body = String::from_utf8(body).expect("decode initial dashboard");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("No live sessions are visible yet."), "{body}");
+    assert!(!body.contains(&session_id), "{body}");
+
+    set_bootstrap(
+        &lifecycle_state,
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-lifecycle-live".to_owned(),
+            generated_at: "2026-03-26T12:00:30Z".to_owned(),
+            replay_cursor: "31".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: session_id.clone(),
+                vm_lease_id: Some("lease-lifecycle".to_owned()),
+                state: SessionState::Ready,
+                last_event_id: "event-lifecycle-ready".to_owned(),
+                last_session_seq: 3,
+                stream_state: StreamState::Ready,
+                stream_preview: Some(StreamPreview {
+                    stream_id: stream_id.clone(),
+                    transport: StreamTransport::Websocket,
+                    stream_endpoint: stream_endpoint.clone(),
+                    token_expires_at: "2026-03-26T12:05:00Z".to_owned(),
+                }),
+            }],
+        },
+    )
+    .await;
+    set_events_body(
+        &lifecycle_state,
+        format!(
+            "id: 31\nevent: session.stream.ready\ndata: {{\"event_kind\":\"session.stream.ready\",\"session_id\":\"{session_id}\",\"global_cursor\":\"31\"}}\n\n"
+        ),
+    )
+    .await;
+
+    let (status_line, _headers, body) = read_http_response(port, &authed_path("/", HONEYPOT_WATCH_SCOPE_TOKEN))
+        .await
+        .expect("read live dashboard");
+    let body = String::from_utf8(body).expect("decode live dashboard");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains(&session_id), "{body}");
+    assert!(body.contains(&stream_id), "{body}");
+    assert!(body.contains("session-tile-"), "{body}");
+
+    let (events_status, events_headers, events_body) =
+        read_http_response(port, &authed_path("/events?cursor=30", HONEYPOT_WATCH_SCOPE_TOKEN))
+            .await
+            .expect("read live event stream");
+    let events_body = String::from_utf8(events_body).expect("decode live events");
+
+    assert!(events_status.contains("200"), "{events_status}");
+    assert!(events_headers.contains("text/event-stream"), "{events_headers}");
+    assert!(events_body.contains("event: session.stream.ready"), "{events_body}");
+    assert!(events_body.contains(&session_id), "{events_body}");
+
+    let (status_line, _headers, body) = read_http_response(port, &token_path)
+        .await
+        .expect("read live focus fragment");
+    let body = String::from_utf8(body).expect("decode live focus fragment");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("<iframe"), "{body}");
+    assert!(body.contains(&stream_endpoint), "{body}");
+    assert!(body.contains("Refresh reconnects near the live tail"), "{body}");
+
+    set_bootstrap(
+        &lifecycle_state,
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-lifecycle-recycled".to_owned(),
+            generated_at: "2026-03-26T12:01:00Z".to_owned(),
+            replay_cursor: "32".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: session_id.clone(),
+                vm_lease_id: Some("lease-lifecycle".to_owned()),
+                state: SessionState::Recycled,
+                last_event_id: "event-lifecycle-recycled".to_owned(),
+                last_session_seq: 4,
+                stream_state: StreamState::Failed,
+                stream_preview: None,
+            }],
+        },
+    )
+    .await;
+    set_events_body(
+        &lifecycle_state,
+        format!(
+            "id: 32\nevent: host.recycled\ndata: {{\"event_kind\":\"host.recycled\",\"session_id\":\"{session_id}\",\"global_cursor\":\"32\"}}\n\n"
+        ),
+    )
+    .await;
+
+    let (events_status, _events_headers, events_body) =
+        read_http_response(port, &authed_path("/events?cursor=31", HONEYPOT_WATCH_SCOPE_TOKEN))
+            .await
+            .expect("read recycle event stream");
+    let events_body = String::from_utf8(events_body).expect("decode recycle events");
+
+    assert!(events_status.contains("200"), "{events_status}");
+    assert!(events_body.contains("event: host.recycled"), "{events_body}");
+    assert!(events_body.contains(&session_id), "{events_body}");
+
+    let (status_line, _headers, body) = read_http_response(port, &authed_path("/", HONEYPOT_WATCH_SCOPE_TOKEN))
+        .await
+        .expect("read recycled dashboard");
+    let body = String::from_utf8(body).expect("decode recycled dashboard");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(!body.contains(&session_id), "{body}");
+    assert!(body.contains("No live sessions are visible yet."), "{body}");
+
+    let tile_path = authed_path(format!("/tile/{session_id}").as_str(), HONEYPOT_WATCH_SCOPE_TOKEN);
+    let (tile_status, _headers, _body) = read_http_response(port, &tile_path).await.expect("read recycled tile");
+    assert!(tile_status.contains("404"), "{tile_status}");
+
+    let (focus_status, _headers, _body) = read_http_response(port, &token_path)
+        .await
+        .expect("read recycled focus");
+    assert!(focus_status.contains("404"), "{focus_status}");
+
+    let observed_tokens = observed_tokens.lock().await.clone();
+    assert!(
+        observed_tokens
+            .iter()
+            .any(|entry| entry == &format!("STREAM_TOKEN:{session_id}"))
+    );
 
     let _ = child.start_kill();
     let _ = child.wait().await;
@@ -1366,14 +1573,22 @@ fn mock_state(
     stream_tokens: HashMap<String, StreamTokenResponse>,
 ) -> MockProxyState {
     MockProxyState {
-        bootstrap,
-        events_body,
-        stream_tokens,
+        bootstrap: Arc::new(Mutex::new(bootstrap)),
+        events_body: Arc::new(Mutex::new(events_body)),
+        stream_tokens: Arc::new(Mutex::new(stream_tokens)),
         observed_tokens: Arc::new(Mutex::new(Vec::new())),
         terminated_sessions: Arc::new(Mutex::new(Vec::new())),
         quarantined_sessions: Arc::new(Mutex::new(Vec::new())),
         system_terminate_requests: Arc::new(Mutex::new(0)),
     }
+}
+
+async fn set_bootstrap(state: &MockProxyState, bootstrap: BootstrapResponse) {
+    *state.bootstrap.lock().await = bootstrap;
+}
+
+async fn set_events_body(state: &MockProxyState, events_body: String) {
+    *state.events_body.lock().await = events_body;
 }
 
 fn authed_path(path: &str, token: &str) -> String {
@@ -1383,13 +1598,14 @@ fn authed_path(path: &str, token: &str) -> String {
 
 async fn mock_bootstrap(State(state): State<MockProxyState>, headers: HeaderMap) -> Json<BootstrapResponse> {
     record_token(&state, &headers).await;
-    Json(state.bootstrap)
+    Json(state.bootstrap.lock().await.clone())
 }
 
 async fn mock_events(State(state): State<MockProxyState>, headers: HeaderMap) -> impl IntoResponse {
     record_token(&state, &headers).await;
 
-    let mut response = Response::new(Body::from(state.events_body));
+    let body = state.events_body.lock().await.clone();
+    let mut response = Response::new(Body::from(body));
     response.headers_mut().insert(
         axum::http::header::CONTENT_TYPE,
         HeaderValue::from_static("text/event-stream"),
@@ -1409,8 +1625,8 @@ async fn mock_stream_token(
         .await
         .push(format!("STREAM_TOKEN:{session_id}"));
 
-    match state.stream_tokens.get(&session_id) {
-        Some(response) => (StatusCode::OK, Json(response.clone())).into_response(),
+    match state.stream_tokens.lock().await.get(&session_id).cloned() {
+        Some(response) => (StatusCode::OK, Json(response)).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

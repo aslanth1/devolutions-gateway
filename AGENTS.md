@@ -609,7 +609,7 @@ Pass when: the test sees the session in `/jet/sessions`, receives the frontend b
 
 ### Milestone 5e: Frontend And Session Stream End-To-End Flows
 
-- [ ] Add a frontend stream lifecycle test.
+- [x] Add a frontend stream lifecycle test.
 Pass when: the backend announces a stream, the frontend opens a tile, fullscreen works, and disconnect or recycle removes the tile.
 
 - [ ] Add a recycle-and-cleanup test.
