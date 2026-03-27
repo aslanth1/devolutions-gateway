@@ -1,14 +1,14 @@
 use testsuite::honeypot_release::{
     HONEYPOT_COMPOSE_PATH, HONEYPOT_CONTROL_PLANE_CONFIG_PATH, HONEYPOT_CONTROL_PLANE_ENV_PATH,
     HONEYPOT_FRONTEND_CONFIG_PATH, HONEYPOT_FRONTEND_ENV_PATH, HONEYPOT_IMAGES_LOCK_PATH, HONEYPOT_PROXY_CONFIG_PATH,
-    HONEYPOT_PROXY_ENV_PATH, ImageSlot, ServiceSchemaVersions, ServiceVersionSelection, load_honeypot_images_lock,
-    repo_relative_path, validate_honeypot_compose_document, validate_honeypot_control_plane_compose_runtime_document,
-    validate_honeypot_control_plane_env_document, validate_honeypot_control_plane_runtime_contract,
-    validate_honeypot_frontend_compose_runtime_document, validate_honeypot_frontend_env_document,
-    validate_honeypot_frontend_runtime_contract, validate_honeypot_images_lock_document,
-    validate_honeypot_proxy_compose_runtime_document, validate_honeypot_proxy_env_document,
-    validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
-    validate_mixed_version_contract_compatibility,
+    HONEYPOT_PROXY_ENV_PATH, HoneypotService, ImageSlot, ServiceSchemaVersions, ServiceVersionSelection,
+    load_honeypot_images_lock, repo_relative_path, validate_honeypot_compose_document,
+    validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
+    validate_honeypot_control_plane_runtime_contract, validate_honeypot_frontend_compose_runtime_document,
+    validate_honeypot_frontend_env_document, validate_honeypot_frontend_runtime_contract,
+    validate_honeypot_images_lock_document, validate_honeypot_proxy_compose_runtime_document,
+    validate_honeypot_proxy_env_document, validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
+    validate_mixed_version_contract_compatibility, validate_restored_service_contract_compatibility,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
 
@@ -317,6 +317,140 @@ fn downgraded_service_contract_compatibility_rejects_schema_version_drift() {
     .expect_err("frontend/proxy schema mismatch must be rejected");
 
     assert!(format!("{error:#}").contains("frontend schema_version 2 is incompatible with proxy schema_version 1"));
+}
+
+#[test]
+fn restored_control_plane_contract_compatibility_is_allowed() {
+    let restored = validate_restored_service_contract_compatibility(
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Previous,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Current,
+        },
+        HoneypotService::ControlPlane,
+        ServiceSchemaVersions::default(),
+    )
+    .expect("restoring control-plane to current should stay contract-compatible");
+
+    assert_eq!(
+        restored,
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Current,
+        }
+    );
+}
+
+#[test]
+fn restored_proxy_contract_compatibility_is_allowed() {
+    let restored = validate_restored_service_contract_compatibility(
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Previous,
+            frontend: ImageSlot::Current,
+        },
+        HoneypotService::Proxy,
+        ServiceSchemaVersions::default(),
+    )
+    .expect("restoring proxy to current should stay contract-compatible");
+
+    assert_eq!(
+        restored,
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Current,
+        }
+    );
+}
+
+#[test]
+fn restored_frontend_contract_compatibility_is_allowed() {
+    let restored = validate_restored_service_contract_compatibility(
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Previous,
+        },
+        HoneypotService::Frontend,
+        ServiceSchemaVersions::default(),
+    )
+    .expect("restoring frontend to current should stay contract-compatible");
+
+    assert_eq!(
+        restored,
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Current,
+        }
+    );
+}
+
+#[test]
+fn restored_service_contract_compatibility_rejects_service_that_is_not_previous() {
+    let error = validate_restored_service_contract_compatibility(
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Current,
+        },
+        HoneypotService::Frontend,
+        ServiceSchemaVersions::default(),
+    )
+    .expect_err("restoring a current frontend should be rejected");
+
+    assert!(
+        format!("{error:#}").contains("frontend must be previous before restore validation"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn restored_service_contract_compatibility_rejects_unsupported_starting_point() {
+    let error = validate_restored_service_contract_compatibility(
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Previous,
+            proxy: ImageSlot::Previous,
+            frontend: ImageSlot::Current,
+        },
+        HoneypotService::Proxy,
+        ServiceSchemaVersions::default(),
+    )
+    .expect_err("restoring from an unsupported downgraded starting point must be rejected");
+
+    assert!(
+        format!("{error:#}").contains("supported downgraded starting point"),
+        "{error:#}"
+    );
+    assert!(
+        format!("{error:#}").contains("proxy previous requires control-plane current"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn restored_service_contract_compatibility_rejects_schema_version_drift() {
+    let error = validate_restored_service_contract_compatibility(
+        ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Previous,
+        },
+        HoneypotService::Frontend,
+        ServiceSchemaVersions {
+            control_plane: 1,
+            proxy: 1,
+            frontend: 2,
+        },
+    )
+    .expect_err("schema drift across a restore should be rejected");
+
+    assert!(
+        format!("{error:#}").contains("frontend schema_version 2 is incompatible with proxy schema_version 1"),
+        "{error:#}"
+    );
 }
 
 #[test]

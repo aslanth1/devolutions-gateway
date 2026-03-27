@@ -635,7 +635,7 @@ Pass when: a service rolled from `current` to `previous` can continue exchanging
 - [ ] Add a restored-service rejoin health-recovery test.
 Pass when: a service restored from `previous` back to `current` can rejoin its peers and recover its health without manual data repair.
 
-- [ ] Add a restored-service contract-compatibility test.
+- [x] Add a restored-service contract-compatibility test.
 Pass when: a service restored from `previous` back to `current` can continue exchanging versioned contracts with its peers without manual data repair.
 
 ### Milestone 5g: Negative, Cleanup, And Host Isolation Checks

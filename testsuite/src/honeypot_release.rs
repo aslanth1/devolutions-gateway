@@ -101,6 +101,13 @@ pub enum ImageSlot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoneypotService {
+    ControlPlane,
+    Proxy,
+    Frontend,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceVersionSelection {
     pub control_plane: ImageSlot,
     pub proxy: ImageSlot,
@@ -294,6 +301,27 @@ pub fn validate_mixed_version_contract_compatibility(
     }
 
     Ok(())
+}
+
+pub fn validate_restored_service_contract_compatibility(
+    selection_before_restore: ServiceVersionSelection,
+    restored_service: HoneypotService,
+    schema_versions: ServiceSchemaVersions,
+) -> anyhow::Result<ServiceVersionSelection> {
+    validate_mixed_version_contract_compatibility(selection_before_restore, schema_versions)
+        .context("restored-service compatibility requires a supported downgraded starting point")?;
+
+    anyhow::ensure!(
+        restored_service.slot(selection_before_restore) == ImageSlot::Previous,
+        "{} must be previous before restore validation",
+        restored_service.name(),
+    );
+
+    let restored_selection = restored_service.with_slot(selection_before_restore, ImageSlot::Current);
+    validate_mixed_version_contract_compatibility(restored_selection, schema_versions)
+        .context("restored-service compatibility requires a supported restored target state")?;
+
+    Ok(restored_selection)
 }
 
 pub fn validate_honeypot_control_plane_runtime_contract(
@@ -592,6 +620,41 @@ fn current_image_ref(entry: &HoneypotImageLockEntry) -> String {
         image = entry.image,
         digest = entry.current.digest
     )
+}
+
+impl HoneypotService {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ControlPlane => "control-plane",
+            Self::Proxy => "proxy",
+            Self::Frontend => "frontend",
+        }
+    }
+
+    fn slot(self, selection: ServiceVersionSelection) -> ImageSlot {
+        match self {
+            Self::ControlPlane => selection.control_plane,
+            Self::Proxy => selection.proxy,
+            Self::Frontend => selection.frontend,
+        }
+    }
+
+    fn with_slot(self, selection: ServiceVersionSelection, slot: ImageSlot) -> ServiceVersionSelection {
+        match self {
+            Self::ControlPlane => ServiceVersionSelection {
+                control_plane: slot,
+                ..selection
+            },
+            Self::Proxy => ServiceVersionSelection {
+                proxy: slot,
+                ..selection
+            },
+            Self::Frontend => ServiceVersionSelection {
+                frontend: slot,
+                ..selection
+            },
+        }
+    }
 }
 
 fn canonical_image_name(service: &str) -> String {
