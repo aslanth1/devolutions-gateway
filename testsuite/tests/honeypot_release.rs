@@ -1574,6 +1574,117 @@ async fn proxy_rollback_drill_restores_the_stack_through_images_lock_selection()
     }
 }
 
+#[tokio::test]
+async fn frontend_rollback_drill_restores_the_stack_through_images_lock_selection() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping frontend rollback host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let project_name = format!("dgw-honeypot-rollback-{}", Uuid::new_v4().simple());
+    let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build control-plane frontend rollback image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image)
+            .context("build proxy frontend rollback image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image)
+            .context("build current frontend rollback image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_previous_image)
+            .context("build previous frontend rollback image")?;
+
+        fixture
+            .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+            .context("write compose selection for current/current/current")?;
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "docker compose up failed for current/current/current\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should be healthy before frontend rollback")?;
+
+        let rolled_back_selection = ServiceVersionSelection {
+            control_plane: ImageSlot::Current,
+            proxy: ImageSlot::Current,
+            frontend: ImageSlot::Previous,
+        };
+        fixture
+            .write_compose_selection(&resources, &lockfile, rolled_back_selection)
+            .context("write compose selection for current/current/previous")?;
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "docker compose up failed for current/current/previous\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should stay healthy after frontend rollback")?;
+
+        fixture
+            .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
+            .context("write compose selection for restored frontend current slot")?;
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| {
+            format!(
+                "docker compose up failed when restoring frontend current\n{}",
+                docker_compose_logs(&fixture.compose_path, &project_name)
+            )
+        })?;
+        assert_compose_stack_ready(&fixture.compose_path, &project_name)
+            .context("stack should recover after restoring frontend current")?;
+
+        Ok(())
+    }
+    .await;
+
+    let cleanup_errors = cleanup_compose_project(&fixture.compose_path, &project_name, &resources);
+
+    match (result, cleanup_errors.is_empty()) {
+        (Ok(()), true) => {}
+        (Ok(()), false) => panic!("frontend rollback cleanup failed: {}", cleanup_errors.join("; ")),
+        (Err(test_error), true) => panic!("{test_error:#}"),
+        (Err(test_error), false) => panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; ")),
+    }
+}
+
 #[test]
 fn downgraded_control_plane_contract_compatibility_is_allowed() {
     validate_mixed_version_contract_compatibility(

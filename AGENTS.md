@@ -623,7 +623,7 @@ Pass when: Rust tests can swap `control-plane` from `current` to `previous`, con
 - [x] Add a `proxy` rollback drill test.
 Pass when: Rust tests can swap `proxy` from `current` to `previous`, confirm the stack still starts and serves traffic, then restore `previous` back to `current` using `honeypot/docker/images.lock`.
 
-- [ ] Add a `frontend` rollback drill test.
+- [x] Add a `frontend` rollback drill test.
 Pass when: Rust tests can swap `frontend` from `current` to `previous`, confirm the stack still starts and serves traffic, then restore `previous` back to `current` using `honeypot/docker/images.lock`.
 
 - [ ] Add a downgraded-service rejoin health-recovery test.
