@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -13,8 +14,8 @@ use testsuite::honeypot_release::{
     HONEYPOT_PROXY_ENV_PATH, HoneypotImagesLock, HoneypotService, ImageSlot, ServiceSchemaVersions,
     ServiceVersionSelection, build_honeypot_service_image, create_docker_network, docker_logs,
     load_honeypot_images_lock, remove_docker_container_if_exists, remove_docker_image_if_exists,
-    remove_docker_network_if_exists, repo_relative_path, resolve_honeypot_images_for_selection, run_docker_container,
-    validate_honeypot_compose_document, validate_honeypot_compose_document_for_selection,
+    remove_docker_network_if_exists, repo_relative_path, resolve_honeypot_images_for_selection, run_docker_compose,
+    run_docker_container, validate_honeypot_compose_document, validate_honeypot_compose_document_for_selection,
     validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
     validate_honeypot_control_plane_runtime_contract, validate_honeypot_frontend_compose_runtime_document,
     validate_honeypot_frontend_env_document, validate_honeypot_frontend_runtime_contract,
@@ -279,6 +280,161 @@ impl DockerSmokeResources {
     }
 }
 
+struct DockerComposeFixture {
+    _root: tempfile::TempDir,
+    compose_path: PathBuf,
+}
+
+impl DockerComposeFixture {
+    fn create(resources: &DockerSmokeResources, lockfile: &HoneypotImagesLock) -> anyhow::Result<Self> {
+        let root = tempfile::tempdir().context("create docker compose fixture root")?;
+        let env_dir = root.path().join("env");
+        let control_plane_config_dir = root.path().join("config/control-plane");
+        let proxy_config_dir = root.path().join("config/proxy");
+        let frontend_config_dir = root.path().join("config/frontend");
+        let control_plane_secret_dir = root.path().join("secrets/control-plane");
+        let proxy_secret_dir = root.path().join("secrets/proxy");
+        let frontend_secret_dir = root.path().join("secrets/frontend");
+        let image_store_dir = root.path().join("srv/honeypot/images");
+        let lease_store_dir = root.path().join("srv/honeypot/leases");
+        let quarantine_store_dir = root.path().join("srv/honeypot/quarantine");
+        let qmp_dir = root.path().join("srv/honeypot/run/qmp");
+        let qga_dir = root.path().join("srv/honeypot/run/qga");
+
+        for dir in [
+            &env_dir,
+            &control_plane_config_dir,
+            &proxy_config_dir,
+            &frontend_config_dir,
+            &control_plane_secret_dir,
+            &proxy_secret_dir,
+            &frontend_secret_dir,
+            &image_store_dir,
+            &lease_store_dir,
+            &quarantine_store_dir,
+            &qmp_dir,
+            &qga_dir,
+        ] {
+            std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+        }
+
+        std::fs::write(
+            env_dir.join("control-plane.env"),
+            "HONEYPOT_CONTROL_PLANE_CONFIG=/etc/honeypot/control-plane/config.toml\n",
+        )
+        .context("write compose control-plane env file")?;
+        std::fs::write(env_dir.join("proxy.env"), "DGATEWAY_CONFIG_PATH=/etc/honeypot/proxy\n")
+            .context("write compose proxy env file")?;
+        std::fs::write(
+            env_dir.join("frontend.env"),
+            "HONEYPOT_FRONTEND_CONFIG_PATH=/etc/honeypot/frontend/config.toml\n",
+        )
+        .context("write compose frontend env file")?;
+
+        write_honeypot_control_plane_config(
+            &control_plane_config_dir.join("config.toml"),
+            &HoneypotControlPlaneTestConfig::builder()
+                .bind_addr("0.0.0.0:8080")
+                .service_token_validation_disabled(true)
+                .backend_credentials_file_path("/run/secrets/honeypot/control-plane/backend-credentials.json")
+                .data_dir("/var/lib/honeypot/control-plane")
+                .image_store("/var/lib/honeypot/images")
+                .manifest_dir("/var/lib/honeypot/images/manifests")
+                .lease_store("/var/lib/honeypot/leases")
+                .quarantine_store("/var/lib/honeypot/quarantine")
+                .qmp_dir("/run/honeypot/qmp")
+                .qga_dir(PathBuf::from("/run/honeypot/qga"))
+                .secret_dir("/run/secrets/honeypot/control-plane")
+                .kvm_path("/dev/kvm")
+                .enable_guest_agent(true)
+                .lifecycle_driver("process")
+                .stop_timeout_secs(5)
+                .qemu_binary_path("/usr/bin/qemu-system-x86_64")
+                .qemu_machine_type("q35")
+                .qemu_cpu_model("host")
+                .qemu_vcpu_count(4)
+                .qemu_memory_mib(8192)
+                .qemu_netdev_id("net0")
+                .build(),
+        )
+        .context("write compose control-plane config")?;
+        write_proxy_smoke_config(&proxy_config_dir).context("write compose proxy config")?;
+        write_honeypot_frontend_config(
+            &frontend_config_dir.join("config.toml"),
+            &HoneypotFrontendTestConfig::builder()
+                .bind_addr("0.0.0.0:8080")
+                .proxy_base_url("http://proxy:8080/")
+                .proxy_bearer_token(Some(honeypot_scope_token("gateway.honeypot.watch")))
+                .operator_token_validation_disabled(true)
+                .title("Observation Deck")
+                .build(),
+        )
+        .context("write compose frontend config")?;
+
+        std::fs::write(control_plane_secret_dir.join("backend-credentials.json"), "{}")
+            .context("write compose control-plane backend credentials")?;
+        std::fs::write(
+            proxy_secret_dir.join("control-plane-service-token"),
+            format!("{}\n", honeypot_scope_token("gateway.honeypot.control-plane")),
+        )
+        .context("write compose proxy control-plane token")?;
+        std::fs::write(proxy_secret_dir.join("backend-credentials.json"), "{}")
+            .context("write compose proxy backend credentials")?;
+
+        write_trusted_image_fixture(&image_store_dir)?;
+
+        let mut compose_data = std::fs::read_to_string(repo_relative_path(HONEYPOT_COMPOSE_PATH))
+            .context("read checked-in compose file")?;
+        validate_honeypot_compose_document(&compose_data, lockfile)
+            .context("checked-in compose must satisfy the pinned lockfile contract before runtime bring-up")?;
+
+        for (service, image) in [
+            ("control-plane", resources.control_plane_image.as_str()),
+            ("proxy", resources.proxy_image.as_str()),
+            ("frontend", resources.frontend_image.as_str()),
+        ] {
+            compose_data = rewrite_compose_image_ref(&compose_data, service, image, true, true);
+        }
+
+        for (from, to) in [
+            (
+                "/srv/honeypot/images:/var/lib/honeypot/images:rw",
+                format!("{}:/var/lib/honeypot/images:rw", image_store_dir.display()),
+            ),
+            (
+                "/srv/honeypot/leases:/var/lib/honeypot/leases:rw",
+                format!("{}:/var/lib/honeypot/leases:rw", lease_store_dir.display()),
+            ),
+            (
+                "/srv/honeypot/quarantine:/var/lib/honeypot/quarantine:rw",
+                format!("{}:/var/lib/honeypot/quarantine:rw", quarantine_store_dir.display()),
+            ),
+            (
+                "/srv/honeypot/run/qmp:/run/honeypot/qmp:rw",
+                format!("{}:/run/honeypot/qmp:rw", qmp_dir.display()),
+            ),
+            (
+                "/srv/honeypot/run/qga:/run/honeypot/qga:rw",
+                format!("{}:/run/honeypot/qga:rw", qga_dir.display()),
+            ),
+        ] {
+            compose_data = compose_data.replace(from, &to);
+        }
+
+        compose_data = compose_data.replace("\"0.0.0.0:8443:8443\"", "\"127.0.0.1::8443\"");
+        compose_data = compose_data.replace("\"127.0.0.1:8080:8080\"", "\"127.0.0.1::8080\"");
+
+        let compose_path = root.path().join("compose.yaml");
+        std::fs::write(&compose_path, compose_data)
+            .with_context(|| format!("write executable compose fixture at {}", compose_path.display()))?;
+
+        Ok(Self {
+            _root: root,
+            compose_path,
+        })
+    }
+}
+
 fn write_trusted_image_fixture(image_store: &Path) -> anyhow::Result<()> {
     let manifest_dir = image_store.join("manifests");
     std::fs::create_dir_all(&manifest_dir).with_context(|| format!("create {}", manifest_dir.display()))?;
@@ -437,6 +593,62 @@ where
 
         sleep(DOCKER_SMOKE_POLL_INTERVAL).await;
     }
+}
+
+fn docker_filtered_names(resource: &str, label: &str) -> anyhow::Result<Vec<String>> {
+    let (subcommand, format_flag) = match resource {
+        "container" => ("ps", "{{.Names}}"),
+        "network" => ("network ls", "{{.Name}}"),
+        "volume" => ("volume ls", "{{.Name}}"),
+        _ => anyhow::bail!("unsupported docker resource kind {resource}"),
+    };
+    let mut parts = subcommand.split_whitespace().collect::<Vec<_>>();
+    let command = parts.remove(0);
+    let mut args = parts.into_iter().map(ToOwned::to_owned).collect::<Vec<_>>();
+    if resource == "container" {
+        args.push("-a".to_owned());
+    }
+    args.push("--filter".to_owned());
+    args.push(format!("label={label}"));
+    args.push("--format".to_owned());
+    args.push(format_flag.to_owned());
+
+    let output = Command::new("docker")
+        .arg(command)
+        .args(&args)
+        .output()
+        .with_context(|| format!("list docker {resource}s for label {label}"))?;
+    anyhow::ensure!(
+        output.status.success(),
+        "docker {command} {} failed: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn docker_compose_json(
+    compose_path: &Path,
+    project_name: &str,
+    service: &str,
+    curl_args: &[&str],
+) -> anyhow::Result<Value> {
+    let mut args = vec![
+        "exec".to_owned(),
+        "-T".to_owned(),
+        service.to_owned(),
+        "curl".to_owned(),
+    ];
+    args.extend(curl_args.iter().map(|arg| (*arg).to_owned()));
+    let output = run_docker_compose(compose_path, project_name, &args)?;
+    serde_json::from_slice(&output.stdout)
+        .with_context(|| format!("decode compose exec JSON response for service {service}"))
 }
 
 #[test]
@@ -896,6 +1108,153 @@ async fn docker_host_smoke_builds_and_starts_three_service_images() {
         (Err(test_error), Err(cleanup_error)) => {
             panic!("{test_error:#}\ncleanup error: {cleanup_error:#}")
         }
+    }
+}
+
+#[tokio::test]
+async fn compose_bring_up_starts_the_three_service_stack_and_tears_it_down_cleanly() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping compose bring-up host-smoke test: {error:#}");
+        return;
+    }
+
+    let lockfile =
+        load_honeypot_images_lock(&repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH)).expect("load on-disk lockfile");
+    let resources = DockerSmokeResources::new();
+    let project_name = format!("dgw-honeypot-compose-{}", Uuid::new_v4().simple());
+    let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
+
+    let compose_logs = || {
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &["logs".to_owned(), "--no-color".to_owned()],
+        )
+        .map(|output| {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            match (stdout.is_empty(), stderr.is_empty()) {
+                (false, false) => format!("{stdout}\n{stderr}"),
+                (false, true) => stdout,
+                (true, false) => stderr,
+                (true, true) => String::new(),
+            }
+        })
+        .unwrap_or_else(|error| format!("failed to read compose logs: {error:#}"))
+    };
+
+    let result: anyhow::Result<()> = async {
+        build_honeypot_service_image("control-plane", &resources.control_plane_image)
+            .context("build control-plane compose image")?;
+        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy compose image")?;
+        build_honeypot_service_image("frontend", &resources.frontend_image).context("build frontend compose image")?;
+
+        run_docker_compose(
+            &fixture.compose_path,
+            &project_name,
+            &[
+                "up".to_owned(),
+                "-d".to_owned(),
+                "--wait".to_owned(),
+                "--no-build".to_owned(),
+                "--remove-orphans".to_owned(),
+            ],
+        )
+        .with_context(|| format!("docker compose up failed\n{}", compose_logs()))?;
+
+        let control_plane_health_auth = format!(
+            "Authorization: Bearer {}",
+            honeypot_scope_token("gateway.honeypot.control-plane")
+        );
+        let control_plane_health = docker_compose_json(
+            &fixture.compose_path,
+            &project_name,
+            "control-plane",
+            &[
+                "-fsS",
+                "-H",
+                control_plane_health_auth.as_str(),
+                "http://127.0.0.1:8080/api/v1/health",
+            ],
+        )
+        .with_context(|| format!("read control-plane compose health\n{}", compose_logs()))?;
+        assert_eq!(control_plane_health["service_state"], "ready");
+        assert_eq!(control_plane_health["trusted_image_count"], 1);
+        assert_eq!(control_plane_health["kvm_available"], true);
+
+        let proxy_health = docker_compose_json(
+            &fixture.compose_path,
+            &project_name,
+            "proxy",
+            &[
+                "-fsS",
+                "-H",
+                "Accept: application/json",
+                "http://127.0.0.1:8080/jet/health",
+            ],
+        )
+        .with_context(|| format!("read proxy compose health\n{}", compose_logs()))?;
+        assert_eq!(proxy_health["honeypot"]["service_state"], "ready");
+        assert_eq!(proxy_health["honeypot"]["control_plane_reachable"], true);
+
+        let frontend_health = docker_compose_json(
+            &fixture.compose_path,
+            &project_name,
+            "frontend",
+            &["-fsS", "http://127.0.0.1:8080/health"],
+        )
+        .with_context(|| format!("read frontend compose health\n{}", compose_logs()))?;
+        assert_eq!(frontend_health["service_state"], "ready");
+        assert_eq!(frontend_health["proxy_bootstrap_reachable"], true);
+
+        Ok(())
+    }
+    .await;
+
+    let down_result = run_docker_compose(
+        &fixture.compose_path,
+        &project_name,
+        &[
+            "down".to_owned(),
+            "-v".to_owned(),
+            "--remove-orphans".to_owned(),
+            "--timeout".to_owned(),
+            "10".to_owned(),
+        ],
+    );
+    let mut cleanup_errors = Vec::new();
+    if let Err(error) = down_result {
+        cleanup_errors.push(format!("docker compose down: {error:#}"));
+    }
+
+    let project_label = format!("com.docker.compose.project={project_name}");
+    for (resource, label) in [
+        ("container", "containers"),
+        ("network", "networks"),
+        ("volume", "volumes"),
+    ] {
+        match docker_filtered_names(resource, &project_label) {
+            Ok(names) if names.is_empty() => {}
+            Ok(names) => cleanup_errors.push(format!("leftover {label}: {}", names.join(", "))),
+            Err(error) => cleanup_errors.push(format!("list {label}: {error:#}")),
+        }
+    }
+
+    for image in [
+        &resources.frontend_image,
+        &resources.proxy_image,
+        &resources.control_plane_image,
+    ] {
+        if let Err(error) = remove_docker_image_if_exists(image) {
+            cleanup_errors.push(format!("remove image {image}: {error:#}"));
+        }
+    }
+
+    match (result, cleanup_errors.is_empty()) {
+        (Ok(()), true) => {}
+        (Ok(()), false) => panic!("compose bring-up cleanup failed: {}", cleanup_errors.join("; ")),
+        (Err(test_error), true) => panic!("{test_error:#}"),
+        (Err(test_error), false) => panic!("{test_error:#}\ncleanup error: {}", cleanup_errors.join("; ")),
     }
 }
 

@@ -109,6 +109,7 @@ It must not be read as permission to add a fourth runtime service, a parallel co
 
 - `control-plane` exposes only its internal HTTPS API on `honeypot-control`.
 - `control-plane` health is checked through `GET /api/v1/health` and must report `ready`, `degraded`, or `unsafe` according to [contracts.md](contracts.md).
+- The compose healthcheck for `control-plane` must send the documented internal `gateway.honeypot.control-plane` bearer token shape, even when signature validation is disabled for local bring-up.
 - `proxy` exposes its public listener on `honeypot-edge` and its internal API surfaces on `honeypot-control`.
 - `proxy` health is checked through `GET /jet/health`.
 - `proxy` keeps the legacy plaintext `/jet/health` body for non-JSON callers, but `Accept: application/json` must return honeypot-aware readiness data whenever honeypot mode is enabled.

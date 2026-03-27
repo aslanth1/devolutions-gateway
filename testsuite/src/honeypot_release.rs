@@ -163,6 +163,20 @@ struct HoneypotComposeService {
     networks: Vec<String>,
     #[serde(default)]
     ports: Vec<String>,
+    #[serde(default)]
+    healthcheck: Option<HoneypotComposeHealthcheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct HoneypotComposeHealthcheck {
+    #[serde(default)]
+    test: Vec<String>,
+}
+
+impl HoneypotComposeHealthcheck {
+    fn contains_fragment(&self, expected: &str) -> bool {
+        self.test.iter().any(|part| part.contains(expected))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -408,6 +422,33 @@ pub fn docker_logs(name: &str) -> anyhow::Result<String> {
     })
 }
 
+pub fn run_docker_compose(
+    compose_path: &Path,
+    project_name: &str,
+    args: &[String],
+) -> anyhow::Result<std::process::Output> {
+    let compose_dir = compose_path
+        .parent()
+        .with_context(|| format!("compose file {} must have a parent directory", compose_path.display()))?;
+    let mut docker_args = vec![
+        "compose".to_owned(),
+        "--file".to_owned(),
+        compose_path.display().to_string(),
+        "--project-name".to_owned(),
+        project_name.to_owned(),
+        "--project-directory".to_owned(),
+        compose_dir.display().to_string(),
+    ];
+    docker_args.extend(args.iter().cloned());
+
+    run_docker_command_owned(&docker_args).with_context(|| {
+        format!(
+            "run docker compose for project {project_name} with {}",
+            compose_path.display()
+        )
+    })
+}
+
 pub fn validate_mixed_version_contract_compatibility(
     selection: ServiceVersionSelection,
     schema_versions: ServiceSchemaVersions,
@@ -561,6 +602,16 @@ pub fn validate_honeypot_control_plane_compose_runtime_document(data: &str) -> a
         service.networks == [CONTROL_PLANE_NETWORK],
         "compose service control-plane must stay only on the {CONTROL_PLANE_NETWORK} network",
     );
+    if let Some(healthcheck) = service.healthcheck.as_ref() {
+        anyhow::ensure!(
+            healthcheck.contains_fragment("/api/v1/health"),
+            "compose service control-plane healthcheck must probe /api/v1/health",
+        );
+        anyhow::ensure!(
+            healthcheck.contains_fragment("Authorization: Bearer"),
+            "compose service control-plane healthcheck must send an internal bearer token",
+        );
+    }
     anyhow::ensure!(
         service.ports.is_empty(),
         "compose service control-plane must not publish host ports",
@@ -614,6 +665,12 @@ pub fn validate_honeypot_proxy_compose_runtime_document(data: &str) -> anyhow::R
         service.volumes.iter().any(|volume| volume == PROXY_SECRET_MOUNT),
         "compose service proxy must keep the secret mount separate at {PROXY_SECRET_MOUNT}",
     );
+    if let Some(healthcheck) = service.healthcheck.as_ref() {
+        anyhow::ensure!(
+            healthcheck.contains_fragment("/jet/health"),
+            "compose service proxy healthcheck must probe /jet/health",
+        );
+    }
     ensure_service_omits_control_socket_mounts("proxy", service)?;
 
     Ok(())
@@ -656,6 +713,12 @@ pub fn validate_honeypot_frontend_compose_runtime_document(data: &str) -> anyhow
         service.volumes.iter().any(|volume| volume == FRONTEND_SECRET_MOUNT),
         "compose service frontend must keep the secret mount separate at {FRONTEND_SECRET_MOUNT}",
     );
+    if let Some(healthcheck) = service.healthcheck.as_ref() {
+        anyhow::ensure!(
+            healthcheck.contains_fragment("/health"),
+            "compose service frontend healthcheck must probe /health",
+        );
+    }
     ensure_service_omits_control_socket_mounts("frontend", service)?;
 
     Ok(())
