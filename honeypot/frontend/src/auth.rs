@@ -31,6 +31,7 @@ pub(super) enum RequiredScope {
     StreamRead,
     SessionKill,
     SystemKill,
+    CommandPropose,
 }
 
 impl RequiredScope {
@@ -40,6 +41,7 @@ impl RequiredScope {
             Self::StreamRead => "gateway.honeypot.stream.read",
             Self::SessionKill => "gateway.honeypot.session.kill",
             Self::SystemKill => "gateway.honeypot.system.kill",
+            Self::CommandPropose => "gateway.honeypot.command.propose",
         }
     }
 }
@@ -252,5 +254,6 @@ fn scope_allows(required: RequiredScope, actual: &AccessScope) -> bool {
             | (RequiredScope::SessionKill, AccessScope::HoneypotSessionKill)
             | (RequiredScope::SessionKill, AccessScope::HoneypotSystemKill)
             | (RequiredScope::SystemKill, AccessScope::HoneypotSystemKill)
+            | (RequiredScope::CommandPropose, AccessScope::HoneypotCommandPropose)
     )
 }

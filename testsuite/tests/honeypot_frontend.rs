@@ -11,7 +11,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::prelude::*;
 use honeypot_contracts::events::{SessionState, StreamState};
-use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
+use honeypot_contracts::frontend::{
+    BootstrapResponse, BootstrapSession, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
+};
 use honeypot_contracts::stream::{StreamPreview, StreamTokenResponse, StreamTransport};
 use serde_json::Value;
 use testsuite::cli::wait_for_tcp_port;
@@ -26,6 +28,7 @@ use uuid::Uuid;
 const FRONTEND_PROXY_TOKEN: &str = "frontend-proxy-token";
 const HONEYPOT_WATCH_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwOTkiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Qud2F0Y2gifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 const HONEYPOT_STREAM_READ_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwOTkiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Quc3RyZWFtLnJlYWQifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
+const HONEYPOT_COMMAND_PROPOSE_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAxMDEiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3QuY29tbWFuZC5wcm9wb3NlIn0.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 
 #[derive(Clone)]
 struct MockProxyState {
@@ -892,6 +895,170 @@ async fn frontend_focus_fragment_uses_only_the_requested_sessions_stream_binding
 }
 
 #[tokio::test]
+async fn frontend_command_proposal_route_records_and_defers_without_execution() {
+    let session_id = Uuid::new_v4().to_string();
+    let (
+        proxy_addr,
+        proxy_handle,
+        observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-proposal-deferred".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "19".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: session_id.clone(),
+                vm_lease_id: Some("lease-proposal".to_owned()),
+                state: SessionState::Ready,
+                last_event_id: "event-proposal".to_owned(),
+                last_session_seq: 2,
+                stream_state: StreamState::Ready,
+                stream_preview: None,
+            }],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let proposal_path = authed_path(
+        format!("/session/{session_id}/propose").as_str(),
+        HONEYPOT_COMMAND_PROPOSE_SCOPE_TOKEN,
+    );
+    let body = b"command_text=cmd.exe%20%2Fc%20whoami";
+    let (status_line, _headers, body) = send_http_request(
+        port,
+        "POST",
+        &proposal_path,
+        Some("application/x-www-form-urlencoded"),
+        body,
+    )
+    .await
+    .expect("read proposal placeholder");
+    let body = String::from_utf8(body).expect("decode proposal placeholder html");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("Proposal deferred"), "{body}");
+    assert!(body.contains("disabled_by_policy"), "{body}");
+    assert!(body.contains("cmd.exe /c whoami"), "{body}");
+    assert!(
+        observed_tokens
+            .lock()
+            .await
+            .iter()
+            .any(|entry| entry == &format!("PROPOSE:{session_id}:cmd.exe /c whoami"))
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
+async fn frontend_command_proposal_route_records_rejection_for_empty_command() {
+    let session_id = Uuid::new_v4().to_string();
+    let (
+        proxy_addr,
+        proxy_handle,
+        observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-proposal-rejected".to_owned(),
+            generated_at: "2026-03-26T12:00:00Z".to_owned(),
+            replay_cursor: "20".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: session_id.clone(),
+                vm_lease_id: Some("lease-proposal".to_owned()),
+                state: SessionState::Ready,
+                last_event_id: "event-proposal".to_owned(),
+                last_session_seq: 2,
+                stream_state: StreamState::Ready,
+                stream_preview: None,
+            }],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let proposal_path = authed_path(
+        format!("/session/{session_id}/propose").as_str(),
+        HONEYPOT_COMMAND_PROPOSE_SCOPE_TOKEN,
+    );
+    let (status_line, _headers, body) = send_http_request(
+        port,
+        "POST",
+        &proposal_path,
+        Some("application/x-www-form-urlencoded"),
+        b"command_text=%20%20%20",
+    )
+    .await
+    .expect("read proposal placeholder");
+    let body = String::from_utf8(body).expect("decode proposal placeholder html");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("Proposal rejected"), "{body}");
+    assert!(body.contains("empty_command"), "{body}");
+    assert!(
+        observed_tokens
+            .lock()
+            .await
+            .iter()
+            .any(|entry| entry == &format!("PROPOSE:{session_id}:"))
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
 async fn frontend_dashboard_filters_terminal_sessions_from_bootstrap() {
     let live_session_id = Uuid::new_v4().to_string();
     let disconnected_session_id = Uuid::new_v4().to_string();
@@ -1671,6 +1838,7 @@ async fn start_mock_proxy_on_addr(
         .route("/jet/honeypot/bootstrap", get(mock_bootstrap))
         .route("/jet/honeypot/events", get(mock_events))
         .route("/jet/honeypot/session/{id}/stream-token", post(mock_stream_token))
+        .route("/jet/session/{id}/propose", post(mock_propose))
         .route("/jet/session/system/terminate", post(mock_system_terminate))
         .route("/jet/session/{id}/quarantine", post(mock_quarantine))
         .route("/jet/session/{id}/terminate", post(mock_terminate))
@@ -1752,6 +1920,48 @@ async fn mock_stream_token(
         Some(response) => (StatusCode::OK, Json(response)).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+async fn mock_propose(
+    State(state): State<MockProxyState>,
+    Path(session_id): Path<String>,
+    headers: HeaderMap,
+    Json(request): Json<CommandProposalRequest>,
+) -> impl IntoResponse {
+    record_token(&state, &headers).await;
+    let command_text = request.command_text.trim().to_owned();
+    state
+        .observed_tokens
+        .lock()
+        .await
+        .push(format!("PROPOSE:{session_id}:{command_text}"));
+
+    let proposal_state = if command_text.is_empty() {
+        CommandProposalState::Rejected
+    } else {
+        CommandProposalState::Deferred
+    };
+    let decision_reason = if command_text.is_empty() {
+        "empty_command"
+    } else {
+        "disabled_by_policy"
+    };
+
+    (
+        StatusCode::OK,
+        Json(CommandProposalResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "proposal-corr".to_owned(),
+            proposal_id: "proposal-1".to_owned(),
+            recorded_at: "2026-03-26T12:00:30Z".to_owned(),
+            session_id,
+            command_text,
+            proposal_state,
+            decision_reason: decision_reason.to_owned(),
+            executed: false,
+        }),
+    )
+        .into_response()
 }
 
 async fn mock_terminate(

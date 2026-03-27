@@ -505,7 +505,7 @@ Pass when: clicking a tile expands the session stream and closing it returns to 
 - [x] Implement disconnect-driven tile removal.
 Pass when: `session.ended`, `session.killed`, and recycle terminal events remove or update tiles without a manual refresh.
 
-- [ ] Add a command proposal skeleton for future state-messing features.
+- [x] Add a command proposal skeleton for future state-messing features.
 Pass when: a command can be proposed, recorded, and rejected or deferred without execution.
 
 - [ ] Add a command voting skeleton for future state-messing features.

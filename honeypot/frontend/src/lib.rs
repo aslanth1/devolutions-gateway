@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Context as _;
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -13,7 +13,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures::StreamExt as _;
 use honeypot_contracts::events::{SessionState, StreamState};
-use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
+use honeypot_contracts::frontend::{
+    BootstrapResponse, BootstrapSession, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
+};
 use honeypot_contracts::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
 use tokio::net::TcpListener;
 
@@ -180,6 +182,39 @@ impl FrontendRuntime {
         }
     }
 
+    async fn propose_command(
+        &self,
+        session_id: &str,
+        request: &CommandProposalRequest,
+    ) -> Result<CommandProposalResponse, FrontendProposalError> {
+        use reqwest::StatusCode as ReqwestStatusCode;
+
+        let propose_url = self
+            .config
+            .proxy
+            .propose_url(session_id)
+            .map_err(FrontendProposalError::Proxy)?;
+        let response = self
+            .authorized(self.client.post(propose_url))
+            .json(request)
+            .send()
+            .await
+            .with_context(|| format!("request proxy command proposal placeholder for {session_id}"))
+            .map_err(FrontendProposalError::Proxy)?;
+
+        match response.status() {
+            ReqwestStatusCode::OK | ReqwestStatusCode::ACCEPTED => response
+                .json::<CommandProposalResponse>()
+                .await
+                .with_context(|| format!("decode proxy command proposal placeholder for {session_id}"))
+                .map_err(FrontendProposalError::Proxy),
+            ReqwestStatusCode::NOT_FOUND => Err(FrontendProposalError::NotFound),
+            status => Err(FrontendProposalError::Proxy(anyhow::anyhow!(
+                "proxy command proposal placeholder failed with {status}"
+            ))),
+        }
+    }
+
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(token) = &self.config.auth.proxy_bearer_token {
             request.bearer_auth(token)
@@ -268,6 +303,12 @@ enum FrontendKillError {
     Proxy(anyhow::Error),
 }
 
+#[derive(Debug)]
+enum FrontendProposalError {
+    NotFound,
+    Proxy(anyhow::Error),
+}
+
 pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
     let runtime = Arc::new(FrontendRuntime::new(config)?);
     let bind_addr = runtime.bind_addr();
@@ -281,6 +322,7 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
         .route("/events", get(events_handler))
         .route("/tile/{id}", get(tile_handler))
         .route("/session/{id}", get(session_handler))
+        .route("/session/{id}/propose", post(propose_handler))
         .route("/session/{id}/kill", post(kill_handler))
         .route("/session/{id}/quarantine", post(quarantine_handler))
         .route("/system/kill", post(system_kill_handler))
@@ -468,6 +510,42 @@ async fn kill_handler(
         Err(FrontendKillError::Proxy(error)) => {
             frontend_error(StatusCode::BAD_GATEWAY, &format!("kill request failed: {error:#}"))
         }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CommandProposalForm {
+    command_text: String,
+}
+
+async fn propose_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<OperatorTokenQuery>,
+    Form(form): Form<CommandProposalForm>,
+) -> Response {
+    let access = match state
+        .runtime
+        .authorize_operator(&headers, query.token.as_deref(), RequiredScope::CommandPropose)
+    {
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
+
+    let request = CommandProposalRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: format!("frontend-command-proposal-{session_id}-{}", proposal_nonce()),
+        command_text: form.command_text,
+    };
+
+    match state.runtime.propose_command(&session_id, &request).await {
+        Ok(response) => Html(render_command_proposal_notice(&response, access.raw_token())).into_response(),
+        Err(FrontendProposalError::NotFound) => frontend_error(StatusCode::NOT_FOUND, "session not found"),
+        Err(FrontendProposalError::Proxy(error)) => frontend_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("command proposal placeholder failed: {error:#}"),
+        ),
     }
 }
 
@@ -1083,6 +1161,45 @@ fn render_quarantine_notice(session_id: &str, operator_token: &str) -> String {
     )
 }
 
+fn render_command_proposal_notice(response: &CommandProposalResponse, operator_token: &str) -> String {
+    let auth_query = operator_token_query(operator_token);
+    let state_label = match response.proposal_state {
+        CommandProposalState::Deferred => "Proposal deferred",
+        CommandProposalState::Rejected => "Proposal rejected",
+    };
+    let guidance = match response.proposal_state {
+        CommandProposalState::Deferred => {
+            "The placeholder recorded the request and deferred it without executing anything."
+        }
+        CommandProposalState::Rejected => {
+            "The placeholder recorded the request and rejected it without executing anything."
+        }
+    };
+
+    format!(
+        r#"<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>{state_label}</strong>
+      <p>Session <code>{session_id}</code> recorded command proposal <code>{proposal_id}</code> at <code>{recorded_at}</code>.</p>
+      <p><strong>Command</strong><br><code>{command_text}</code></p>
+      <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
+      <p>{guidance}</p>
+      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>"#,
+        state_label = escape_html(state_label),
+        session_id = escape_html(&response.session_id),
+        proposal_id = escape_html(&response.proposal_id),
+        recorded_at = escape_html(&response.recorded_at),
+        command_text = escape_html(&response.command_text),
+        decision_reason = escape_html(&response.decision_reason),
+        guidance = escape_html(guidance),
+        auth_query = auth_query,
+    )
+}
+
 fn render_system_kill_notice(operator_token: &str) -> String {
     let auth_query = operator_token_query(operator_token);
 
@@ -1098,6 +1215,12 @@ fn render_system_kill_notice(operator_token: &str) -> String {
   </div>
 </div>"#
     )
+}
+
+fn proposal_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos())
 }
 
 fn render_session_action_buttons(session: &BootstrapSession, operator_token: &str, can_kill_sessions: bool) -> String {

@@ -1,6 +1,8 @@
 use axum::extract::State;
 use axum::routing::post;
 use axum::{Json, Router};
+use honeypot_contracts::Versioned;
+use honeypot_contracts::frontend::{CommandProposalRequest, CommandProposalResponse, CommandProposalState};
 use uuid::Uuid;
 
 use crate::DgwState;
@@ -12,6 +14,7 @@ use crate::token::AccessScope;
 pub fn make_router<S>(state: DgwState) -> Router<S> {
     Router::new()
         .route("/system/terminate", post(terminate_all_sessions))
+        .route("/{id}/propose", post(propose_command))
         .route("/{id}/quarantine", post(quarantine_session))
         .route("/{id}/terminate", post(terminate_session))
         .with_state(state)
@@ -112,6 +115,61 @@ pub(crate) struct SystemTerminateResponse {
     terminated_sessions_requested: usize,
 }
 
+async fn propose_command(
+    State(state): State<DgwState>,
+    axum::extract::Path(session_id): axum::extract::Path<Uuid>,
+    scope_token: ScopeToken,
+    Json(request): Json<CommandProposalRequest>,
+) -> Result<Json<CommandProposalResponse>, HttpError> {
+    if !state.honeypot.is_enabled() {
+        return Err(HttpError::not_found().msg("honeypot mode is disabled"));
+    }
+
+    authorize_proposal_scope(&scope_token)?;
+    request.ensure_supported_schema().map_err(
+        HttpError::bad_request()
+            .with_msg("unsupported honeypot schema_version")
+            .err(),
+    )?;
+
+    let trimmed_command = request.command_text.trim().to_owned();
+    let proposal_state = if trimmed_command.is_empty() {
+        CommandProposalState::Rejected
+    } else {
+        CommandProposalState::Deferred
+    };
+    let decision_reason = if trimmed_command.is_empty() {
+        "empty_command"
+    } else {
+        "disabled_by_policy"
+    };
+    let response = CommandProposalResponse {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        correlation_id: format!("honeypot-command-proposal-{}", Uuid::new_v4()),
+        proposal_id: format!("proposal-{}", Uuid::new_v4()),
+        recorded_at: time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
+        session_id: session_id.to_string(),
+        command_text: trimmed_command,
+        proposal_state,
+        decision_reason: decision_reason.to_owned(),
+        executed: false,
+    };
+
+    tracing::info!(
+        session_id = %response.session_id,
+        proposal_id = %response.proposal_id,
+        correlation_id = %response.correlation_id,
+        proposal_state = ?response.proposal_state,
+        decision_reason = %response.decision_reason,
+        executed = response.executed,
+        "honeypot command proposal placeholder recorded"
+    );
+
+    Ok(Json(response))
+}
+
 async fn terminate_all_sessions(
     State(state): State<DgwState>,
     scope_token: ScopeToken,
@@ -191,6 +249,13 @@ fn authorize_quarantine_scope(scope_token: &ScopeToken) -> Result<SessionKillMet
         AccessScope::Wildcard | AccessScope::HoneypotSessionKill | AccessScope::HoneypotSystemKill => {
             Ok(SessionKillMetadata::operator_quarantine(scope_token.0.token_id()))
         }
+        _ => Err(HttpError::forbidden().msg("invalid scope for route")),
+    }
+}
+
+fn authorize_proposal_scope(scope_token: &ScopeToken) -> Result<(), HttpError> {
+    match scope_token.0.scope {
+        AccessScope::Wildcard | AccessScope::HoneypotCommandPropose => Ok(()),
         _ => Err(HttpError::forbidden().msg("invalid scope for route")),
     }
 }

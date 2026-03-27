@@ -6,13 +6,16 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::prelude::*;
 use honeypot_contracts::control_plane::{HealthResponse as ControlPlaneHealthResponse, ServiceState};
-use honeypot_contracts::frontend::BootstrapResponse;
+use honeypot_contracts::frontend::{
+    BootstrapResponse, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
+};
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{DgwConfig, HoneypotConfig};
 use uuid::Uuid;
 
 const HONEYPOT_WATCH_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDMiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Qud2F0Y2gifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 const HONEYPOT_WILDCARD_SCOPE_TOKEN: &str = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IlNDT1BFIn0.eyJqdGkiOiI5YTdkZWRhOC1jNmM2LTQ1YzAtODZlYi01MGJiMzI4YWFjMjMiLCJleHAiOjAsInNjb3BlIjoiKiJ9.dTazZemDS08Fy13Hx7wxDoOxQ2oNFaaEYMSFDQHCWiUdlYv4NMQh6N_GQok3wdiSJf384fvLKccYe1fipRepLlinUAqcEum68ngvGuUVP78xYb_vC3ZDqFi6nvd1BLp621XgzsCbOyBZHhLXHgzwVNTpnbt9laTTaHh8_rSYLaujBOpidWS6vKIZqOE66beqygSprPt3y0LYFTQWGYq21jJ73uW6htdWrmXbDUUjdvG7ymnKb-7Scs5y03jjSTr4QB1rH_3Z8DsfuuxFCIBd8V2yu192PrWooAdMKboLSjvmdFiD509lljoaNoGLBv9hmmQyiLQr-rsUllXBD6UpTQ";
+const HONEYPOT_COMMAND_PROPOSE_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAxMDIiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3QuY29tbWFuZC5wcm9wb3NlIn0.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
 const TEST_CONTROL_PLANE_SERVICE_TOKEN: &str = "proxy-health-test-token";
 
 #[derive(Clone)]
@@ -612,6 +615,142 @@ async fn honeypot_events_route_rejects_expired_cursor_when_enabled() -> anyhow::
     .await?;
 
     assert!(status_line.contains("409"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_command_proposal_route_is_disabled_by_default() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let request = serde_json::to_vec(&CommandProposalRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: "proposal-default-disabled".to_owned(),
+        command_text: "whoami".to_owned(),
+    })
+    .context("serialize proposal request")?;
+    let (status_line, _body) = send_http_request(
+        config_handle.http_port(),
+        "POST",
+        format!("/jet/session/{}/propose", Uuid::new_v4()).as_str(),
+        HONEYPOT_COMMAND_PROPOSE_SCOPE_TOKEN,
+        Some("application/json"),
+        &request,
+    )
+    .await?;
+
+    assert!(status_line.contains("404"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_command_proposal_route_requires_propose_scope() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let request = serde_json::to_vec(&CommandProposalRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: "proposal-forbidden".to_owned(),
+        command_text: "whoami".to_owned(),
+    })
+    .context("serialize proposal request")?;
+    let (status_line, _body) = send_http_request(
+        config_handle.http_port(),
+        "POST",
+        format!("/jet/session/{}/propose", Uuid::new_v4()).as_str(),
+        HONEYPOT_WATCH_SCOPE_TOKEN,
+        Some("application/json"),
+        &request,
+    )
+    .await?;
+
+    assert!(status_line.contains("403"), "{status_line}");
+
+    let _ = process.start_kill();
+    let _ = process.wait().await;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn honeypot_command_proposal_route_returns_typed_deferred_placeholder_when_enabled() -> anyhow::Result<()> {
+    let config_handle = DgwConfig::builder()
+        .disable_token_validation(true)
+        .honeypot(HoneypotConfig::builder().enabled(true).build())
+        .build()
+        .init()
+        .context("init config")?;
+
+    let mut process = dgw_tokio_cmd()
+        .env("DGATEWAY_CONFIG_PATH", config_handle.config_dir())
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .context("start gateway")?;
+
+    wait_for_tcp_port(config_handle.http_port()).await?;
+
+    let session_id = Uuid::new_v4();
+    let request = serde_json::to_vec(&CommandProposalRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: "proposal-deferred".to_owned(),
+        command_text: "cmd.exe /c whoami".to_owned(),
+    })
+    .context("serialize proposal request")?;
+    let (status_line, body) = send_http_request(
+        config_handle.http_port(),
+        "POST",
+        format!("/jet/session/{session_id}/propose").as_str(),
+        HONEYPOT_COMMAND_PROPOSE_SCOPE_TOKEN,
+        Some("application/json"),
+        &request,
+    )
+    .await?;
+    let response: CommandProposalResponse = serde_json::from_slice(&body).context("parse command proposal response")?;
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert_eq!(response.schema_version, honeypot_contracts::SCHEMA_VERSION);
+    assert_eq!(response.session_id, session_id.to_string());
+    assert_eq!(response.command_text, "cmd.exe /c whoami");
+    assert_eq!(response.proposal_state, CommandProposalState::Deferred);
+    assert_eq!(response.decision_reason, "disabled_by_policy");
+    assert!(!response.executed);
 
     let _ = process.start_kill();
     let _ = process.wait().await;

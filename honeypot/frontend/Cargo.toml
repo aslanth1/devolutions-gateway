@@ -13,7 +13,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow = "1.0"
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio", "tracing"] }
+axum = { version = "0.8", default-features = false, features = ["form", "http1", "json", "query", "tokio", "tracing"] }
 devolutions-gateway = { path = "../../devolutions-gateway" }
 futures = "0.3"
 honeypot-contracts = { path = "../contracts" }

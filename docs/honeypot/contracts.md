@@ -54,7 +54,8 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Service tokens use the scope `gateway.honeypot.control-plane`.
 - Operator tokens use the scopes `gateway.honeypot.watch`, `gateway.honeypot.stream.read`, `gateway.honeypot.session.kill`, and `gateway.honeypot.system.kill`.
 - The reserved future scopes are `gateway.honeypot.command.propose` and `gateway.honeypot.command.approve`.
-- `gateway.honeypot.command.propose` and `gateway.honeypot.command.approve` remain disabled for MVP even though their names are frozen here.
+- `gateway.honeypot.command.propose` may reach only the non-executing deferred proposal placeholder in MVP.
+- `gateway.honeypot.command.approve` remains disabled in MVP even though its name is frozen here.
 - `proxy` may continue to reuse existing Gateway token-validation and web-app token patterns internally while exposing the honeypot scope names above as the external contract.
 - Missing or invalid tokens fail with `401 unauthorized`.
 - Valid tokens without the required scope or role fail with `403 forbidden`.
@@ -67,7 +68,7 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - The proxy issues a long-lived operator app token after successful login and then exchanges it for short-lived scoped access tokens.
 - The `watch` role maps to `gateway.honeypot.watch` and may read bootstrap state, consume events, and request stream tokens when paired with `gateway.honeypot.stream.read`.
 - The `kill` role maps to `gateway.honeypot.session.kill` for single-session kills or quarantines and `gateway.honeypot.system.kill` for global kill.
-- The `propose` role maps to `gateway.honeypot.command.propose` and is reserved only.
+- The `propose` role maps to `gateway.honeypot.command.propose` and may record only deferred or rejected placeholder commands in MVP.
 - The `approve` role maps to `gateway.honeypot.command.approve` and is reserved only.
 - The operator workflow and sensitive-content rules for those roles live in [operator-content-policy.md](operator-content-policy.md).
 - Every operator-visible action must carry `operator_id`, `role`, `session_id` when present, `vm_lease_id` when present, `event_id` when present, and `correlation_id`.
@@ -178,6 +179,18 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - If the cursor is missing, expired, or invalid, the proxy returns `409 cursor_expired` and the frontend must re-run bootstrap.
 - The frontend must be able to render already-running sessions entirely from bootstrap without waiting for a new attacker connect.
 
+## Deferred Command Proposal Placeholder
+
+- The placeholder proposal path is `POST /jet/session/{session_id}/propose` on `proxy` and `POST /session/{session_id}/propose` on `frontend`.
+- The frontend route is HTMX-friendly form submission that relays to the proxy placeholder.
+- The request fields are `schema_version`, `request_id`, and `command_text`.
+- The success fields are `schema_version`, `correlation_id`, `proposal_id`, `recorded_at`, `session_id`, `command_text`, `proposal_state`, `decision_reason`, and `executed`.
+- `proposal_state` is `deferred` for a non-empty command and `rejected` for an empty or whitespace-only command.
+- `executed` is always `false` in MVP.
+- The placeholder must record a proposal identifier and return a typed response, but it must not execute a guest command, persist vote state, or mutate the VM.
+- The placeholder requires `gateway.honeypot.command.propose`.
+- `gateway.honeypot.command.approve` remains disabled until the separate voting row is implemented.
+
 ## Stream Token And Metadata Contract
 
 - The proxy is the only service that issues browser stream tokens.
@@ -231,7 +244,7 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Control-plane actions are auditable by stable `request_id`, `correlation_id`, and `vm_lease_id` fields across `acquire_vm`, `reset_vm`, `release_vm`, `recycle_vm`, and `stream_endpoint`.
 - Single-session kill and quarantine actions are auditable by the ordered `session.killed`, `session.recycle.requested`, and `host.recycled` event sequence bound to `operator_id`, `session_id`, `vm_lease_id`, and `correlation_id`.
 - Global emergency stop is auditable by the `POST /jet/session/system/terminate` response plus the same per-session lifecycle sequence for every affected session.
-- Frontend vote actions remain disabled in MVP, so `gateway.honeypot.command.propose` and `gateway.honeypot.command.approve` are reserved-only scopes and must not execute or persist vote state today.
+- Frontend vote actions remain disabled in MVP, `gateway.honeypot.command.approve` remains reserved-only, and the `gateway.honeypot.command.propose` placeholder must not execute or persist vote state today.
 - Metrics must distinguish `session_started_total`, `session_ended_total`, `session_killed_total`, `lease_acquire_fail_total`, `lease_quarantine_total`, and `stream_start_fail_total`.
 - Audit events must capture `operator_id`, `actor_type`, `action`, `result`, `session_id` when present, `vm_lease_id` when present, `stream_id` when present, and `correlation_id`.
 - Logs must never include raw guest credentials, stream tokens, or private key material.

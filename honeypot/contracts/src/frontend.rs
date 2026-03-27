@@ -24,4 +24,31 @@ pub struct BootstrapSession {
     pub stream_preview: Option<StreamPreview>,
 }
 
-impl_versioned!(BootstrapResponse);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandProposalState {
+    Deferred,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandProposalRequest {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub command_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandProposalResponse {
+    pub schema_version: u32,
+    pub correlation_id: String,
+    pub proposal_id: String,
+    pub recorded_at: String,
+    pub session_id: String,
+    pub command_text: String,
+    pub proposal_state: CommandProposalState,
+    pub decision_reason: String,
+    pub executed: bool,
+}
+
+impl_versioned!(BootstrapResponse, CommandProposalRequest, CommandProposalResponse);

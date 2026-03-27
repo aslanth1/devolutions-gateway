@@ -29,6 +29,8 @@ pub struct HoneypotFrontendTestConfig {
     pub proxy_events_path: String,
     #[builder(default = "/jet/honeypot/session/{session_id}/stream-token".to_owned(), setter(into))]
     pub proxy_stream_token_path_template: String,
+    #[builder(default = "/jet/session/{session_id}/propose".to_owned(), setter(into))]
+    pub proxy_propose_path_template: String,
     #[builder(default = "/jet/session/{session_id}/terminate".to_owned(), setter(into))]
     pub proxy_terminate_path_template: String,
     #[builder(default = "/jet/session/{session_id}/quarantine".to_owned(), setter(into))]
@@ -68,6 +70,7 @@ pub fn write_honeypot_frontend_config(path: &Path, config: &HoneypotFrontendTest
          bootstrap_path = \"{}\"\n\
          events_path = \"{}\"\n\
          stream_token_path_template = \"{}\"\n\n\
+         propose_path_template = \"{}\"\n\
          terminate_path_template = \"{}\"\n\
          quarantine_path_template = \"{}\"\n\
          system_terminate_path = \"{}\"\n\n\
@@ -78,6 +81,7 @@ pub fn write_honeypot_frontend_config(path: &Path, config: &HoneypotFrontendTest
         config.proxy_bootstrap_path,
         config.proxy_events_path,
         config.proxy_stream_token_path_template,
+        config.proxy_propose_path_template,
         config.proxy_terminate_path_template,
         config.proxy_quarantine_path_template,
         config.proxy_system_terminate_path,

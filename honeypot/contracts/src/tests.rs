@@ -5,7 +5,9 @@ use crate::control_plane::{
 };
 use crate::error::{ErrorCode, ErrorResponse};
 use crate::events::{EventEnvelope, EventPayload, KillScope, SessionState, StreamState, TerminalOutcome};
-use crate::frontend::{BootstrapResponse, BootstrapSession};
+use crate::frontend::{
+    BootstrapResponse, BootstrapSession, CommandProposalRequest, CommandProposalResponse, CommandProposalState,
+};
 use crate::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
 
 fn sample_event_envelope(payload: EventPayload) -> EventEnvelope {
@@ -94,6 +96,44 @@ fn acquire_vm_request_rejects_unsupported_schema() {
         .expect_err("schema_version 2 should be rejected");
 
     assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
+}
+
+#[test]
+fn command_proposal_request_rejects_unsupported_schema() {
+    let request = CommandProposalRequest {
+        schema_version: crate::SCHEMA_VERSION + 1,
+        request_id: "proposal-req-1".to_owned(),
+        command_text: "whoami".to_owned(),
+    };
+
+    let error = request
+        .ensure_supported_schema()
+        .expect_err("schema_version 2 should be rejected");
+
+    assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
+}
+
+#[test]
+fn command_proposal_response_round_trips_placeholder_state() {
+    let response = CommandProposalResponse {
+        schema_version: crate::SCHEMA_VERSION,
+        correlation_id: "corr-proposal-1".to_owned(),
+        proposal_id: "proposal-1".to_owned(),
+        recorded_at: "2026-03-26T00:00:30Z".to_owned(),
+        session_id: "session-1".to_owned(),
+        command_text: "cmd.exe /c whoami".to_owned(),
+        proposal_state: CommandProposalState::Deferred,
+        decision_reason: "disabled_by_policy".to_owned(),
+        executed: false,
+    };
+
+    response
+        .ensure_supported_schema()
+        .expect("schema_version 1 should be supported");
+    let json = serde_json::to_string(&response).expect("serialize command proposal response");
+    let decoded: CommandProposalResponse = serde_json::from_str(&json).expect("deserialize command proposal response");
+
+    assert_eq!(decoded, response);
 }
 
 #[test]
