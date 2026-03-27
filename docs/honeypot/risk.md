@@ -12,7 +12,7 @@ This document must not be read as permission to add a fourth runtime service or 
 - This fork is for authorized defensive research only.
 - Written authorization from the owner of the target environment, network, credentials, and storage is required before the stack is exposed to untrusted traffic.
 - Unauthorized deployment, credential harvesting, or use against third-party systems is out of scope.
-- Public internet deployment is out of scope until the operator auth, exposure guards, retention rules, and kill-switch controls are frozen under `DF-02` and `DF-08`.
+- Public internet deployment remains out of scope until the operator auth, exposure guards, retention rules, audit logging, and kill-switch controls are complete and verified.
 - This repository policy is not a substitute for legal review by the operator’s organization.
 
 ## Operator Authorization
@@ -55,7 +55,27 @@ This document must not be read as permission to add a fourth runtime service or 
 - Recordings and logs must stay on access-controlled storage and must not be mirrored to third-party analytics or cloud services by default.
 - Operators must not browse, share, or replay attacker content outside the scope of the authorized research objective.
 - The detailed role-to-content rules for attacker material live in [operator-content-policy.md](operator-content-policy.md).
-- Retention windows, export rules, and deletion behavior must be frozen under `DF-08` before long-running capture or external reporting workflows are enabled.
+- The retention windows, cleanup boundaries, and export rules below are the canonical `DF-08` boundary for recordings, streams, operator actions, and deferred vote history.
+
+## Retention And Forensic Boundaries
+
+- Live stream tokens, replay cursors, and browser stream routes are ephemeral control material, not retained evidence.
+  Their retention window is at most the live session lifetime and the short token TTL frozen in [contracts.md](contracts.md).
+  They must be revoked on disconnect, kill, recycle, global kill, and orphan cleanup.
+- Routine stream or recording scratch output has a zero-retention default in MVP.
+  Normal disconnect, recycle, compose teardown, and orphan cleanup must remove transient stream artifacts instead of leaving them on disk for later review.
+- If an operator intentionally captures media or screenshots for an authorized case, that material becomes a case-bound evidence artifact instead of a runtime scratch artifact.
+  Delete it within `30` days of case closure unless a written legal, regulatory, or incident-response hold explicitly extends it.
+- Quarantined overlays, runtime directories, pid files, QMP or QGA sockets, attestation manifests, and matching service logs may be retained only while an incident review is open.
+  Delete them or reclassify them into a named evidence package within `14` days of incident closure unless a written hold extends that window.
+  Quarantined artifacts must stay under `/srv/honeypot/quarantine` and must never return directly to the reusable pool or browser-facing surfaces.
+- Operator action records may retain only the minimum fields needed to explain who observed, killed, quarantined, exported, or halted intake for a session.
+  Keep those records in redacted case storage no longer than `90` days after case closure unless a written hold extends the retention window.
+  Until the dedicated audit-logging row is complete, no second ad hoc operator-action journal may be introduced outside the documented case or service-log paths.
+- Vote history has a zero-retention boundary in MVP because `propose` and `approve` remain disabled.
+  No vote state, vote transcript, or vote export may be persisted until the deferred voting rows and the dedicated audit-logging row are implemented and explicitly enabled.
+- Secret mounts, backend credentials, bearer tokens, private keys, raw credential mappings, and other secret transport material are never valid evidence artifacts.
+  They must be revoked or deleted rather than retained, exported, or attached to a case bundle.
 
 ## Teardown And Incident Response
 

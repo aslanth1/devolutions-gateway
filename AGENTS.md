@@ -681,7 +681,7 @@ Pass when: another engineer can operate the lab without tribal knowledge and the
 - [x] Add exposure guards for public-internet deployment.
 Pass when: public listeners require explicit allowlists, rate controls, and a documented kill switch.
 
-- [ ] Add retention and forensic boundaries for recordings, streams, operator actions, and vote history.
+- [x] Add retention and forensic boundaries for recordings, streams, operator actions, and vote history.
 Pass when: retention windows and cleanup behavior are documented and enforced.
 
 - [ ] Add audit logging for control-plane actions, session kills, and frontend vote actions.

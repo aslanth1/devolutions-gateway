@@ -89,3 +89,12 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `testsuite/tests/honeypot_release.rs` proves the live three-service stack keeps POSIX runtime artifacts isolated and keeps compose logs redacted in `posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted`.
 - `testsuite/tests/honeypot_release.rs` proves the rollback failure path preserves the current healthy stack, keeps failure-path compose logs redacted, and still tears down cleanly through the shared cleanup path in `rollback_failure_keeps_the_current_stack_running_and_reports_the_error`.
 - `testsuite/tests/cli/dgw/preflight.rs` provides the contract-tier secret-redaction baseline by proving proxy and target passwords stay out of logs on both successful and validation-failure credential provisioning paths.
+
+## Retention And Forensic Boundary Evidence
+
+- `AGENTS.md` pass row `Add retention and forensic boundaries for recordings, streams, operator actions, and vote history.` is satisfied by the canonical retention matrix in [risk.md](risk.md), the operator hygiene steps in [runbook.md](runbook.md), and the current enforcement evidence below.
+- `testsuite/tests/honeypot_release.rs` proves the default `host-smoke` compose path leaves no retained stream or recording scratch artifacts on disk in `posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted`.
+- `testsuite/tests/honeypot_control_plane.rs` proves the Rust `lab-e2e` teardown path removes lease-scoped overlays, runtime dirs, pid files, QMP sockets, and QGA sockets instead of retaining them after recycle in `control_plane_lab_harness_teardown_cleans_runtime_artifacts_on_posix_host`.
+- `testsuite/tests/honeypot_release.rs` proves orphan cleanup reclaims stale runtime artifacts plus stale containers, networks, and volumes in `orphan_cleanup_reclaims_vm_and_container_artifacts`.
+- `testsuite/tests/honeypot_release.rs` and `testsuite/tests/cli/dgw/preflight.rs` prove normal and failure-path logs stay redacted, which enforces the policy that secrets are not retained as forensic artifacts.
+- [contracts.md](contracts.md) and [operator-content-policy.md](operator-content-policy.md) enforce a zero-retention vote-history boundary today because `gateway.honeypot.command.propose` and `gateway.honeypot.command.approve` remain reserved-only scopes and no vote surface may persist state until those deferred rows are implemented.

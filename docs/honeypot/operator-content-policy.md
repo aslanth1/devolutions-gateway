@@ -11,7 +11,8 @@ It must not be read as approval to enable deferred interactive features before t
 
 - This policy applies to live streams, replayable recordings, screenshots, logs, audit records, operator notes, exported evidence, and quarantined honeypot artifacts.
 - This policy applies to `frontend`, `proxy` operator routes, `control-plane` administration, and any host-side incident review tied to the honeypot stack.
-- This policy does not replace the retention and audit requirements that remain open elsewhere in `AGENTS.md`.
+- Retention windows and deletion behavior are defined in [risk.md](risk.md).
+- This policy does not replace the dedicated audit-logging requirement that remains open elsewhere in `AGENTS.md`.
 
 ## Role Model
 
@@ -66,6 +67,7 @@ It must not be read as approval to enable deferred interactive features before t
 - Every exported bundle must preserve `operator_id`, `session_id`, `vm_lease_id`, and `correlation_id` when those values exist.
 - Every exported bundle must record the export time, the reason for export, and whether the material was redacted.
 - Export must include only the minimum logs, screenshots, recordings, notes, or quarantine artifacts needed for the case.
+- Exported material must follow the retention windows and deletion boundaries defined in [risk.md](risk.md).
 - Secret mounts must never be copied into an evidence bundle.
 - Unredacted evidence requires explicit authorization and a documented need that outweighs the default redaction rule.
 - Review of quarantined host artifacts must happen through the host-side incident path described in [runbook.md](runbook.md), not through browser-facing surfaces.

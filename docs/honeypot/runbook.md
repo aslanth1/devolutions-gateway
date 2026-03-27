@@ -11,7 +11,7 @@ It does not by itself approve public deployment or exposure to untrusted traffic
 - Obtain written authorization for the target environment, network, credentials, storage, and attacker-content handling scope before exposing any listener.
 - Use a prepared Linux host with Docker, `/dev/kvm`, and the documented host paths under `/srv/honeypot/`.
 - Keep `control-plane`, `proxy`, and `frontend` as the only runtime services.
-- Do not expose the checked-in compose stack to the public internet until the remaining exposure, retention, audit, and content-handling hardening rows are complete.
+- Do not expose the checked-in compose stack to the public internet until the remaining audit hardening row is complete.
 - Treat the checked-in compose and frontend config as local-lab defaults only, because the checked-in frontend config disables operator token validation for local bring-up.
 
 ## Public Deployment Gate
@@ -138,6 +138,17 @@ docker compose -f honeypot/docker/compose.yaml logs --timestamps control-plane p
 8. Redact guest credentials, service tokens, private keys, and personally identifying information from exported material unless explicit authorization requires otherwise.
 9. Keep evidence on access-controlled storage and preserve enough audit context to explain every operator action.
 10. Apply the role and sharing limits in [operator-content-policy.md](operator-content-policy.md) before viewing, exporting, or escalating attacker content.
+
+## Retention And Case Hygiene
+
+- Apply the canonical retention windows from [risk.md](risk.md) to every case bundle, quarantine subtree, and exported note set.
+- Treat live stream and recording scratch output as zero-retention runtime material.
+  If it is not intentionally captured into a named case, it must disappear through normal disconnect, recycle, compose teardown, or orphan cleanup.
+- Close or reclassify quarantined overlays, runtime directories, pid files, QMP or QGA sockets, attestation copies, and related logs within `14` days of incident closure unless a written hold extends the case.
+- Delete intentionally exported screenshots, recordings, and evidence bundles within `30` days of case closure unless a written hold extends the case.
+- Delete operator action summaries, incident notes, and similar case metadata within `90` days of case closure unless a written hold extends the case.
+- Do not retain vote transcripts or vote history because `propose` and `approve` remain disabled in MVP.
+- Never copy secret mounts, backend credentials, bearer tokens, private keys, or raw credential mappings into case storage.
 
 ## Recovery Playbooks
 
