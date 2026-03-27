@@ -1,12 +1,45 @@
 use crate::Versioned;
 use crate::auth::TokenScope;
 use crate::control_plane::{
-    AcquireVmRequest, AttackerProtocol, HealthResponse, RecycleVmRequest, ServiceState, StreamPolicy,
+    AcquireVmRequest, AttackerProtocol, HealthResponse, RecycleState, RecycleVmRequest, ServiceState, StreamPolicy,
 };
 use crate::error::{ErrorCode, ErrorResponse};
-use crate::events::{EventEnvelope, EventPayload, SessionState, StreamState};
+use crate::events::{EventEnvelope, EventPayload, KillScope, SessionState, StreamState, TerminalOutcome};
 use crate::frontend::{BootstrapResponse, BootstrapSession};
-use crate::stream::{StreamPreview, StreamTokenResponse, StreamTransport};
+use crate::stream::{StreamPreview, StreamTokenRequest, StreamTokenResponse, StreamTransport};
+
+fn sample_event_envelope(payload: EventPayload) -> EventEnvelope {
+    EventEnvelope {
+        schema_version: crate::SCHEMA_VERSION,
+        event_id: "event-1".to_owned(),
+        correlation_id: "corr-1".to_owned(),
+        emitted_at: "2026-03-26T00:00:00Z".to_owned(),
+        session_id: Some("session-1".to_owned()),
+        vm_lease_id: Some("lease-1".to_owned()),
+        stream_id: Some("stream-1".to_owned()),
+        global_cursor: "cursor-1".to_owned(),
+        session_seq: 1,
+        payload,
+    }
+}
+
+fn sample_event_document(payload: serde_json::Value) -> serde_json::Value {
+    let mut event = serde_json::json!({
+        "schema_version": crate::SCHEMA_VERSION,
+        "event_id": "event-1",
+        "correlation_id": "corr-1",
+        "emitted_at": "2026-03-26T00:00:00Z",
+        "session_id": "session-1",
+        "vm_lease_id": "lease-1",
+        "stream_id": "stream-1",
+        "global_cursor": "cursor-1",
+        "session_seq": 1
+    });
+    let event_object = event.as_object_mut().expect("event envelope must be an object");
+    let payload_object = payload.as_object().expect("payload must be an object");
+    event_object.extend(payload_object.clone());
+    event
+}
 
 #[test]
 fn token_scopes_serialize_to_frozen_strings() {
@@ -78,23 +111,12 @@ fn recycle_vm_request_round_trips_force_quarantine_flag() {
 
 #[test]
 fn event_envelope_serializes_event_kind_and_ordering_fields() {
-    let event = EventEnvelope {
-        schema_version: crate::SCHEMA_VERSION,
-        event_id: "event-1".to_owned(),
-        correlation_id: "corr-1".to_owned(),
-        emitted_at: "2026-03-26T00:00:00Z".to_owned(),
-        session_id: Some("session-1".to_owned()),
-        vm_lease_id: Some("lease-1".to_owned()),
-        stream_id: None,
-        global_cursor: "cursor-1".to_owned(),
-        session_seq: 1,
-        payload: EventPayload::SessionStarted {
-            attacker_addr: "203.0.113.10:54422".to_owned(),
-            listener_id: "listener-1".to_owned(),
-            started_at: "2026-03-26T00:00:00Z".to_owned(),
-            session_state: SessionState::Connected,
-        },
-    };
+    let event = sample_event_envelope(EventPayload::SessionStarted {
+        attacker_addr: "203.0.113.10:54422".to_owned(),
+        listener_id: "listener-1".to_owned(),
+        started_at: "2026-03-26T00:00:00Z".to_owned(),
+        session_state: SessionState::Connected,
+    });
 
     let json = serde_json::to_string(&event).expect("serialize event");
     let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize event");
@@ -102,6 +124,200 @@ fn event_envelope_serializes_event_kind_and_ordering_fields() {
     assert!(json.contains("\"event_kind\":\"session.started\""), "{json}");
     assert_eq!(decoded.session_seq, 1);
     assert_eq!(decoded, event);
+}
+
+#[test]
+fn event_payload_variants_round_trip_with_frozen_event_kinds() {
+    let cases = vec![
+        (
+            "session.started",
+            EventPayload::SessionStarted {
+                attacker_addr: "203.0.113.10:54422".to_owned(),
+                listener_id: "listener-1".to_owned(),
+                started_at: "2026-03-26T00:00:00Z".to_owned(),
+                session_state: SessionState::Connected,
+            },
+        ),
+        (
+            "session.assigned",
+            EventPayload::SessionAssigned {
+                assigned_at: "2026-03-26T00:00:05Z".to_owned(),
+                vm_name: "vm-1".to_owned(),
+                guest_rdp_addr: "10.0.0.15:3389".to_owned(),
+                attestation_ref: "attestation-1".to_owned(),
+            },
+        ),
+        (
+            "session.stream.ready",
+            EventPayload::SessionStreamReady {
+                ready_at: "2026-03-26T00:00:10Z".to_owned(),
+                transport: StreamTransport::Websocket,
+                stream_endpoint: "/jet/honeypot/session/session-1/stream?stream_id=stream-1".to_owned(),
+                token_expires_at: "2026-03-26T00:01:00Z".to_owned(),
+                stream_state: StreamState::Ready,
+            },
+        ),
+        (
+            "session.ended",
+            EventPayload::SessionEnded {
+                ended_at: "2026-03-26T00:02:00Z".to_owned(),
+                terminal_outcome: TerminalOutcome::Disconnected,
+                disconnect_reason: "attacker_closed_socket".to_owned(),
+                recycle_expected: true,
+            },
+        ),
+        (
+            "session.killed",
+            EventPayload::SessionKilled {
+                killed_at: "2026-03-26T00:02:10Z".to_owned(),
+                kill_scope: KillScope::Session,
+                killed_by_operator_id: "operator-1".to_owned(),
+                kill_reason: "manual_review".to_owned(),
+            },
+        ),
+        (
+            "session.recycle.requested",
+            EventPayload::SessionRecycleRequested {
+                requested_at: "2026-03-26T00:02:15Z".to_owned(),
+                recycle_reason: "disconnect".to_owned(),
+                requested_by: "proxy".to_owned(),
+            },
+        ),
+        (
+            "host.recycled",
+            EventPayload::HostRecycled {
+                completed_at: "2026-03-26T00:02:30Z".to_owned(),
+                recycle_state: RecycleState::Recycled,
+                quarantined: false,
+                quarantine_reason: None,
+            },
+        ),
+        (
+            "session.stream.failed",
+            EventPayload::SessionStreamFailed {
+                failed_at: "2026-03-26T00:00:12Z".to_owned(),
+                failure_code: ErrorCode::StreamUnavailable,
+                retryable: true,
+                stream_state: StreamState::Failed,
+            },
+        ),
+        (
+            "proxy.status.degraded",
+            EventPayload::ProxyStatusDegraded {
+                degraded_at: "2026-03-26T00:03:00Z".to_owned(),
+                reason_code: "control_plane_unavailable".to_owned(),
+                affected_session_ids: vec!["session-1".to_owned(), "session-2".to_owned()],
+            },
+        ),
+    ];
+
+    for (event_kind, payload) in cases {
+        let event = sample_event_envelope(payload);
+        let json = serde_json::to_string(&event).expect("serialize event envelope");
+        let decoded: EventEnvelope = serde_json::from_str(&json).expect("deserialize event envelope");
+
+        assert!(json.contains(&format!("\"event_kind\":\"{event_kind}\"")), "{json}");
+        assert_eq!(decoded, event);
+    }
+}
+
+#[test]
+fn event_envelope_rejects_unknown_event_kind() {
+    let error = serde_json::from_value::<EventEnvelope>(sample_event_document(serde_json::json!({
+        "event_kind": "session.teleported"
+    })))
+    .expect_err("unknown event kinds must be rejected");
+
+    assert!(error.to_string().contains("unknown variant"), "{error}");
+}
+
+#[test]
+fn event_envelope_rejects_missing_required_payload_fields() {
+    let error = serde_json::from_value::<EventEnvelope>(sample_event_document(serde_json::json!({
+        "event_kind": "session.assigned",
+        "assigned_at": "2026-03-26T00:00:05Z",
+        "vm_name": "vm-1",
+        "guest_rdp_addr": "10.0.0.15:3389"
+    })))
+    .expect_err("event payloads must reject missing required fields");
+
+    assert!(error.to_string().contains("attestation_ref"), "{error}");
+}
+
+#[test]
+fn event_envelope_rejects_invalid_session_state() {
+    let error = serde_json::from_value::<EventEnvelope>(sample_event_document(serde_json::json!({
+        "event_kind": "session.started",
+        "attacker_addr": "203.0.113.10:54422",
+        "listener_id": "listener-1",
+        "started_at": "2026-03-26T00:00:00Z",
+        "session_state": "booting"
+    })))
+    .expect_err("session_state must reject unsupported enum values");
+
+    assert!(error.to_string().contains("unknown variant"), "{error}");
+}
+
+#[test]
+fn event_envelope_rejects_invalid_stream_state() {
+    let error = serde_json::from_value::<EventEnvelope>(sample_event_document(serde_json::json!({
+        "event_kind": "session.stream.ready",
+        "ready_at": "2026-03-26T00:00:10Z",
+        "transport": "websocket",
+        "stream_endpoint": "/jet/honeypot/session/session-1/stream?stream_id=stream-1",
+        "token_expires_at": "2026-03-26T00:01:00Z",
+        "stream_state": "streaming"
+    })))
+    .expect_err("stream_state must reject unsupported enum values");
+
+    assert!(error.to_string().contains("unknown variant"), "{error}");
+}
+
+#[test]
+fn event_envelope_rejects_invalid_terminal_outcome() {
+    let error = serde_json::from_value::<EventEnvelope>(sample_event_document(serde_json::json!({
+        "event_kind": "session.ended",
+        "ended_at": "2026-03-26T00:02:00Z",
+        "terminal_outcome": "timed_out",
+        "disconnect_reason": "socket_closed",
+        "recycle_expected": true
+    })))
+    .expect_err("terminal_outcome must reject unsupported enum values");
+
+    assert!(error.to_string().contains("unknown variant"), "{error}");
+}
+
+#[test]
+fn event_envelope_rejects_invalid_kill_scope() {
+    let error = serde_json::from_value::<EventEnvelope>(sample_event_document(serde_json::json!({
+        "event_kind": "session.killed",
+        "killed_at": "2026-03-26T00:02:10Z",
+        "kill_scope": "operator",
+        "killed_by_operator_id": "operator-1",
+        "kill_reason": "manual_review"
+    })))
+    .expect_err("kill_scope must reject unsupported enum values");
+
+    assert!(error.to_string().contains("unknown variant"), "{error}");
+}
+
+#[test]
+fn event_envelope_rejects_unsupported_schema() {
+    let event = EventEnvelope {
+        schema_version: crate::SCHEMA_VERSION + 1,
+        ..sample_event_envelope(EventPayload::SessionStarted {
+            attacker_addr: "203.0.113.10:54422".to_owned(),
+            listener_id: "listener-1".to_owned(),
+            started_at: "2026-03-26T00:00:00Z".to_owned(),
+            session_state: SessionState::Connected,
+        })
+    };
+
+    let error = event
+        .ensure_supported_schema()
+        .expect_err("event envelope should reject unsupported schema versions");
+
+    assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
 }
 
 #[test]
@@ -150,10 +366,56 @@ fn bootstrap_and_stream_token_round_trip() {
 }
 
 #[test]
-fn error_response_round_trips() {
+fn bootstrap_response_rejects_unsupported_schema() {
+    let response = BootstrapResponse {
+        schema_version: crate::SCHEMA_VERSION + 1,
+        correlation_id: "corr-bootstrap".to_owned(),
+        generated_at: "2026-03-26T00:00:00Z".to_owned(),
+        replay_cursor: "cursor-bootstrap".to_owned(),
+        sessions: Vec::new(),
+    };
+
+    let error = response
+        .ensure_supported_schema()
+        .expect_err("bootstrap response should reject unsupported schema versions");
+
+    assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
+}
+
+#[test]
+fn stream_token_request_rejects_unsupported_schema() {
+    let request = StreamTokenRequest {
+        schema_version: crate::SCHEMA_VERSION + 1,
+        request_id: "req-stream-1".to_owned(),
+        session_id: "session-1".to_owned(),
+    };
+
+    let error = request
+        .ensure_supported_schema()
+        .expect_err("stream token request should reject unsupported schema versions");
+
+    assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
+}
+
+#[test]
+fn error_response_round_trips_and_validates_schema() {
     let error = ErrorResponse::new("corr-4", ErrorCode::HostUnavailable, "host is degraded", true);
     let json = serde_json::to_string(&error).expect("serialize error response");
     let decoded: ErrorResponse = serde_json::from_str(&json).expect("deserialize error response");
 
     assert_eq!(decoded, error);
+}
+
+#[test]
+fn error_response_rejects_unsupported_schema() {
+    let response = ErrorResponse {
+        schema_version: crate::SCHEMA_VERSION + 1,
+        ..ErrorResponse::new("corr-5", ErrorCode::InvalidRequest, "invalid", false)
+    };
+
+    let error = response
+        .ensure_supported_schema()
+        .expect_err("error response should reject unsupported schema versions");
+
+    assert_eq!(error.found, crate::SCHEMA_VERSION + 1);
 }

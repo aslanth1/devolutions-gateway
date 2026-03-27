@@ -259,3 +259,57 @@ impl Default for PathConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+
+    use tempfile::NamedTempFile;
+
+    use super::ControlPlaneConfig;
+
+    fn write_temp_config(contents: &str) -> NamedTempFile {
+        let mut file = NamedTempFile::new().expect("create temp config");
+        file.write_all(contents.as_bytes()).expect("write temp config");
+        file
+    }
+
+    #[test]
+    fn control_plane_config_rejects_invalid_bind_addr() {
+        let file = write_temp_config(
+            r#"
+[http]
+bind_addr = "not-a-socket"
+"#,
+        );
+
+        let error = ControlPlaneConfig::load_from_path(file.path()).expect_err("invalid bind_addr must be rejected");
+        let rendered = format!("{error:#}");
+
+        assert!(rendered.contains("parse control-plane config"), "{rendered}");
+        assert!(
+            rendered.contains("bind_addr") || rendered.contains("socket"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn control_plane_config_rejects_invalid_lifecycle_driver() {
+        let file = write_temp_config(
+            r#"
+[runtime]
+lifecycle_driver = "shell"
+"#,
+        );
+
+        let error =
+            ControlPlaneConfig::load_from_path(file.path()).expect_err("invalid lifecycle_driver must be rejected");
+        let rendered = format!("{error:#}");
+
+        assert!(rendered.contains("parse control-plane config"), "{rendered}");
+        assert!(
+            rendered.contains("lifecycle_driver") || rendered.contains("unknown variant"),
+            "{rendered}"
+        );
+    }
+}

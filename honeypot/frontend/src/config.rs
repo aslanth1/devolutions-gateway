@@ -139,3 +139,42 @@ impl Default for UiConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::FrontendConfig;
+
+    #[test]
+    fn frontend_config_rejects_invalid_bind_addr() {
+        let error = toml::from_str::<FrontendConfig>(
+            r#"
+[http]
+bind_addr = "not-a-socket"
+"#,
+        )
+        .expect_err("invalid bind_addr must be rejected");
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("bind_addr") || rendered.contains("socket"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn frontend_config_rejects_invalid_proxy_base_url() {
+        let error = toml::from_str::<FrontendConfig>(
+            r#"
+[proxy]
+base_url = "frontend.internal without scheme"
+"#,
+        )
+        .expect_err("invalid proxy base_url must be rejected");
+        let rendered = error.to_string();
+
+        assert!(
+            rendered.contains("base_url") || rendered.contains("relative URL") || rendered.contains("url"),
+            "{rendered}"
+        );
+    }
+}

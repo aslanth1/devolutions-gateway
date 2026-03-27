@@ -590,7 +590,7 @@ Pass when: the test boots `current/current/previous` and verifies the downgraded
 - [x] Keep honeypot e2e coverage inside `testsuite/tests/` and the existing `integration_tests` harness unless a split is justified.
 Pass when: the test layout remains discoverable and any new harness has a written reason.
 
-- [ ] Add contract tests for config parsing, schema versioning, and event payloads.
+- [x] Add contract tests for config parsing, schema versioning, and event payloads.
 Pass when: honeypot config and event contracts fail fast on incompatible changes without requiring the QEMU lab.
 
 - [ ] Add a Rust-driven lab harness startup and readiness test for QEMU lifecycle on a POSIX host.

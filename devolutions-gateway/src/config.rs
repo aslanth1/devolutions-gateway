@@ -2900,6 +2900,90 @@ mod tests {
         assert_eq!(conf.honeypot.frontend.events_path, "/custom/events");
     }
 
+    #[test]
+    fn honeypot_config_rejects_invalid_control_plane_endpoint() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "ControlPlane": {
+                    "Endpoint": "not a url"
+                }
+            }
+        }))) {
+            Ok(_) => panic!("invalid control-plane endpoint must be rejected"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid JSON config"), "{rendered}");
+        assert!(
+            rendered.contains("Endpoint") || rendered.contains("relative URL") || rendered.contains("url"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn honeypot_config_rejects_invalid_browser_transport() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "Stream": {
+                    "BrowserTransport": "WebRtc"
+                }
+            }
+        }))) {
+            Ok(_) => panic!("invalid browser transport must be rejected"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid JSON config"), "{rendered}");
+        assert!(
+            rendered.contains("BrowserTransport") || rendered.contains("unknown variant"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn honeypot_config_rejects_invalid_operator_auth_mode() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "OperatorAuth": {
+                    "Mode": "Oidc"
+                }
+            }
+        }))) {
+            Ok(_) => panic!("invalid operator auth mode must be rejected"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid JSON config"), "{rendered}");
+        assert!(
+            rendered.contains("Mode") || rendered.contains("unknown variant"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn honeypot_config_rejects_invalid_frontend_public_url() {
+        let error = match ConfHandle::mock(&minimal_config_json(json!({
+            "Honeypot": {
+                "Frontend": {
+                    "PublicUrl": "frontend.internal without scheme"
+                }
+            }
+        }))) {
+            Ok(_) => panic!("invalid frontend public url must be rejected"),
+            Err(error) => error,
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("invalid JSON config"), "{rendered}");
+        assert!(
+            rendered.contains("PublicUrl") || rendered.contains("relative URL") || rendered.contains("url"),
+            "{rendered}"
+        );
+    }
+
     fn minimal_config_json(extra_root_fields: Value) -> String {
         let mut root = json!({
             "ProvisionerPublicKeyData": {
