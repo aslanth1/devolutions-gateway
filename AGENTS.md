@@ -903,6 +903,17 @@ Pass when: `honeypot-control-plane consume-image` emits `validation_mode=hashed|
 - [x] Treat missing, corrupt, or stale digest stamps as cache misses only.
 Pass when: digest-stamp read or parse failures never grant trust by themselves, repeated validation rehashes when metadata drifts, and the docs explain that any uncertainty falls back to `validation_mode=hashed`.
 
+### Milestone 6m: Manual Deck Explicit Artifact Ensure Fast-Path
+
+- [x] Add a Rust-owned `ensure-artifacts` command for QEMU-backed manual-lab preparation.
+Pass when: `honeypot-manual-lab ensure-artifacts` reuses `preflight --no-browser` first, returns success immediately when the selected interop store is already ready, and only provisions through the sanctioned `bootstrap-store --execute` authority when store readiness is the blocker.
+
+- [x] Keep artifact ensure explicit, fail-closed, and candidate-safe.
+Pass when: `ensure-artifacts` never copies mutable local store state into canonical `/srv`, never guesses across multiple admissible manifests, honors explicit or remembered source-manifest selection, and preserves canonical versus local profile behavior.
+
+- [x] Add Make, docs, and parity tests for the artifact ensure lane.
+Pass when: the repo root `Makefile` exposes `manual-lab-ensure-artifacts` and `manual-lab-selftest-ensure-artifacts`, `manual-lab-selftest` uses the new ensure fast-path before launch, and docs or contract tests pin the new command surface plus the `ensure-artifacts -> preflight -> up` sequencing.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

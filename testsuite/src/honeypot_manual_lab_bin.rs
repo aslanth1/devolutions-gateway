@@ -28,8 +28,8 @@ fn main() {
 use anyhow::{Context as _, bail, ensure};
 #[cfg(unix)]
 use testsuite::honeypot_manual_lab::{
-    self, ManualLabBootstrapOptions, ManualLabBootstrapReport, ManualLabPreflightReport,
-    ManualLabRememberSourceManifestReport, ManualLabTeardownReport, ManualLabUpOptions,
+    self, ManualLabBootstrapOptions, ManualLabBootstrapReport, ManualLabEnsureArtifactsReport,
+    ManualLabPreflightReport, ManualLabRememberSourceManifestReport, ManualLabTeardownReport, ManualLabUpOptions,
 };
 
 #[cfg(unix)]
@@ -122,6 +122,29 @@ fn real_main() -> anyhow::Result<i32> {
 
             let report = honeypot_manual_lab::bootstrap_store(options)?;
             print_bootstrap_report(&report, format)?;
+            Ok(if report.is_success() { 0 } else { 2 })
+        }
+        "ensure-artifacts" => {
+            let mut options = ManualLabBootstrapOptions::default();
+            let mut format = ManualLabOutputFormat::Text;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--format=json" => format = ManualLabOutputFormat::Json,
+                    "--format=text" => format = ManualLabOutputFormat::Text,
+                    "--source-manifest" => {
+                        let value = args.next().context("missing value for --source-manifest")?;
+                        options.source_manifest_path = Some(value.into());
+                    }
+                    "--config" => {
+                        let value = args.next().context("missing value for --config")?;
+                        options.config_path = Some(value.into());
+                    }
+                    other => bail!("unknown argument for ensure-artifacts: {other}\n\n{}", usage()),
+                }
+            }
+
+            let report = honeypot_manual_lab::ensure_artifacts(options)?;
+            print_ensure_artifacts_report(&report, format)?;
             Ok(if report.is_success() { 0 } else { 2 })
         }
         "remember-source-manifest" => {
@@ -230,6 +253,18 @@ fn print_bootstrap_report(report: &ManualLabBootstrapReport, format: ManualLabOu
 }
 
 #[cfg(unix)]
+fn print_ensure_artifacts_report(
+    report: &ManualLabEnsureArtifactsReport,
+    format: ManualLabOutputFormat,
+) -> anyhow::Result<()> {
+    match format {
+        ManualLabOutputFormat::Text => println!("{}", report.render_text()),
+        ManualLabOutputFormat::Json => println!("{}", report.render_json()?),
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn print_remember_source_manifest_report(
     report: &ManualLabRememberSourceManifestReport,
     format: ManualLabOutputFormat,
@@ -270,6 +305,7 @@ fn usage() -> &'static str {
   cargo run -p testsuite --bin honeypot-manual-lab -- up [--no-browser]
   cargo run -p testsuite --bin honeypot-manual-lab -- preflight [--no-browser] [--format=json|text]
   cargo run -p testsuite --bin honeypot-manual-lab -- bootstrap-store [--source-manifest <path>] [--config <path>] [--execute] [--format=json|text]
+  cargo run -p testsuite --bin honeypot-manual-lab -- ensure-artifacts [--source-manifest <path>] [--config <path>] [--format=json|text]
   cargo run -p testsuite --bin honeypot-manual-lab -- remember-source-manifest --source-manifest <path> [--format=json|text]
   cargo run -p testsuite --bin honeypot-manual-lab -- status
   cargo run -p testsuite --bin honeypot-manual-lab -- down
@@ -278,6 +314,7 @@ Commands:
   up         Launch control-plane, proxy, frontend, and three Tiny11-backed live sessions.
   preflight  Check manual-lab prerequisites without starting services.
   bootstrap-store  Resolve and optionally import a sanctioned Tiny11 source bundle into the canonical interop store.
+  ensure-artifacts  Check whether the selected interop store is already ready and provision it only when store readiness is the blocker.
   remember-source-manifest  Remember one admissible source manifest for repeated manual bootstrap runs.
   status     Print the active manual-lab run state and current health snapshots.
   down       Tear down the active manual-lab run and recycle known leases.
@@ -286,6 +323,7 @@ Notes:
   up opens Chrome by default after the frontend reports three ready tiles.
   preflight checks the same gate path that up uses and exits non-zero when blocked.
   bootstrap-store is dry-run by default; add --execute to run consume-image and then rerun preflight.
+  ensure-artifacts uses preflight --no-browser first and only calls the sanctioned consume-image path when store readiness is the blocker.
   remember-source-manifest stores a local git-ignored hint under target/manual-lab/ and never weakens explicit --source-manifest precedence.
   Use --no-browser to leave the deck running without opening Chrome."
 }

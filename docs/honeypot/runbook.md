@@ -109,18 +109,22 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 ## Three-Host Manual Observation Deck
 
 - Use the Rust launcher when you want a real operator deck with three live Tiny11-backed sessions and a browser view you can click through.
-- The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight`, `remember-source-manifest`, `bootstrap-store`, `up`, `status`, and `down`.
-- The repo root `Makefile` also provides thin convenience wrappers `make manual-lab-preflight`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-status`, and `make manual-lab-down`.
+- The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight`, `ensure-artifacts`, `remember-source-manifest`, `bootstrap-store`, `up`, `status`, and `down`.
+- The repo root `Makefile` also provides thin convenience wrappers `make manual-lab-preflight`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-status`, and `make manual-lab-down`.
 - For manual operator self-test on a non-root host, prefer `make manual-lab-selftest` for the normal browser-backed path or `make manual-lab-selftest-no-browser` when you want the deck live without opening Chrome.
-- The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
+- The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only visibility helper for the effective profile, config path, store root, manifest dir, and masked guest-auth state.
-- Those wrappers still call the same Rust launcher and only pre-create a local lab-e2e gate file plus set `DGW_HONEYPOT_LAB_E2E=1` and `DGW_HONEYPOT_TIER_GATE` for `preflight`, `bootstrap-store`, and `up`.
-- For `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
+- Those wrappers still call the same Rust launcher and only pre-create a local lab-e2e gate file plus set `DGW_HONEYPOT_LAB_E2E=1` and `DGW_HONEYPOT_TIER_GATE` for `preflight`, `ensure-artifacts`, `bootstrap-store`, and `up`.
+- For `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
 - Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses a different guest account.
 - `MANUAL_LAB_PROFILE=canonical|local` selects the sanctioned host-state lane for those Make wrappers.
 - `canonical` is the default and keeps the checked-in `/srv/honeypot/...` paths.
 - `local` is the explicit non-root operator lane and switches the wrappers to repo-local state under `target/manual-lab/state/`.
 - `make manual-lab-selftest` and the `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience, but they do not change the canonical `manual-lab-*` defaults.
+- `ensure-artifacts` is the fast explicit prewarm lane for QEMU-backed runs.
+- It first runs the same manual-lab readiness check with `preflight --no-browser`.
+- If the selected interop store is already ready, it returns immediately and skips `bootstrap-store`.
+- It only provisions through the sanctioned `consume-image` path when store readiness is the blocker and the source manifest is explicit or unambiguous under the existing discovery rules.
 - Repeated local self-test bootstrap is idempotent.
 - If the requested trusted image is already present and valid in the selected store, `bootstrap-store --execute` returns `already_present` before attempting to create a matching import lock.
 - Dead-pid import locks are reclaimed automatically.
@@ -128,11 +132,10 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - A repeated unchanged import may report `validation_mode=cached`.
 - Any missing, corrupt, or stale digest stamp falls back to a full hash before trust is granted.
 - A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock; wait for that process or stop the reported pid if it is unexpected, then rerun `make manual-lab-selftest`.
-- Use the preflight-first sequence for manual operator work:
-  `make manual-lab-preflight`,
-  run `make manual-lab-bootstrap-store`,
-  if bootstrap reports multiple admissible manifests, rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`,
-  then rerun `make manual-lab-bootstrap-store-exec`,
+- Use the artifact-first sequence for repeated manual operator work:
+  `make manual-lab-ensure-artifacts`,
+  if ensure-artifacts reports multiple admissible manifests, rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`,
+  then rerun `make manual-lab-ensure-artifacts`,
   rerun `make manual-lab-preflight`,
   then launch with `make manual-lab-up`.
 - `up` is `lab-e2e` gated and refuses to start unless `DGW_HONEYPOT_LAB_E2E=1` is set and `DGW_HONEYPOT_TIER_GATE` points at a gate file whose `contract_passed` and `host_smoke_passed` fields are both `true`.
@@ -148,6 +151,8 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS` remain optional overrides for unusual lab hosts.
 - `preflight` remains read-only.
 - `remember-source-manifest` stores only a local git-ignored hint under `target/manual-lab/selected-source-manifest.json`; it never mutates the interop store.
+- `ensure-artifacts` stays explicit and may mutate the selected interop store, but it only does so when preflight is blocked by store readiness and the source manifest selection is explicit or unique.
+- When `preflight` is already ready, `ensure-artifacts` stops there and avoids a repeat `consume-image` run entirely.
 - `bootstrap-store` is the sanctioned mutating remediation lane, and it is dry-run by default until `--execute` or `make manual-lab-bootstrap-store-exec` is used.
 - `bootstrap-store` checks the same manual-lab interop root that `preflight` will later validate.
 - If more than one admissible local bundle manifest is present under the sanctioned `target/run-*/artifacts/.../bundle-manifest.json` lanes, `bootstrap-store` refuses to guess until the operator either remembers one with `MANUAL_LAB_SOURCE_MANIFEST=<path>` or passes `--source-manifest <path>` explicitly.
@@ -156,14 +161,13 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - `MANUAL_LAB_CONTROL_PLANE_CONFIG=<path>` or `--config <path>` is available when the import config must differ from the repo default `honeypot/docker/config/control-plane/manual-lab-bootstrap.toml`.
 - If the canonical `/srv` lane is blocked by store-root permissions on a non-root host, switch to the explicit local profile:
   `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
-  `make manual-lab-bootstrap-store MANUAL_LAB_PROFILE=local`,
-  `make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local`,
+  `make manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local`,
   `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
   then `make manual-lab-up MANUAL_LAB_PROFILE=local`.
 - The live canonical `missing_store_root` blocker now points non-root operators at the self-test quick path first:
   `make manual-lab-selftest`.
 - That same blocker still keeps canonical `/srv` proof separate:
-  `make manual-lab-bootstrap-store-exec`,
+  `make manual-lab-ensure-artifacts`,
   then `make manual-lab-preflight`.
 - If you want to inspect the lane first without mutating anything, run `make manual-lab-show-profile`.
 - The shorter manual self-test quick path on this host is:
@@ -171,7 +175,7 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
   then `make manual-lab-selftest-status` and `make manual-lab-selftest-down`.
 - The local profile is for operator self-test and uses repo-local writable state only.
 - It does not replace the canonical `/srv` lane for production-like host readiness proof.
-- If `preflight` or `up` reports `missing_store_root`, bootstrap the canonical store through `make manual-lab-bootstrap-store` first instead of editing a placeholder `consume-image` command by hand.
+- If `preflight` or `up` reports `missing_store_root`, run `make manual-lab-ensure-artifacts` first instead of editing a placeholder `consume-image` command by hand.
 - The expected post-import state is a trusted-image store under `/srv/honeypot/images`, a manifest set under `/srv/honeypot/images/manifests`, and a `preflight` result of `ready` before the operator launches `up`.
 - Treat a blocked `preflight` result as `blocked_prereq` only.
 - It is a prerequisite signal, not runtime proof and not Milestone 6b completion evidence by itself.

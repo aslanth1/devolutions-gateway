@@ -476,27 +476,39 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Make repeated trusted-image validation fast without weakening fail-closed digest checks.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6m: Manual Deck Explicit Artifact Ensure Fast-Path",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add a Rust-owned `ensure-artifacts` command for QEMU-backed manual-lab preparation.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
+    assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
     assert_contains(runbook_path, &runbook, "make manual-lab-remember-source-manifest");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-no-browser");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-preflight");
+    assert_contains(runbook_path, &runbook, "make manual-lab-selftest-ensure-artifacts");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-up");
     assert_contains(runbook_path, &runbook, "make manual-lab-show-profile");
     assert_contains(runbook_path, &runbook, "MANUAL_LAB_PROFILE=canonical|local");
     assert_contains(
         runbook_path,
         &runbook,
-        "make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local",
+        "make manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local",
     );
     assert_contains(
         runbook_path,
         &runbook,
-        "preflight`,\n  run `make manual-lab-bootstrap-store`,\n  if bootstrap reports multiple admissible manifests, rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`,\n  then rerun `make manual-lab-bootstrap-store-exec`,\n  rerun `make manual-lab-preflight`,\n  then launch with `make manual-lab-up`.",
+        "make manual-lab-ensure-artifacts`,\n  if ensure-artifacts reports multiple admissible manifests, rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`,\n  then rerun `make manual-lab-ensure-artifacts`,\n  rerun `make manual-lab-preflight`,\n  then launch with `make manual-lab-up`.",
     );
     assert_contains(
         runbook_path,
@@ -517,6 +529,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         runbook_path,
         &runbook,
         "`make manual-lab-selftest` and the `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "`ensure-artifacts` is the fast explicit prewarm lane for QEMU-backed runs.",
     );
     assert_contains(
         runbook_path,
@@ -564,6 +581,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &runbook,
         "That same blocker still keeps canonical `/srv` proof separate:",
     );
+    assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(
         runbook_path,
         &runbook,
@@ -575,13 +593,19 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "preflight|remember-source-manifest|bootstrap-store|up|status|down",
+        "preflight|ensure-artifacts|remember-source-manifest|bootstrap-store|up|status|down",
     );
     assert_contains(testing_path, &testing, "MANUAL_LAB_PROFILE=canonical|local");
+    assert_contains(testing_path, &testing, "make manual-lab-ensure-artifacts");
     assert_contains(
         testing_path,
         &testing,
-        "The required manual sequence is `preflight -> remember-source-manifest -> bootstrap-store --execute -> preflight -> up` when more than one admissible manifest exists.",
+        "The required manual sequence is `ensure-artifacts -> preflight -> up` when the source manifest is unique or already remembered.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "When more than one admissible manifest exists, the required sequence is `remember-source-manifest -> ensure-artifacts -> preflight -> up`.",
     );
     assert_contains(
         testing_path,
@@ -591,7 +615,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local",
+        "make manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local",
     );
     assert_contains(
         testing_path,
@@ -611,12 +635,17 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.",
+        "The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.",
     );
     assert_contains(
         testing_path,
         &testing,
         "`make manual-lab-show-profile` is the read-only helper",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`ensure-artifacts` is the explicit fast-path for QEMU-backed operator flows.",
     );
     assert_contains(
         testing_path,

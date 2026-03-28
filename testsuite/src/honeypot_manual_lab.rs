@@ -37,6 +37,7 @@ const MANUAL_LAB_HOST_COUNT: usize = 3;
 const MANUAL_LAB_ROOT_RELATIVE_PATH: &str = "target/manual-lab";
 const MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH: &str = "target/manual-lab/active.json";
 const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_RELATIVE_PATH: &str = "target/manual-lab/selected-source-manifest.json";
+const MANUAL_LAB_ENSURE_ARTIFACTS_HINT: &str = "make manual-lab-ensure-artifacts";
 const MANUAL_LAB_SELFTEST_HINT: &str = "make manual-lab-selftest";
 const MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT: &str = "make manual-lab-show-profile";
 const MANUAL_LAB_TARGET_ROOT_RELATIVE_PATH: &str = "target";
@@ -431,6 +432,187 @@ impl ManualLabBootstrapReport {
             }
         }
         if self.status != ManualLabBootstrapStatus::Blocked
+            && let Some(detail) = self.detail.as_deref()
+        {
+            lines.push(format!("detail={detail}"));
+        }
+        if let Some(remediation) = self.remediation.as_deref() {
+            lines.push(format!("remediation: {remediation}"));
+        }
+
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabEnsureArtifactsStatus {
+    Ready,
+    Executed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualLabEnsureArtifactsReport {
+    pub status: ManualLabEnsureArtifactsStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
+    pub image_store_root: PathBuf,
+    pub manifest_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_manifest_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_manifest_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_state: Option<ConsumeTrustedImageState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_mode: Option<ConsumeTrustedImageValidationMode>,
+    pub preflight: ManualLabPreflightReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<ManualLabBootstrapReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+}
+
+impl ManualLabEnsureArtifactsReport {
+    fn ready(preflight: ManualLabPreflightReport) -> Self {
+        Self {
+            status: ManualLabEnsureArtifactsStatus::Ready,
+            blocker: None,
+            image_store_root: preflight.image_store_root.clone(),
+            manifest_dir: preflight.manifest_dir.clone(),
+            source_manifest_path: None,
+            source_manifest_digest: None,
+            import_state: None,
+            validation_mode: None,
+            preflight,
+            bootstrap: None,
+            detail: Some(
+                "manual-lab preflight already trusts the selected interop store; skipped bootstrap-store".to_owned(),
+            ),
+            remediation: None,
+        }
+    }
+
+    fn executed(bootstrap: ManualLabBootstrapReport) -> Self {
+        let preflight = bootstrap
+            .post_import_preflight
+            .clone()
+            .expect("ensure-artifacts executed path requires post-import preflight");
+        Self {
+            status: ManualLabEnsureArtifactsStatus::Executed,
+            blocker: None,
+            image_store_root: preflight.image_store_root.clone(),
+            manifest_dir: preflight.manifest_dir.clone(),
+            source_manifest_path: bootstrap.source_manifest_path.clone(),
+            source_manifest_digest: bootstrap.source_manifest_digest.clone(),
+            import_state: bootstrap.import_state,
+            validation_mode: bootstrap.validation_mode,
+            preflight,
+            bootstrap: Some(bootstrap),
+            detail: Some(
+                "ensure-artifacts provisioned or revalidated the trusted image store and post-import preflight is ready"
+                    .to_owned(),
+            ),
+            remediation: None,
+        }
+    }
+
+    fn blocked_from_preflight(preflight: ManualLabPreflightReport) -> Self {
+        Self {
+            status: ManualLabEnsureArtifactsStatus::Blocked,
+            blocker: preflight.blocker.clone(),
+            image_store_root: preflight.image_store_root.clone(),
+            manifest_dir: preflight.manifest_dir.clone(),
+            source_manifest_path: None,
+            source_manifest_digest: None,
+            import_state: None,
+            validation_mode: None,
+            detail: preflight.detail.clone(),
+            remediation: preflight.remediation.clone(),
+            preflight,
+            bootstrap: None,
+        }
+    }
+
+    fn blocked_from_bootstrap(preflight: ManualLabPreflightReport, bootstrap: ManualLabBootstrapReport) -> Self {
+        let detail = bootstrap.detail.clone();
+        let remediation = bootstrap.remediation.clone();
+        Self {
+            status: ManualLabEnsureArtifactsStatus::Blocked,
+            blocker: bootstrap.blocker.clone(),
+            image_store_root: preflight.image_store_root.clone(),
+            manifest_dir: preflight.manifest_dir.clone(),
+            source_manifest_path: bootstrap.source_manifest_path.clone(),
+            source_manifest_digest: bootstrap.source_manifest_digest.clone(),
+            import_state: bootstrap.import_state,
+            validation_mode: bootstrap.validation_mode,
+            detail,
+            remediation,
+            preflight,
+            bootstrap: Some(bootstrap),
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        matches!(
+            self.status,
+            ManualLabEnsureArtifactsStatus::Ready | ManualLabEnsureArtifactsStatus::Executed
+        )
+    }
+
+    pub fn render_json(&self) -> anyhow::Result<String> {
+        serde_json::to_string_pretty(self).context("serialize manual lab ensure-artifacts report")
+    }
+
+    pub fn render_text(&self) -> String {
+        let mut lines = Vec::new();
+
+        match self.status {
+            ManualLabEnsureArtifactsStatus::Ready => lines.push("manual lab artifacts ready".to_owned()),
+            ManualLabEnsureArtifactsStatus::Executed => lines.push("manual lab artifacts ensured".to_owned()),
+            ManualLabEnsureArtifactsStatus::Blocked => {
+                let blocker = self.blocker.as_deref().unwrap_or("blocked");
+                let detail = self.detail.as_deref().unwrap_or("ensure-artifacts could not continue");
+                lines.push(format!("manual lab artifacts blocked by {blocker}: {detail}"));
+            }
+        }
+
+        lines.push(format!("image_store_root={}", self.image_store_root.display()));
+        lines.push(format!("manifest_dir={}", self.manifest_dir.display()));
+        let preflight_status = if self.preflight.is_ready() { "ready" } else { "blocked" };
+        lines.push(format!("preflight_status={preflight_status}"));
+        if let Some(path) = &self.source_manifest_path {
+            lines.push(format!("source_manifest_path={}", path.display()));
+        }
+        if let Some(digest) = self.source_manifest_digest.as_deref() {
+            lines.push(format!("source_manifest_digest={digest}"));
+        }
+        if let Some(import_state) = self.import_state {
+            let import_state = match import_state {
+                ConsumeTrustedImageState::Imported => "imported",
+                ConsumeTrustedImageState::AlreadyPresent => "already_present",
+            };
+            lines.push(format!("import_state={import_state}"));
+        }
+        if let Some(validation_mode) = self.validation_mode {
+            let validation_mode = match validation_mode {
+                ConsumeTrustedImageValidationMode::Hashed => "hashed",
+                ConsumeTrustedImageValidationMode::Cached => "cached",
+            };
+            lines.push(format!("validation_mode={validation_mode}"));
+        }
+        if let Some(bootstrap) = &self.bootstrap {
+            let bootstrap_status = match bootstrap.status {
+                ManualLabBootstrapStatus::Ready => "ready",
+                ManualLabBootstrapStatus::Executed => "executed",
+                ManualLabBootstrapStatus::Blocked => "blocked",
+            };
+            lines.push(format!("bootstrap_status={bootstrap_status}"));
+        }
+        if self.status != ManualLabEnsureArtifactsStatus::Blocked
             && let Some(detail) = self.detail.as_deref()
         {
             lines.push(format!("detail={detail}"));
@@ -1083,6 +1265,28 @@ pub fn preflight(options: ManualLabUpOptions) -> anyhow::Result<ManualLabPreflig
         ManualLabPreflightOutcome::Ready(ready) => ready.report,
         ManualLabPreflightOutcome::Blocked(report) => report,
     })
+}
+
+pub fn ensure_artifacts(mut options: ManualLabBootstrapOptions) -> anyhow::Result<ManualLabEnsureArtifactsReport> {
+    let preflight = preflight(ManualLabUpOptions { open_browser: false })?;
+    if preflight.is_ready() {
+        return Ok(ManualLabEnsureArtifactsReport::ready(preflight));
+    }
+
+    match preflight.blocker.as_deref() {
+        Some("missing_store_root") | Some("invalid_provenance") => {}
+        _ => return Ok(ManualLabEnsureArtifactsReport::blocked_from_preflight(preflight)),
+    }
+
+    options.execute = true;
+    let bootstrap = bootstrap_store(options)?;
+    if bootstrap.status == ManualLabBootstrapStatus::Executed {
+        return Ok(ManualLabEnsureArtifactsReport::executed(bootstrap));
+    }
+
+    Ok(ManualLabEnsureArtifactsReport::blocked_from_bootstrap(
+        preflight, bootstrap,
+    ))
 }
 
 pub fn remember_source_manifest(source_manifest_path: &Path) -> anyhow::Result<ManualLabRememberSourceManifestReport> {
@@ -2003,7 +2207,7 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
                     }
                     _ if bootstrap_report.is_success() => {
                         format!(
-                            "for local manual self-test on a non-root host, run `{MANUAL_LAB_SELFTEST_HINT}`; if you want to inspect the active lane first, run `{MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT}`; for canonical /srv proof, run `make manual-lab-bootstrap-store-exec` and then rerun `make manual-lab-preflight`"
+                            "for local manual self-test on a non-root host, run `{MANUAL_LAB_SELFTEST_HINT}`; if you want to inspect the active lane first, run `{MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT}`; for canonical /srv proof, run `{MANUAL_LAB_ENSURE_ARTIFACTS_HINT}` and then rerun `make manual-lab-preflight`"
                         )
                     }
                     _ => remediation.unwrap_or_else(|| {

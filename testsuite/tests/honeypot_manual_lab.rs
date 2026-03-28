@@ -107,6 +107,7 @@ fn manual_lab_cli_help_lists_up_status_and_down() {
     assert!(rendered.contains("up [--no-browser]"), "{rendered}");
     assert!(rendered.contains("preflight"), "{rendered}");
     assert!(rendered.contains("bootstrap-store"), "{rendered}");
+    assert!(rendered.contains("ensure-artifacts"), "{rendered}");
     assert!(rendered.contains("remember-source-manifest"), "{rendered}");
     assert!(rendered.contains("status"), "{rendered}");
     assert!(rendered.contains("down"), "{rendered}");
@@ -158,6 +159,7 @@ fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
     );
     assert!(rendered.contains("manual-lab-selftest"), "{rendered}");
     assert!(rendered.contains("manual-lab-show-profile"), "{rendered}");
+    assert!(rendered.contains("manual-lab-ensure-artifacts"), "{rendered}");
     assert!(
         !active_path.exists(),
         "preflight must not create active state at {}",
@@ -220,6 +222,10 @@ fn manual_lab_cli_preflight_and_up_share_missing_store_root_blocker() {
     );
     assert!(
         preflight_rendered.contains("manual-lab-show-profile"),
+        "{preflight_rendered}"
+    );
+    assert!(
+        preflight_rendered.contains("manual-lab-ensure-artifacts"),
         "{preflight_rendered}"
     );
 }
@@ -423,6 +429,116 @@ fn manual_lab_cli_bootstrap_store_execute_reports_cached_validation_for_repeated
     assert!(rendered.contains("import_state=already_present"), "{rendered}");
     assert!(rendered.contains("validation_mode=cached"), "{rendered}");
     assert!(rendered.contains("post_import_preflight_status=ready"), "{rendered}");
+}
+
+#[test]
+fn manual_lab_cli_ensure_artifacts_executes_import_when_store_readiness_is_missing() {
+    let tempdir = tempdir().expect("create tempdir");
+    let gate_path = tempdir.path().join("lab-e2e-gate.json");
+    write_manual_lab_gate(&gate_path);
+
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "ensure-execute");
+
+    let kvm_path = tempdir.path().join("dev-kvm");
+    fs::write(&kvm_path, b"kvm").expect("write fake kvm device");
+    let xfreerdp_path = tempdir.path().join("xfreerdp");
+    fs::write(&xfreerdp_path, b"#!/bin/sh\nexit 0\n").expect("write fake xfreerdp");
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("ensure-artifacts")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_LAB_E2E", "1")
+        .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
+        .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
+        .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(rendered.contains("manual lab artifacts ensured"), "{rendered}");
+    assert!(rendered.contains("preflight_status=ready"), "{rendered}");
+    assert!(rendered.contains("bootstrap_status=executed"), "{rendered}");
+    assert!(rendered.contains("import_state=imported"), "{rendered}");
+    assert!(rendered.contains("validation_mode=hashed"), "{rendered}");
+    assert!(rendered.contains("source_manifest_digest="), "{rendered}");
+}
+
+#[test]
+fn manual_lab_cli_ensure_artifacts_skips_bootstrap_when_preflight_is_already_ready() {
+    let tempdir = tempdir().expect("create tempdir");
+    let gate_path = tempdir.path().join("lab-e2e-gate.json");
+    write_manual_lab_gate(&gate_path);
+
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "ensure-ready");
+
+    let kvm_path = tempdir.path().join("dev-kvm");
+    fs::write(&kvm_path, b"kvm").expect("write fake kvm device");
+    let xfreerdp_path = tempdir.path().join("xfreerdp");
+    fs::write(&xfreerdp_path, b"#!/bin/sh\nexit 0\n").expect("write fake xfreerdp");
+
+    honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--execute")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_LAB_E2E", "1")
+        .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
+        .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
+        .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .assert()
+        .success();
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("ensure-artifacts")
+        .arg("--config")
+        .arg(&config_path)
+        .env("DGW_HONEYPOT_LAB_E2E", "1")
+        .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
+        .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
+        .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(rendered.contains("manual lab artifacts ready"), "{rendered}");
+    assert!(rendered.contains("preflight_status=ready"), "{rendered}");
+    assert!(rendered.contains("skipped bootstrap-store"), "{rendered}");
+    assert!(!rendered.contains("bootstrap_status="), "{rendered}");
+    assert!(!rendered.contains("import_state="), "{rendered}");
 }
 
 #[cfg(unix)]

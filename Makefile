@@ -59,6 +59,12 @@ manual-lab-bootstrap-store-exec: $(MANUAL_LAB_TIER_GATE)
 	@$(MANUAL_LAB_RUNTIME_ENV) \
 	cargo run -p testsuite --bin honeypot-manual-lab -- bootstrap-store --execute $(MANUAL_LAB_BOOTSTRAP_ARGS)
 
+.PHONY: manual-lab-ensure-artifacts
+manual-lab-ensure-artifacts: $(MANUAL_LAB_TIER_GATE)
+	@printf 'using manual-lab profile %s with tier gate %s\n' "$(MANUAL_LAB_PROFILE)" "$(MANUAL_LAB_TIER_GATE)"
+	@$(MANUAL_LAB_RUNTIME_ENV) \
+	cargo run -p testsuite --bin honeypot-manual-lab -- ensure-artifacts $(MANUAL_LAB_BOOTSTRAP_ARGS)
+
 .PHONY: manual-lab-remember-source-manifest
 manual-lab-remember-source-manifest:
 	@cargo run -p testsuite --bin honeypot-manual-lab -- remember-source-manifest $(if $(MANUAL_LAB_SOURCE_MANIFEST),--source-manifest "$(MANUAL_LAB_SOURCE_MANIFEST)",)
@@ -111,6 +117,11 @@ manual-lab-selftest-bootstrap-store-exec:
 	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
 	@$(MAKE) manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local
 
+.PHONY: manual-lab-selftest-ensure-artifacts
+manual-lab-selftest-ensure-artifacts:
+	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
+	@$(MAKE) manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local
+
 .PHONY: manual-lab-selftest-up
 manual-lab-selftest-up:
 	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
@@ -124,13 +135,13 @@ manual-lab-selftest-up-no-browser:
 .PHONY: manual-lab-selftest
 manual-lab-selftest:
 	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
-	@$(MAKE) manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local
+	@$(MAKE) manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local
 	@$(MAKE) manual-lab-up MANUAL_LAB_PROFILE=local
 
 .PHONY: manual-lab-selftest-no-browser
 manual-lab-selftest-no-browser:
 	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
-	@$(MAKE) manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local
+	@$(MAKE) manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local
 	@$(MAKE) manual-lab-up-no-browser MANUAL_LAB_PROFILE=local
 
 .PHONY: manual-lab-selftest-status
