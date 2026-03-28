@@ -1177,6 +1177,78 @@ fn manual_headed_writer_runtime_rejects_unverified_row706_run() {
 }
 
 #[test]
+fn manual_headed_writer_verify_row706_requires_explicit_run_id() {
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args(["verify-row706"])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(rendered.contains("missing --run-id"), "{rendered}");
+}
+
+#[test]
+fn manual_headed_writer_verify_row706_fails_for_incomplete_run() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    row706_begin_run(&evidence_root, &run_id).expect("begin incomplete row706 run");
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "verify-row706",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+        ])
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let rendered = String::from_utf8(output).expect("stderr to utf8");
+    assert!(rendered.contains("must be complete before verification"), "{rendered}");
+}
+
+#[test]
+fn manual_headed_writer_verify_row706_accepts_complete_run() {
+    let tempdir = tempdir().expect("create tempdir");
+    let evidence_root = tempdir.path().join("row706");
+    let run_id = Uuid::new_v4().to_string();
+    write_verified_row706_run(&evidence_root, &run_id);
+
+    let output = honeypot_manual_headed_writer_assert_cmd()
+        .args([
+            "verify-row706",
+            "--evidence-root",
+            &evidence_root.display().to_string(),
+            "--run-id",
+            &run_id,
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("stdout to utf8");
+    assert!(
+        rendered.contains(&format!("verified row706 run {run_id}")),
+        "{rendered}"
+    );
+    assert!(rendered.contains("attestation_ref=attestation/tiny11-1"), "{rendered}");
+    assert!(
+        rendered.contains(&format!(
+            "image_store_root={}",
+            evidence_root.join("interop-store").display()
+        )),
+        "{rendered}"
+    );
+}
+
+#[test]
 fn manual_headed_writer_runtime_accepts_verified_stack_anchor() {
     let tempdir = tempdir().expect("create tempdir");
     let evidence_root = tempdir.path().join("row706");

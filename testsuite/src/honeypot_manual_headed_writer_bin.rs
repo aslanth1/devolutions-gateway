@@ -76,6 +76,13 @@ struct FinalizeCommand {
 }
 
 #[cfg(unix)]
+#[derive(Debug)]
+struct VerifyRow706Command {
+    evidence_root: PathBuf,
+    run_id: String,
+}
+
+#[cfg(unix)]
 fn real_main() -> anyhow::Result<()> {
     let mut args = env::args().skip(1);
     let command = args
@@ -86,6 +93,7 @@ fn real_main() -> anyhow::Result<()> {
         "preflight" => run_record_command(CommandMode::Preflight, parse_record_command(args.collect())?),
         "runtime" => run_record_command(CommandMode::Runtime, parse_record_command(args.collect())?),
         "finalize" => run_finalize_command(parse_finalize_command(args.collect())?),
+        "verify-row706" => run_verify_row706_command(parse_verify_row706_command(args.collect())?),
         "-h" | "--help" | "help" => {
             println!("{}", usage());
             Ok(())
@@ -225,6 +233,20 @@ fn run_finalize_command(command: FinalizeCommand) -> anyhow::Result<()> {
         envelope.anchor_results.len()
     );
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn run_verify_row706_command(command: VerifyRow706Command) -> anyhow::Result<()> {
+    let envelope = verify_row706_evidence_envelope(&command.evidence_root, &command.run_id)
+        .with_context(|| format!("verify row706 run {}", command.run_id))?;
+    println!(
+        "verified row706 run {} attestation_ref={} base_image_path={} image_store_root={}",
+        command.run_id,
+        envelope.attestation_ref,
+        envelope.base_image_path.display(),
+        envelope.image_store_root.display(),
+    );
     Ok(())
 }
 
@@ -373,6 +395,26 @@ fn parse_finalize_command(arguments: Vec<String>) -> anyhow::Result<FinalizeComm
 }
 
 #[cfg(unix)]
+fn parse_verify_row706_command(arguments: Vec<String>) -> anyhow::Result<VerifyRow706Command> {
+    let mut evidence_root = row706_default_evidence_dir();
+    let mut run_id = None;
+
+    let mut parser = FlagParser::new(arguments);
+    while let Some(flag) = parser.next_flag()? {
+        match flag.as_str() {
+            "--evidence-root" => evidence_root = PathBuf::from(parser.take_value(&flag)?),
+            "--run-id" => run_id = Some(parser.take_value(&flag)?),
+            other => bail!("unknown flag {other}\n\n{}", usage()),
+        }
+    }
+
+    Ok(VerifyRow706Command {
+        evidence_root,
+        run_id: run_id.ok_or_else(|| anyhow::anyhow!("missing --run-id"))?,
+    })
+}
+
+#[cfg(unix)]
 fn parse_status(value: &str) -> anyhow::Result<ManualHeadedAnchorStatus> {
     match value {
         "passed" => Ok(ManualHeadedAnchorStatus::Passed),
@@ -418,7 +460,8 @@ fn usage() -> &'static str {
     "usage:
   honeypot-manual-headed-writer preflight --run-id <uuid> --anchor-id <anchor> --status <passed|blocked_prereq|failed> --producer <producer> --artifact <path> --artifact-relpath <relative-path> [--detail <text>] [--captured-at-unix-secs <secs>] [--evidence-root <path>]
   honeypot-manual-headed-writer runtime --run-id <uuid> --anchor-id <anchor> --status <passed|blocked_prereq|failed> --producer <producer> --artifact <path> --artifact-relpath <relative-path> [--session-id <id>] [--vm-lease-id <id>] [--detail <text>] [--captured-at-unix-secs <secs>] [--evidence-root <path>]
-  honeypot-manual-headed-writer finalize --run-id <uuid> [--evidence-root <path>]"
+  honeypot-manual-headed-writer finalize --run-id <uuid> [--evidence-root <path>]
+  honeypot-manual-headed-writer verify-row706 --run-id <uuid> [--evidence-root <path>]"
 }
 
 #[cfg(unix)]
