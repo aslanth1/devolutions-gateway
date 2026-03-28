@@ -14,3 +14,4 @@ pub mod honeypot_release;
 pub mod honeypot_tiers;
 pub mod mcp_client;
 pub mod mcp_server;
+pub mod ports;

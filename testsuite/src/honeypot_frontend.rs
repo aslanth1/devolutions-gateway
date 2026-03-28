@@ -5,6 +5,8 @@ use std::sync::LazyLock;
 use anyhow::Context as _;
 use typed_builder::TypedBuilder;
 
+use crate::ports::allocate_test_port;
+
 static HONEYPOT_FRONTEND_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
         .manifest_path("../honeypot/frontend/Cargo.toml")
@@ -172,9 +174,5 @@ pub async fn send_http_request(
 }
 
 pub fn find_unused_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind localhost ephemeral port")
-        .local_addr()
-        .expect("read ephemeral port")
-        .port()
+    allocate_test_port()
 }

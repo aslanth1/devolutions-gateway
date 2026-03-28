@@ -6,6 +6,8 @@ use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 use typed_builder::TypedBuilder;
 
+use crate::ports::allocate_test_port;
+
 pub struct VerbosityProfile(&'static str);
 
 impl VerbosityProfile {
@@ -132,11 +134,7 @@ pub struct DgwConfig {
 }
 
 fn find_unused_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    allocate_test_port()
 }
 
 impl DgwConfig {

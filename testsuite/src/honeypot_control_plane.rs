@@ -16,6 +16,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use typed_builder::TypedBuilder;
 use uuid::Uuid;
 
+use crate::ports::allocate_test_port;
+
 static HONEYPOT_CONTROL_PLANE_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
         .manifest_path("../honeypot/control-plane/Cargo.toml")
@@ -337,11 +339,7 @@ pub async fn send_http_request(
 }
 
 pub fn find_unused_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind localhost ephemeral port")
-        .local_addr()
-        .expect("read ephemeral port")
-        .port()
+    allocate_test_port()
 }
 
 #[cfg(unix)]

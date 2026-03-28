@@ -13,6 +13,7 @@ use honeypot_contracts::frontend::{
 };
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{DgwConfig, HoneypotConfig};
+use testsuite::ports::allocate_test_port;
 use uuid::Uuid;
 
 const HONEYPOT_WATCH_SCOPE_TOKEN: &str = "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiIwMDAwMDAwMC0wMDAwLTAwMDAtMDAwMC0wMDAwMDAwMDAwMDMiLCJpYXQiOjE3MzM2Njk5OTksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzMzNjY5OTk5LCJzY29wZSI6ImdhdGV3YXkuaG9uZXlwb3Qud2F0Y2gifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ";
@@ -221,11 +222,7 @@ async fn proxy_health_reports_ready_when_honeypot_control_plane_is_ready() -> an
 
 #[tokio::test]
 async fn proxy_health_reports_unavailable_when_honeypot_control_plane_is_unreachable() -> anyhow::Result<()> {
-    let unreachable_endpoint = {
-        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).context("bind temp port")?;
-        let addr = listener.local_addr().context("read temp port")?;
-        format!("http://{addr}/")
-    };
+    let unreachable_endpoint = format!("http://127.0.0.1:{}/", allocate_test_port());
     let config_handle = DgwConfig::builder()
         .disable_token_validation(true)
         .honeypot(
@@ -277,12 +274,7 @@ async fn proxy_health_reports_unavailable_when_honeypot_control_plane_is_unreach
 
 #[tokio::test]
 async fn proxy_health_recovers_after_control_plane_outage() -> anyhow::Result<()> {
-    let reserved_listener =
-        std::net::TcpListener::bind(("127.0.0.1", 0)).context("bind reserved control-plane port")?;
-    let control_plane_addr = reserved_listener
-        .local_addr()
-        .context("read reserved control-plane address")?;
-    drop(reserved_listener);
+    let control_plane_addr = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, allocate_test_port()));
 
     let config_handle = DgwConfig::builder()
         .disable_token_validation(true)

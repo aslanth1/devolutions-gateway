@@ -23,6 +23,7 @@ use testsuite::honeypot_frontend::{
     HoneypotFrontendTestConfig, find_unused_port, honeypot_frontend_tokio_cmd, read_http_response, send_http_request,
     write_honeypot_frontend_config,
 };
+use testsuite::ports::allocate_test_port;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -237,9 +238,7 @@ async fn frontend_health_reports_degraded_when_bootstrap_is_unreachable() {
 
 #[tokio::test]
 async fn frontend_health_recovers_when_proxy_bootstrap_becomes_reachable() {
-    let reserved_listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind reserved proxy port");
-    let proxy_addr = reserved_listener.local_addr().expect("read reserved proxy address");
-    drop(reserved_listener);
+    let proxy_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, allocate_test_port()));
 
     let state = mock_state(
         BootstrapResponse {
@@ -2150,7 +2149,7 @@ async fn start_mock_proxy(
     Arc<Mutex<Vec<String>>>,
     Arc<Mutex<u32>>,
 ) {
-    start_mock_proxy_on_addr(state, SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await
+    start_mock_proxy_on_addr(state, SocketAddr::from((Ipv4Addr::LOCALHOST, allocate_test_port()))).await
 }
 
 async fn start_mock_proxy_on_addr(
