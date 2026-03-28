@@ -947,6 +947,17 @@ Pass when: `make test-host-smoke` runs the new preflight by default without muta
 - [x] Add docs and contract tests for the host-smoke precheck lane.
 Pass when: the runbook and testing docs explain `make test-host-smoke-precheck`, the default `test-host-smoke` preflight behavior, and the `HOST_SMOKE_PRECHECK=0` opt-out, while tests pin both the Make target graph and the updated docs text.
 
+### Milestone 6q: Host-Smoke Known-Good Image Cache Warm Lane
+
+- [x] Add an explicit cache-preparation lane for host-smoke service images.
+Pass when: the prepared-host Docker image path can reuse stable, label-verified cache images for `control-plane`, `proxy`, and `frontend`, and a Rust-owned `ensure-images` command builds those cache images only when they are missing or stale for the current workspace fingerprint.
+
+- [x] Keep the default host-smoke lane read-only while adding an explicit warm convenience target.
+Pass when: `make test-host-smoke` remains read-only by default, `make test-host-smoke-ensure-images` warms the cache explicitly, and `make test-host-smoke-warm` runs the cache warm step before the ordinary `test-host-smoke` wrapper without bypassing the release-input preflight.
+
+- [x] Add docs and contract tests for the host-smoke image-cache warm lane.
+Pass when: the runbook and testing docs explain `make test-host-smoke-ensure-images`, `make test-host-smoke-warm`, the known-good image cache reuse contract, and the fact that warming images does not bypass the checked-in release-input gate, while tests pin both the Make target graph and the updated docs text.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

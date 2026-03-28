@@ -512,11 +512,23 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add a Rust-owned release-input preflight for the prepared-host `host-smoke` lane.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6q: Host-Smoke Known-Good Image Cache Warm Lane",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add an explicit cache-preparation lane for host-smoke service images.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make test-host-smoke");
     assert_contains(runbook_path, &runbook, "make test-host-smoke-precheck");
+    assert_contains(runbook_path, &runbook, "make test-host-smoke-ensure-images");
+    assert_contains(runbook_path, &runbook, "make test-host-smoke-warm");
     assert_contains(runbook_path, &runbook, "make test-lab-e2e");
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
@@ -649,6 +661,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
+        "`make test-host-smoke-ensure-images` is the explicit mutable warm lane for local prepared-host service images.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Warming the host-smoke image cache does not bypass the checked-in release-input preflight; it only avoids repeating identical service-image builds on later prepared-host runs.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "Set `HOST_SMOKE_PRECHECK=0` when you intentionally need the older raw `host-smoke` launch order without the automatic release-input preflight.",
     );
     assert_contains(
@@ -666,6 +688,8 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     let testing = read_repo_text(testing_path);
     assert_contains(testing_path, &testing, "make test-host-smoke");
     assert_contains(testing_path, &testing, "make test-host-smoke-precheck");
+    assert_contains(testing_path, &testing, "make test-host-smoke-ensure-images");
+    assert_contains(testing_path, &testing, "make test-host-smoke-warm");
     assert_contains(testing_path, &testing, "make test-lab-e2e");
     assert_contains(
         testing_path,
@@ -793,6 +817,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "That precheck rejects placeholder `current` or `previous` image slots before Docker or QEMU work begins, so prepared-host runs fail fast when checked-in release inputs are still repo placeholders rather than promoted images.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`make test-host-smoke-ensure-images` is the explicit mutable warm lane for the local prepared-host service-image cache.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "The warm lane does not bypass the checked-in release-input preflight; it only avoids repeating identical service-image builds on later prepared-host runs.",
     );
     assert_contains(
         testing_path,

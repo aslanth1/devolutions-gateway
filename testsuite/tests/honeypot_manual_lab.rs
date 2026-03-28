@@ -274,6 +274,57 @@ fn make_test_host_smoke_can_disable_the_default_precheck() {
 
 #[cfg(unix)]
 #[test]
+fn make_test_host_smoke_ensure_images_routes_through_the_cache_binary() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("test-host-smoke-ensure-images")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n test-host-smoke-ensure-images");
+    assert!(
+        output.status.success(),
+        "make -n test-host-smoke-ensure-images failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("honeypot-host-smoke-precheck -- ensure-images"),
+        "host-smoke ensure-images should invoke the explicit cache warm mode:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_test_host_smoke_warm_runs_cache_ensure_before_host_smoke() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("test-host-smoke-warm")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n test-host-smoke-warm");
+    assert!(
+        output.status.success(),
+        "make -n test-host-smoke-warm failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    let ensure_idx = rendered
+        .find("make test-host-smoke-ensure-images")
+        .expect("host-smoke warm should route through the explicit ensure-images target");
+    let host_smoke_idx = rendered
+        .find("make test-host-smoke\n")
+        .expect("host-smoke warm should still invoke the ordinary host-smoke lane");
+
+    assert!(
+        ensure_idx < host_smoke_idx,
+        "ensure-images should appear before the host-smoke wrapper:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn make_test_lab_e2e_routes_through_ensure_artifacts_by_default() {
     let output = Command::new("make")
         .arg("-n")

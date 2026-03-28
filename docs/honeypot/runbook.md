@@ -59,6 +59,10 @@ cargo test -p testsuite --test integration_tests
 - It runs `make test-host-smoke-precheck` by default, then sets `DGW_HONEYPOT_HOST_SMOKE=1` before launching the existing `cargo test -p testsuite --test integration_tests` path.
 - `make test-host-smoke-precheck` is a fast read-only Rust preflight over `honeypot/docker/images.lock`, `honeypot/docker/promotion-manifest.json`, and `honeypot/docker/compose.yaml`.
 - That preflight rejects placeholder `current` or `previous` image slots before Docker or QEMU work begins, so prepared-host runs fail fast when the checked-in release inputs have not been promoted yet.
+- `make test-host-smoke-ensure-images` is the explicit mutable warm lane for local prepared-host service images.
+- It runs the Rust `ensure-images` mode, checks for known-good cached Docker images for `control-plane`, `proxy`, and `frontend`, and only rebuilds a cache image when it is missing or stale for the current workspace fingerprint.
+- `make test-host-smoke-warm` runs that cache warm step first, then calls the ordinary `make test-host-smoke` wrapper.
+- Warming the host-smoke image cache does not bypass the checked-in release-input preflight; it only avoids repeating identical service-image builds on later prepared-host runs.
 - `make test-lab-e2e` is the artifact-aware QEMU-host shortcut.
 - It writes `target/honeypot/lab-e2e-gate.json`, runs `make manual-lab-ensure-artifacts` by default, and then launches the existing `cargo test -p testsuite --test integration_tests` path with `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE`.
 - On a non-root workstation, use `MANUAL_LAB_PROFILE=local make test-lab-e2e` so the artifact precheck stays on the repo-local interop store instead of canonical `/srv`.

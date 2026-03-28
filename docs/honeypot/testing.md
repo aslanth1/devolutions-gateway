@@ -53,6 +53,10 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - It runs `make test-host-smoke-precheck` by default, then sets `DGW_HONEYPOT_HOST_SMOKE=1` and launches the existing `cargo test -p testsuite --test integration_tests` path.
 - `make test-host-smoke-precheck` is a fast read-only Rust gate over `honeypot/docker/images.lock`, `honeypot/docker/promotion-manifest.json`, and `honeypot/docker/compose.yaml`.
 - That precheck rejects placeholder `current` or `previous` image slots before Docker or QEMU work begins, so prepared-host runs fail fast when checked-in release inputs are still repo placeholders rather than promoted images.
+- `make test-host-smoke-ensure-images` is the explicit mutable warm lane for the local prepared-host service-image cache.
+- It runs the Rust `ensure-images` mode, checks for known-good cached Docker images for `control-plane`, `proxy`, and `frontend`, and only rebuilds a cache image when it is missing or stale for the current workspace fingerprint.
+- `make test-host-smoke-warm` runs that image-cache warm step first, then calls the ordinary `make test-host-smoke` wrapper.
+- The warm lane does not bypass the checked-in release-input preflight; it only avoids repeating identical service-image builds on later prepared-host runs.
 - `make test-lab-e2e` is the artifact-aware QEMU-host shortcut.
 - It writes a local gate file at `target/honeypot/lab-e2e-gate.json`, runs `make manual-lab-ensure-artifacts` by default, and then launches the existing `cargo test -p testsuite --test integration_tests` path with `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE`.
 - `make test-lab-e2e` honors the same `MANUAL_LAB_PROFILE=canonical|local` interop-store selection used by the manual deck wrappers.

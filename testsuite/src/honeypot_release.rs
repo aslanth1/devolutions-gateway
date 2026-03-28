@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use anyhow::Context as _;
 use devolutions_gateway::config::{Conf as GatewayConf, dto as gateway_dto};
@@ -9,6 +10,7 @@ use honeypot_contracts::SCHEMA_VERSION;
 use honeypot_control_plane::config::{CONTROL_PLANE_CONFIG_ENV, ControlPlaneConfig, DEFAULT_CONTROL_PLANE_CONFIG_PATH};
 use honeypot_frontend::config::{DEFAULT_FRONTEND_CONFIG_PATH, FrontendConfig};
 use serde::Deserialize;
+use sha2::{Digest as _, Sha256};
 
 pub const HONEYPOT_IMAGES_LOCK_PATH: &str = "honeypot/docker/images.lock";
 pub const HONEYPOT_PROMOTION_MANIFEST_PATH: &str = "honeypot/docker/promotion-manifest.json";
@@ -75,6 +77,12 @@ const FRONTEND_STREAM_TOKEN_PATH_TEMPLATE: &str = "/jet/honeypot/session/{sessio
 const FRONTEND_TERMINATE_PATH_TEMPLATE: &str = "/jet/session/{session_id}/terminate";
 const FRONTEND_SYSTEM_TERMINATE_PATH: &str = "/jet/session/system/terminate";
 const FRONTEND_TITLE: &str = "Observation Deck";
+const HOST_SMOKE_CACHE_LABEL_KEY: &str = "org.devolutions-gateway.honeypot.host-smoke-input-fingerprint";
+const HOST_SMOKE_CACHE_LABEL_SERVICE: &str = "org.devolutions-gateway.honeypot.host-smoke-service";
+const HOST_SMOKE_CACHE_LABEL_SCHEMA: &str = "org.devolutions-gateway.honeypot.host-smoke-cache-schema";
+const HOST_SMOKE_CACHE_SCHEMA_VERSION: &str = "1";
+
+static HOST_SMOKE_IMAGE_CACHE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HoneypotImagesLock {
@@ -131,6 +139,20 @@ pub enum HoneypotService {
     ControlPlane,
     Proxy,
     Frontend,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HostSmokeImageCacheState {
+    Hit,
+    Built,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSmokeImageCacheOutcome {
+    pub service: &'static str,
+    pub cache_tag: String,
+    pub fingerprint: String,
+    pub state: HostSmokeImageCacheState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,20 +600,116 @@ pub fn resolve_honeypot_images_for_selection(
 }
 
 pub fn build_honeypot_service_image(service: &'static str, tag: &str) -> anyhow::Result<()> {
+    build_honeypot_service_image_with_labels(service, tag, &[])
+}
+
+pub fn build_honeypot_service_image_with_labels(
+    service: &'static str,
+    tag: &str,
+    labels: &[(&str, &str)],
+) -> anyhow::Result<()> {
     let dockerfile = repo_relative_path(service_dockerfile_path(service));
     let context = repo_relative_path(".");
-    let args = vec![
+    let mut args = vec![
         "build".to_owned(),
         "--file".to_owned(),
         dockerfile.display().to_string(),
         "--tag".to_owned(),
         tag.to_owned(),
-        context.display().to_string(),
     ];
+    for (key, value) in labels {
+        args.push("--label".to_owned());
+        args.push(format!("{key}={value}"));
+    }
+    args.push(context.display().to_string());
 
     run_docker_command_owned(&args).with_context(|| format!("build {service} image as {tag}"))?;
 
     Ok(())
+}
+
+pub fn compute_host_smoke_workspace_fingerprint(root: &Path) -> anyhow::Result<String> {
+    let mut files = Vec::new();
+    collect_host_smoke_fingerprint_files(root, root, &mut files)?;
+    files.sort();
+
+    let mut hasher = Sha256::new();
+    for relative_path in files {
+        let path = root.join(&relative_path);
+        let metadata = std::fs::symlink_metadata(&path).with_context(|| format!("inspect {}", path.display()))?;
+        let relative = relative_path.to_string_lossy();
+        hasher.update(relative.as_bytes());
+        hasher.update([0]);
+        if metadata.file_type().is_symlink() {
+            hasher.update(b"symlink");
+            hasher.update([0]);
+            let target = std::fs::read_link(&path).with_context(|| format!("read symlink {}", path.display()))?;
+            hasher.update(target.to_string_lossy().as_bytes());
+            hasher.update([0]);
+        } else {
+            hasher.update(b"file");
+            hasher.update([0]);
+            let bytes = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+            hasher.update(bytes);
+            hasher.update([0]);
+        }
+    }
+
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub fn host_smoke_service_cache_tag(service: &str) -> String {
+    format!("dgw-honeypot-{service}:host-smoke-cache")
+}
+
+pub fn ensure_host_smoke_service_cache_image(service: &'static str) -> anyhow::Result<HostSmokeImageCacheOutcome> {
+    let _guard = HOST_SMOKE_IMAGE_CACHE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("host-smoke image cache mutex poisoned");
+    let fingerprint = compute_host_smoke_workspace_fingerprint(&repo_relative_path("."))?;
+    let cache_tag = host_smoke_service_cache_tag(service);
+
+    let state = if host_smoke_cache_image_matches(service, &cache_tag, &fingerprint)? {
+        HostSmokeImageCacheState::Hit
+    } else {
+        build_honeypot_service_image_with_labels(
+            service,
+            &cache_tag,
+            &[
+                (HOST_SMOKE_CACHE_LABEL_KEY, fingerprint.as_str()),
+                (HOST_SMOKE_CACHE_LABEL_SERVICE, service),
+                (HOST_SMOKE_CACHE_LABEL_SCHEMA, HOST_SMOKE_CACHE_SCHEMA_VERSION),
+            ],
+        )
+        .with_context(|| format!("build host-smoke cache image for {service}"))?;
+        HostSmokeImageCacheState::Built
+    };
+
+    Ok(HostSmokeImageCacheOutcome {
+        service,
+        cache_tag,
+        fingerprint,
+        state,
+    })
+}
+
+pub fn ensure_host_smoke_service_cache_images() -> anyhow::Result<Vec<HostSmokeImageCacheOutcome>> {
+    SERVICE_NAMES
+        .iter()
+        .map(|service| ensure_host_smoke_service_cache_image(service))
+        .collect()
+}
+
+pub fn prepare_honeypot_service_runtime_image_from_host_smoke_cache(
+    service: &'static str,
+    runtime_tag: &str,
+) -> anyhow::Result<HostSmokeImageCacheOutcome> {
+    let outcome = ensure_host_smoke_service_cache_image(service)?;
+    remove_docker_image_if_exists(runtime_tag)?;
+    docker_tag_image(&outcome.cache_tag, runtime_tag)
+        .with_context(|| format!("tag host-smoke cache image for {service} as {runtime_tag}"))?;
+    Ok(outcome)
 }
 
 pub fn create_docker_network(name: &str) -> anyhow::Result<()> {
@@ -1135,6 +1253,35 @@ fn format_docker_error(args: &[String], output: &std::process::Output) -> anyhow
     anyhow::anyhow!("docker {} failed: {detail}", args.join(" "))
 }
 
+fn collect_host_smoke_fingerprint_files(root: &Path, current: &Path, files: &mut Vec<PathBuf>) -> anyhow::Result<()> {
+    let mut entries = std::fs::read_dir(current)
+        .with_context(|| format!("read directory for host-smoke fingerprint {}", current.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .with_context(|| format!("enumerate directory for host-smoke fingerprint {}", current.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative_path = path
+            .strip_prefix(root)
+            .with_context(|| format!("strip root {} from {}", root.display(), path.display()))?
+            .to_path_buf();
+        let first_component = relative_path.components().next().map(|component| component.as_os_str());
+        if first_component.is_some_and(|component| component == ".git" || component == "target") {
+            continue;
+        }
+
+        let metadata = std::fs::symlink_metadata(&path).with_context(|| format!("inspect {}", path.display()))?;
+        if metadata.file_type().is_dir() {
+            collect_host_smoke_fingerprint_files(root, &path, files)?;
+        } else if metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+            files.push(relative_path);
+        }
+    }
+
+    Ok(())
+}
+
 fn docker_container_exists(name: &str) -> anyhow::Result<bool> {
     Ok(Command::new("docker")
         .args(["container", "inspect", name])
@@ -1160,6 +1307,48 @@ fn docker_image_exists(tag: &str) -> anyhow::Result<bool> {
         .with_context(|| format!("inspect docker image {tag}"))?
         .status
         .success())
+}
+
+fn docker_image_label(tag: &str, label: &str) -> anyhow::Result<Option<String>> {
+    if !docker_image_exists(tag)? {
+        return Ok(None);
+    }
+
+    let args = vec![
+        "image".to_owned(),
+        "inspect".to_owned(),
+        "--format".to_owned(),
+        format!("{{{{ index .Config.Labels \"{label}\" }}}}"),
+        tag.to_owned(),
+    ];
+    let output = run_docker_command_owned(&args)?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if value.is_empty() || value == "<no value>" {
+        Ok(None)
+    } else {
+        Ok(Some(value))
+    }
+}
+
+fn host_smoke_cache_image_matches(service: &str, tag: &str, fingerprint: &str) -> anyhow::Result<bool> {
+    let schema = docker_image_label(tag, HOST_SMOKE_CACHE_LABEL_SCHEMA)?;
+    let labeled_service = docker_image_label(tag, HOST_SMOKE_CACHE_LABEL_SERVICE)?;
+    let labeled_fingerprint = docker_image_label(tag, HOST_SMOKE_CACHE_LABEL_KEY)?;
+
+    Ok(schema.as_deref() == Some(HOST_SMOKE_CACHE_SCHEMA_VERSION)
+        && labeled_service.as_deref() == Some(service)
+        && labeled_fingerprint.as_deref() == Some(fingerprint))
+}
+
+fn docker_tag_image(source: &str, target: &str) -> anyhow::Result<()> {
+    let args = vec![
+        "image".to_owned(),
+        "tag".to_owned(),
+        source.to_owned(),
+        target.to_owned(),
+    ];
+    run_docker_command_owned(&args).with_context(|| format!("tag docker image {source} as {target}"))?;
+    Ok(())
 }
 
 fn service_dockerfile_path(service: &str) -> &'static str {

@@ -14,10 +14,11 @@ use testsuite::honeypot_release::{
     HONEYPOT_COMPOSE_PATH, HONEYPOT_CONTROL_PLANE_CONFIG_PATH, HONEYPOT_CONTROL_PLANE_ENV_PATH,
     HONEYPOT_FRONTEND_CONFIG_PATH, HONEYPOT_FRONTEND_ENV_PATH, HONEYPOT_IMAGES_LOCK_PATH,
     HONEYPOT_PROMOTION_MANIFEST_PATH, HONEYPOT_PROXY_CONFIG_PATH, HONEYPOT_PROXY_ENV_PATH, HoneypotImagesLock,
-    HoneypotService, ImageSlot, ServiceSchemaVersions, ServiceVersionSelection, build_honeypot_service_image,
-    create_docker_network, docker_logs, load_honeypot_images_lock, remove_docker_container_if_exists,
-    remove_docker_image_if_exists, remove_docker_network_if_exists, repo_relative_path,
-    resolve_honeypot_images_for_selection, run_docker_compose, run_docker_container,
+    HoneypotService, HostSmokeImageCacheState, ImageSlot, ServiceSchemaVersions, ServiceVersionSelection,
+    compute_host_smoke_workspace_fingerprint, create_docker_network, docker_logs, host_smoke_service_cache_tag,
+    load_honeypot_images_lock, prepare_honeypot_service_runtime_image_from_host_smoke_cache,
+    remove_docker_container_if_exists, remove_docker_image_if_exists, remove_docker_network_if_exists,
+    repo_relative_path, resolve_honeypot_images_for_selection, run_docker_compose, run_docker_container,
     validate_honeypot_compose_document, validate_honeypot_compose_document_for_selection,
     validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
     validate_honeypot_control_plane_runtime_contract, validate_honeypot_dockerfile_packaging_contract,
@@ -225,6 +226,37 @@ frontend:
 "#
     .trim_start()
     .to_owned()
+}
+
+#[test]
+fn host_smoke_workspace_fingerprint_changes_when_repo_inputs_change_and_ignores_target() {
+    let tempdir = tempfile::tempdir().expect("create fingerprint fixture");
+    std::fs::create_dir_all(tempdir.path().join(".git")).expect("create git dir");
+    std::fs::create_dir_all(tempdir.path().join("target/generated")).expect("create target dir");
+    std::fs::create_dir_all(tempdir.path().join("honeypot/control-plane/src")).expect("create source dir");
+    std::fs::write(tempdir.path().join("Cargo.toml"), "[workspace]\n").expect("write workspace");
+    std::fs::write(
+        tempdir.path().join("honeypot/control-plane/src/main.rs"),
+        "fn main() {}\n",
+    )
+    .expect("write source");
+
+    let original = compute_host_smoke_workspace_fingerprint(tempdir.path()).expect("compute original fingerprint");
+    std::fs::write(tempdir.path().join("target/generated/ignored.txt"), "ignored change\n").expect("write target file");
+    let with_target_change =
+        compute_host_smoke_workspace_fingerprint(tempdir.path()).expect("compute fingerprint after target change");
+    assert_eq!(
+        original, with_target_change,
+        "target/ should not affect the fingerprint"
+    );
+
+    std::fs::write(
+        tempdir.path().join("honeypot/control-plane/src/main.rs"),
+        "fn main() { println!(\"changed\"); }\n",
+    )
+    .expect("rewrite source");
+    let changed = compute_host_smoke_workspace_fingerprint(tempdir.path()).expect("compute changed fingerprint");
+    assert_ne!(original, changed, "repo input changes should change the fingerprint");
 }
 
 fn honeypot_scope_token(scope: &str) -> String {
@@ -444,6 +476,18 @@ impl DockerSmokeResources {
             anyhow::bail!(errors.join("; "));
         }
     }
+}
+
+fn prepare_host_smoke_runtime_images(
+    requests: &[(&'static str, &str)],
+) -> anyhow::Result<Vec<HostSmokeImageCacheState>> {
+    requests
+        .iter()
+        .map(|(service, runtime_tag)| {
+            prepare_honeypot_service_runtime_image_from_host_smoke_cache(service, runtime_tag)
+                .map(|outcome| outcome.state)
+        })
+        .collect()
 }
 
 struct DockerComposeFixture {
@@ -1490,6 +1534,34 @@ fn host_smoke_release_preflight_rejects_placeholder_previous_slots() {
 }
 
 #[test]
+fn host_smoke_cache_reuses_frontend_image_between_runtime_tags() {
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::HostSmoke) {
+        eprintln!("skipping host-smoke cache reuse test: {error:#}");
+        return;
+    }
+
+    let cache_tag = host_smoke_service_cache_tag("frontend");
+    let runtime_a = format!("dgw-honeypot-frontend:cache-test-a-{}", Uuid::new_v4().simple());
+    let runtime_b = format!("dgw-honeypot-frontend:cache-test-b-{}", Uuid::new_v4().simple());
+
+    remove_docker_image_if_exists(&runtime_a).expect("remove first runtime alias");
+    remove_docker_image_if_exists(&runtime_b).expect("remove second runtime alias");
+    remove_docker_image_if_exists(&cache_tag).expect("remove existing frontend cache image");
+
+    let first = prepare_honeypot_service_runtime_image_from_host_smoke_cache("frontend", &runtime_a)
+        .expect("prepare first frontend runtime image from cache");
+    let second = prepare_honeypot_service_runtime_image_from_host_smoke_cache("frontend", &runtime_b)
+        .expect("prepare second frontend runtime image from cache");
+
+    assert_eq!(first.state, HostSmokeImageCacheState::Built);
+    assert_eq!(second.state, HostSmokeImageCacheState::Hit);
+
+    remove_docker_image_if_exists(&runtime_a).expect("remove first runtime alias");
+    remove_docker_image_if_exists(&runtime_b).expect("remove second runtime alias");
+    remove_docker_image_if_exists(&cache_tag).expect("remove frontend cache image");
+}
+
+#[test]
 fn honeypot_service_dockerfiles_keep_legacy_packaging_reference_only() {
     require_honeypot_tier(HoneypotTestTier::Contract).expect("contract tier should always be available");
 
@@ -1839,10 +1911,12 @@ async fn docker_host_smoke_builds_and_starts_three_service_images() {
     let resources = DockerSmokeResources::new();
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build control-plane image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image).context("build frontend image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare host-smoke service runtime images")?;
 
         create_docker_network(&resources.network_name).context("create docker smoke network")?;
 
@@ -2034,10 +2108,12 @@ async fn compose_bring_up_starts_the_three_service_stack_and_tears_it_down_clean
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build control-plane compose image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy compose image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image).context("build frontend compose image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare compose runtime images")?;
 
         run_docker_compose(
             &fixture.compose_path,
@@ -2086,11 +2162,12 @@ async fn compose_frontend_operator_path_renders_dashboard_and_proxies_event_stre
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build control-plane compose browser image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy compose browser image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build frontend compose browser image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare compose browser runtime images")?;
 
         run_docker_compose(
             &fixture.compose_path,
@@ -2209,12 +2286,13 @@ async fn control_plane_rollback_drill_restores_the_stack_through_images_lock_sel
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build current control-plane rollback image")?;
-        build_honeypot_service_image("control-plane", &resources.control_plane_previous_image)
-            .context("build previous control-plane rollback image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy rollback image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image).context("build frontend rollback image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("control-plane", &resources.control_plane_previous_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare control-plane rollback runtime images")?;
 
         fixture
             .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
@@ -2318,13 +2396,13 @@ async fn proxy_rollback_drill_restores_the_stack_through_images_lock_selection()
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build control-plane proxy rollback image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build current proxy rollback image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_previous_image)
-            .context("build previous proxy rollback image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build frontend proxy rollback image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("proxy", &resources.proxy_previous_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare cached runtime images for proxy rollback drill")?;
 
         fixture
             .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
@@ -2428,13 +2506,13 @@ async fn frontend_rollback_drill_restores_the_stack_through_images_lock_selectio
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build control-plane frontend rollback image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build proxy frontend rollback image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build current frontend rollback image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_previous_image)
-            .context("build previous frontend rollback image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+            ("frontend", &resources.frontend_previous_image),
+        ])
+        .context("prepare cached runtime images for frontend rollback drill")?;
 
         fixture
             .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
@@ -2538,12 +2616,12 @@ async fn rollback_failure_keeps_the_current_stack_running_and_reports_the_error(
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build control-plane rollback-failure image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image)
-            .context("build current proxy rollback-failure image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build frontend rollback-failure image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare cached runtime images for rollback-failure drill")?;
 
         fixture
             .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
@@ -2669,17 +2747,15 @@ async fn downgraded_service_rejoin_health_recovery() {
     ];
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build current control-plane rejoin image")?;
-        build_honeypot_service_image("control-plane", &resources.control_plane_previous_image)
-            .context("build previous control-plane rejoin image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build current proxy rejoin image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_previous_image)
-            .context("build previous proxy rejoin image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build current frontend rejoin image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_previous_image)
-            .context("build previous frontend rejoin image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("control-plane", &resources.control_plane_previous_image),
+            ("proxy", &resources.proxy_image),
+            ("proxy", &resources.proxy_previous_image),
+            ("frontend", &resources.frontend_image),
+            ("frontend", &resources.frontend_previous_image),
+        ])
+        .context("prepare cached runtime images for downgraded-service rejoin drill")?;
 
         for (service, downgraded_selection) in rejoin_cases {
             let fixture = DockerComposeFixture::create(&resources, &lockfile)
@@ -2829,17 +2905,15 @@ async fn restored_service_rejoin_health_recovery() {
     ];
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build current control-plane restore image")?;
-        build_honeypot_service_image("control-plane", &resources.control_plane_previous_image)
-            .context("build previous control-plane restore image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image).context("build current proxy restore image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_previous_image)
-            .context("build previous proxy restore image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build current frontend restore image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_previous_image)
-            .context("build previous frontend restore image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("control-plane", &resources.control_plane_previous_image),
+            ("proxy", &resources.proxy_image),
+            ("proxy", &resources.proxy_previous_image),
+            ("frontend", &resources.frontend_image),
+            ("frontend", &resources.frontend_previous_image),
+        ])
+        .context("prepare cached runtime images for restored-service rejoin drill")?;
 
         for (service, downgraded_selection) in restore_cases {
             let fixture = DockerComposeFixture::create(&resources, &lockfile)
@@ -2965,12 +3039,12 @@ async fn orphan_cleanup_reclaims_vm_and_container_artifacts() {
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build current control-plane orphan-cleanup image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image)
-            .context("build current proxy orphan-cleanup image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build current frontend orphan-cleanup image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare cached runtime images for orphan-cleanup drill")?;
 
         fixture
             .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())
@@ -3061,12 +3135,12 @@ async fn posix_host_artifact_checks_keep_runtime_artifacts_isolated_and_redacted
     let fixture = DockerComposeFixture::create(&resources, &lockfile).expect("create docker compose fixture");
 
     let result: anyhow::Result<()> = async {
-        build_honeypot_service_image("control-plane", &resources.control_plane_image)
-            .context("build current control-plane POSIX artifact image")?;
-        build_honeypot_service_image("proxy", &resources.proxy_image)
-            .context("build current proxy POSIX artifact image")?;
-        build_honeypot_service_image("frontend", &resources.frontend_image)
-            .context("build current frontend POSIX artifact image")?;
+        prepare_host_smoke_runtime_images(&[
+            ("control-plane", &resources.control_plane_image),
+            ("proxy", &resources.proxy_image),
+            ("frontend", &resources.frontend_image),
+        ])
+        .context("prepare cached runtime images for POSIX host-artifact checks")?;
 
         fixture
             .write_compose_selection(&resources, &lockfile, ServiceVersionSelection::default())

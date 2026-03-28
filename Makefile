@@ -55,6 +55,17 @@ test-host-smoke-precheck:
 	@printf 'running honeypot host-smoke release-input precheck\n'
 	@cargo run -p testsuite --bin honeypot-host-smoke-precheck
 
+.PHONY: test-host-smoke-ensure-images
+test-host-smoke-ensure-images:
+	@printf 'ensuring host-smoke service image cache\n'
+	@cargo run -p testsuite --bin honeypot-host-smoke-precheck -- ensure-images
+
+.PHONY: test-host-smoke-warm
+test-host-smoke-warm:
+	@printf 'warming host-smoke service image cache before running host-smoke\n'
+	@$(MAKE) test-host-smoke-ensure-images
+	@$(MAKE) test-host-smoke
+
 .PHONY: test-host-smoke
 test-host-smoke:
 	@printf 'running honeypot host-smoke with DGW_HONEYPOT_HOST_SMOKE=1 and precheck %s\n' "$(HOST_SMOKE_PRECHECK)"
