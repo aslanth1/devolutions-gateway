@@ -160,6 +160,58 @@ fn make_manual_lab_selftest_routes_through_ensure_webplayer_and_artifacts_by_def
 
 #[cfg(unix)]
 #[test]
+fn make_manual_lab_webplayer_auth_check_exposes_private_registry_remediation() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-webplayer-auth-check")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-webplayer-auth-check");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-webplayer-auth-check failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc"),
+        "auth-check should surface the npmrc remediation anchor:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>"),
+        "auth-check should surface the prebuilt bundle override anchor:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_webplayer_status_reports_bundle_state() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-webplayer-status")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-webplayer-status");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-webplayer-status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("manual-lab webplayer bundle status:"),
+        "webplayer-status should report bundle state:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("manual-lab webplayer private registry deps:"),
+        "webplayer-status should report private-registry detection:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn make_manual_lab_selftest_up_routes_through_ensure_webplayer_and_artifacts_by_default() {
     let output = Command::new("make")
         .arg("-n")

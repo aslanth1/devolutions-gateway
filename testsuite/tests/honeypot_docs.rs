@@ -531,6 +531,8 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(runbook_path, &runbook, "make test-host-smoke-warm");
     assert_contains(runbook_path, &runbook, "make test-lab-e2e");
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
+    assert_contains(runbook_path, &runbook, "make manual-lab-webplayer-auth-check");
+    assert_contains(runbook_path, &runbook, "make manual-lab-webplayer-status");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-webplayer");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
@@ -652,6 +654,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
+        "Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the webapp sources, container-runtime availability, and private-registry auth readiness.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Run `make manual-lab-webplayer-auth-check` when you want the same private-registry auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.",
     );
     assert_contains(
@@ -668,6 +680,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         runbook_path,
         &runbook,
         "set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors",
     );
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(
@@ -728,6 +745,8 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &testing,
         "preflight|ensure-artifacts|remember-source-manifest|bootstrap-store|up|status|down",
     );
+    assert_contains(testing_path, &testing, "make manual-lab-webplayer-auth-check");
+    assert_contains(testing_path, &testing, "make manual-lab-webplayer-status");
     assert_contains(testing_path, &testing, "MANUAL_LAB_PROFILE=canonical|local");
     assert_contains(testing_path, &testing, "make manual-lab-ensure-webplayer");
     assert_contains(testing_path, &testing, "make manual-lab-ensure-artifacts");
@@ -815,6 +834,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
+        "Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, and private-registry auth readiness.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Run `make manual-lab-webplayer-auth-check` when you want to exercise the same auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
         "Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.",
     );
     assert_contains(
@@ -831,6 +860,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors",
     );
     assert_contains(
         testing_path,

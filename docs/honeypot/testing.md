@@ -201,7 +201,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 ## Manual Three-Host Observation Deck
 
 - The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight|ensure-artifacts|remember-source-manifest|bootstrap-store|up|status|down`.
-- The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-ensure-webplayer`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
+- The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-webplayer-auth-check`, `make manual-lab-webplayer-status`, `make manual-lab-ensure-webplayer`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
 - For manual self-test on a non-root operator host, the preferred convenience lane is `make manual-lab-selftest` or `make manual-lab-selftest-no-browser`.
 - The granular local aliases `make manual-lab-selftest-ensure-webplayer`, `make manual-lab-selftest-preflight`, `make manual-lab-selftest-preflight-no-browser`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only helper that prints the effective profile, config path, store root, manifest dir, and masked guest-auth state.
@@ -211,11 +211,14 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The same live deck also needs a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
 - By default the launcher checks for `webapp/dist/recording-player/index.html` and stages it into a temporary `player/` root before spawning the proxy.
 - Override the source player bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the build output lives outside the repo default.
+- Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, and private-registry auth readiness.
+- Run `make manual-lab-webplayer-auth-check` when you want to exercise the same auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.
 - Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.
 - `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` already run that containerized builder automatically.
 - The host only needs the selected container runtime for that builder; it does not need host `pnpm`.
 - Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.
 - If `webapp/pnpm-lock.yaml` references private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
+- `make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when that private-registry auth is still missing.
 - If the bundle is still missing after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>`, then rerun `make manual-lab-preflight`.
 - `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
 - `canonical` is the default `/srv/honeypot/...` lane.
