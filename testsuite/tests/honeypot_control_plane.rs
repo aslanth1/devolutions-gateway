@@ -8,6 +8,7 @@ use honeypot_contracts::control_plane::{
     ServiceState, StreamEndpointResponse, StreamPolicy,
 };
 use honeypot_contracts::error::{ErrorCode, ErrorResponse};
+use honeypot_control_plane::ConsumeTrustedImageValidationMode;
 use sha2::{Digest as _, Sha256};
 use testsuite::cli::{wait_for_tcp_port, wait_for_tcp_port_with_timeout};
 use testsuite::honeypot_control_plane::{
@@ -329,14 +330,34 @@ async fn control_plane_consume_image_command_imports_a_trusted_bundle_without_ma
     let imported: serde_json::Value =
         serde_json::from_slice(&import.get_output().stdout).expect("parse consume-image output");
     assert_eq!(imported["import_state"], "imported");
+    assert_eq!(
+        imported["validation_mode"],
+        serde_json::json!(ConsumeTrustedImageValidationMode::Hashed)
+    );
+
+    let repeated = honeypot_control_plane_assert_cmd()
+        .arg("consume-image")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest_path)
+        .assert()
+        .success();
+    let repeated_import: serde_json::Value =
+        serde_json::from_slice(&repeated.get_output().stdout).expect("parse repeated consume-image output");
+    assert_eq!(repeated_import["import_state"], "already_present");
+    assert_eq!(
+        repeated_import["validation_mode"],
+        serde_json::json!(ConsumeTrustedImageValidationMode::Cached)
+    );
 
     let imported_manifest_path = std::path::PathBuf::from(
-        imported["manifest_path"]
+        repeated_import["manifest_path"]
             .as_str()
             .expect("imported manifest_path should be a string"),
     );
     let imported_base_image_path = std::path::PathBuf::from(
-        imported["base_image_path"]
+        repeated_import["base_image_path"]
             .as_str()
             .expect("imported base_image_path should be a string"),
     );

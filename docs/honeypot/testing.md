@@ -196,6 +196,9 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - Repeated local self-test bootstrap is idempotent.
 - If the requested trusted image is already present and valid in the selected store, `bootstrap-store --execute` returns `already_present` before attempting to create a matching import lock.
 - Dead-pid import locks are reclaimed automatically.
+- A first import or any cache miss reports `validation_mode=hashed`.
+- A repeated unchanged import may report `validation_mode=cached`.
+- Missing, corrupt, or stale digest stamps fall back to a full hash before the image is trusted.
 - A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock; wait for that process or stop the reported pid if it is unexpected, then rerun `make manual-lab-selftest`.
 - The required manual sequence is `preflight -> remember-source-manifest -> bootstrap-store --execute -> preflight -> up` when more than one admissible manifest exists.
 - This lane is Rust-native and lives in `testsuite::honeypot_manual_lab`; it does not permit Bash or Python wrappers for service startup, Tiny11 fan-out, or teardown.

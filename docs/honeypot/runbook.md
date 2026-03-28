@@ -124,6 +124,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - Repeated local self-test bootstrap is idempotent.
 - If the requested trusted image is already present and valid in the selected store, `bootstrap-store --execute` returns `already_present` before attempting to create a matching import lock.
 - Dead-pid import locks are reclaimed automatically.
+- A first import or a cache miss still reports `validation_mode=hashed`.
+- A repeated unchanged import may report `validation_mode=cached`.
+- Any missing, corrupt, or stale digest stamp falls back to a full hash before trust is granted.
 - A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock; wait for that process or stop the reported pid if it is unexpected, then rerun `make manual-lab-selftest`.
 - Use the preflight-first sequence for manual operator work:
   `make manual-lab-preflight`,

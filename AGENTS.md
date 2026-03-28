@@ -892,6 +892,17 @@ Pass when: `consume-image` automatically removes a matching import lock whose re
 - [x] Surface live import contention as a typed manual-lab blocker with docs and tests.
 Pass when: manual-lab bootstrap reports `import_lock_held` instead of generic `consume_image_failed` when a live matching `consume-image` process owns the import lock, the remediation tells operators to wait for or stop that process before rerunning `make manual-lab-selftest`, and unit or docs tests pin the idempotent, stale-lock, and live-lock behavior.
 
+### Milestone 6l: Manual Deck Repeat Bootstrap Digest Stamp Cache
+
+- [x] Make repeated trusted-image validation fast without weakening fail-closed digest checks.
+Pass when: the control-plane persists a trusted digest stamp for an already-verified imported base image, reuses that stamp only when the stored digest and file identity still match, and otherwise falls back to a full hash before trust is granted.
+
+- [x] Surface repeat-validation mode through `consume-image` and manual-lab bootstrap reports.
+Pass when: `honeypot-control-plane consume-image` emits `validation_mode=hashed|cached`, `make manual-lab-bootstrap-store-exec` renders the same signal, and first-import plus repeated-import tests pin the expected output.
+
+- [x] Treat missing, corrupt, or stale digest stamps as cache misses only.
+Pass when: digest-stamp read or parse failures never grant trust by themselves, repeated validation rehashes when metadata drifts, and the docs explain that any uncertainty falls back to `validation_mode=hashed`.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

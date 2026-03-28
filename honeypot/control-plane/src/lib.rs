@@ -31,7 +31,9 @@ use self::auth::{AuthError, ControlPlaneAuth};
 use self::backend_credentials::{BackendCredentialStore, build_backend_credential_store};
 use self::config::ControlPlaneConfig;
 use self::health::ServiceState;
-pub use self::image::{ConsumeTrustedImageState, ConsumedTrustedImage, consume_trusted_image};
+pub use self::image::{
+    ConsumeTrustedImageState, ConsumeTrustedImageValidationMode, ConsumedTrustedImage, consume_trusted_image,
+};
 use self::image::{TrustedImageCatalog, TrustedImageCatalogInspection};
 use self::lease::{LeaseError, LeaseRegistry};
 use self::qemu::validate_qemu_runtime_contract;

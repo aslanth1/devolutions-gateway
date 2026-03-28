@@ -17,6 +17,7 @@ use honeypot_contracts::control_plane::{RecycleVmRequest, ReleaseVmRequest};
 use honeypot_contracts::frontend::BootstrapResponse;
 use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse};
 use honeypot_control_plane::config::ControlPlaneConfig;
+use honeypot_control_plane::{ConsumeTrustedImageState, ConsumeTrustedImageValidationMode, ConsumedTrustedImage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -276,6 +277,10 @@ pub struct ManualLabBootstrapReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consume_image_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub import_state: Option<ConsumeTrustedImageState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation_mode: Option<ConsumeTrustedImageValidationMode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
@@ -299,6 +304,8 @@ impl ManualLabBootstrapReport {
             source_manifest_digest: Some(source_manifest_digest),
             candidates,
             consume_image_command: Some(consume_image_command),
+            import_state: None,
+            validation_mode: None,
             detail: Some("bootstrap-store resolved one admissible source manifest and is ready to import it".to_owned()),
             remediation: Some(
                 "rerun with `--execute` or `make manual-lab-bootstrap-store-exec`, then rerun `make manual-lab-preflight`"
@@ -314,8 +321,19 @@ impl ManualLabBootstrapReport {
         source_manifest_digest: String,
         candidates: Vec<ManualLabBootstrapCandidate>,
         consume_image_command: String,
+        imported: ConsumedTrustedImage,
         post_import_preflight: ManualLabPreflightReport,
     ) -> Self {
+        let detail = match imported.import_state {
+            ConsumeTrustedImageState::Imported => {
+                "bootstrap-store imported the trusted image bundle and the post-import preflight is ready"
+                    .to_owned()
+            }
+            ConsumeTrustedImageState::AlreadyPresent => {
+                "bootstrap-store verified an already-present trusted image bundle and the post-import preflight is ready"
+                    .to_owned()
+            }
+        };
         Self {
             status: ManualLabBootstrapStatus::Executed,
             blocker: None,
@@ -324,9 +342,9 @@ impl ManualLabBootstrapReport {
             source_manifest_digest: Some(source_manifest_digest),
             candidates,
             consume_image_command: Some(consume_image_command),
-            detail: Some(
-                "bootstrap-store imported the trusted image bundle and the post-import preflight is ready".to_owned(),
-            ),
+            import_state: Some(imported.import_state),
+            validation_mode: Some(imported.validation_mode),
+            detail: Some(detail),
             remediation: None,
             post_import_preflight: Some(post_import_preflight),
         }
@@ -341,6 +359,8 @@ impl ManualLabBootstrapReport {
             source_manifest_digest: blocked.source_manifest_digest,
             candidates: blocked.candidates,
             consume_image_command: blocked.consume_image_command,
+            import_state: None,
+            validation_mode: None,
             detail: Some(blocked.detail),
             remediation: blocked.remediation,
             post_import_preflight: blocked.post_import_preflight,
@@ -380,6 +400,20 @@ impl ManualLabBootstrapReport {
         }
         if let Some(command) = self.consume_image_command.as_deref() {
             lines.push(format!("consume_image_command={command}"));
+        }
+        if let Some(import_state) = self.import_state {
+            let import_state = match import_state {
+                ConsumeTrustedImageState::Imported => "imported",
+                ConsumeTrustedImageState::AlreadyPresent => "already_present",
+            };
+            lines.push(format!("import_state={import_state}"));
+        }
+        if let Some(validation_mode) = self.validation_mode {
+            let validation_mode = match validation_mode {
+                ConsumeTrustedImageValidationMode::Hashed => "hashed",
+                ConsumeTrustedImageValidationMode::Cached => "cached",
+            };
+            lines.push(format!("validation_mode={validation_mode}"));
         }
         for candidate in &self.candidates {
             let status = if candidate.admissible { "admissible" } else { "rejected" };
@@ -1151,6 +1185,13 @@ pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<Man
         }));
     }
 
+    let imported: ConsumedTrustedImage = serde_json::from_slice(&output.stdout).with_context(|| {
+        format!(
+            "parse consume-image json output for {}",
+            readiness.plan.consume_image_command
+        )
+    })?;
+
     let post_import_preflight = preflight(ManualLabUpOptions { open_browser: false })?;
     if !post_import_preflight.is_ready() {
         let blocker = post_import_preflight.blocker.as_deref().unwrap_or("blocked");
@@ -1179,6 +1220,7 @@ pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<Man
         readiness.plan.source_manifest_digest,
         readiness.plan.candidates,
         readiness.plan.consume_image_command,
+        imported,
         post_import_preflight,
     ))
 }

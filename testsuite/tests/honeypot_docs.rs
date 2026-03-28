@@ -466,6 +466,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Make repeated local self-test bootstrap idempotent without manual lock cleanup.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6l: Manual Deck Repeat Bootstrap Digest Stamp Cache",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Make repeated trusted-image validation fast without weakening fail-closed digest checks.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -527,6 +537,21 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         runbook_path,
         &runbook,
         "A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock;",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "A first import or a cache miss still reports `validation_mode=hashed`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "A repeated unchanged import may report `validation_mode=cached`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Any missing, corrupt, or stale digest stamp falls back to a full hash before trust is granted.",
     );
     assert_contains(runbook_path, &runbook, "manual self-test quick path on this host is:");
     assert_contains(
@@ -617,6 +642,21 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock;",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "A first import or any cache miss reports `validation_mode=hashed`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "A repeated unchanged import may report `validation_mode=cached`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Missing, corrupt, or stale digest stamps fall back to a full hash before the image is trusted.",
     );
     assert_contains(
         testing_path,

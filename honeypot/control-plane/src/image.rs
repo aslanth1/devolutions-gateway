@@ -12,6 +12,7 @@ use crate::config::{PathConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetwork
 
 const DEFAULT_GUEST_RDP_PORT: u16 = 3389;
 const REQUIRED_WINDOWS_EDITION: &str = "Windows 11 Pro x64";
+const TRUSTED_DIGEST_STAMP_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrustedImage {
@@ -68,7 +69,7 @@ struct ManifestStamp {
     sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FileStamp {
     path: PathBuf,
     len: u64,
@@ -89,22 +90,37 @@ pub(crate) struct TrustedImageCatalogInspection {
     pub(crate) invalid_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConsumeTrustedImageState {
     Imported,
     AlreadyPresent,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsumeTrustedImageValidationMode {
+    Hashed,
+    Cached,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConsumedTrustedImage {
     pub import_state: ConsumeTrustedImageState,
+    pub validation_mode: ConsumeTrustedImageValidationMode,
     pub pool_name: String,
     pub vm_name: String,
     pub attestation_ref: String,
     pub manifest_path: PathBuf,
     pub base_image_path: PathBuf,
     pub base_image_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct TrustedDigestStamp {
+    schema_version: u32,
+    sha256: String,
+    file_stamp: FileStamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,13 +240,6 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
         ..manifest
     };
 
-    validate_existing_trusted_identity(
-        paths,
-        &imported_manifest,
-        &final_base_image_path,
-        &final_manifest_path,
-        &expected_base_image_sha256,
-    )?;
     if let Some(existing_import) = existing_imported_trusted_image(
         &imported_manifest,
         &final_base_image_path,
@@ -239,15 +248,9 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
     )? {
         return Ok(existing_import);
     }
+    validate_existing_trusted_identity(paths, &imported_manifest, &final_base_image_path, &final_manifest_path)?;
 
     let _import_lock = ImportLock::acquire(&manifest_dir, &final_manifest_path)?;
-    validate_existing_trusted_identity(
-        paths,
-        &imported_manifest,
-        &final_base_image_path,
-        &final_manifest_path,
-        &expected_base_image_sha256,
-    )?;
     if let Some(existing_import) = existing_imported_trusted_image(
         &imported_manifest,
         &final_base_image_path,
@@ -256,6 +259,7 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
     )? {
         return Ok(existing_import);
     }
+    validate_existing_trusted_identity(paths, &imported_manifest, &final_base_image_path, &final_manifest_path)?;
 
     let temp_image_path = final_base_image_path.with_extension("qcow2.importing");
     let temp_manifest_path = final_manifest_path.with_extension("json.importing");
@@ -308,6 +312,7 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
 
     Ok(ConsumedTrustedImage {
         import_state: ConsumeTrustedImageState::Imported,
+        validation_mode: ConsumeTrustedImageValidationMode::Hashed,
         pool_name: imported_manifest.pool_name,
         vm_name: imported_manifest.vm_name,
         attestation_ref: imported_manifest.attestation_ref,
@@ -340,17 +345,12 @@ fn existing_imported_trusted_image(
         "existing imported manifest {} does not match the requested trusted artifact",
         final_manifest_path.display(),
     );
-    let actual_digest = sha256_file(final_base_image_path)?;
-    anyhow::ensure!(
-        actual_digest == expected_base_image_sha256,
-        "existing imported base image digest mismatch for {}: expected {}, got {}",
-        final_base_image_path.display(),
-        expected_base_image_sha256,
-        actual_digest,
-    );
+    let validation_mode =
+        validate_base_image_digest_with_stamp(final_base_image_path, expected_base_image_sha256, "base_image")?;
 
     Ok(Some(ConsumedTrustedImage {
         import_state: ConsumeTrustedImageState::AlreadyPresent,
+        validation_mode,
         pool_name: manifest.pool_name.clone(),
         vm_name: manifest.vm_name.clone(),
         attestation_ref: manifest.attestation_ref.clone(),
@@ -379,16 +379,13 @@ pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedIm
             )
         })?;
 
-        let actual_base_image_sha256 = cached_sha256_file(&mut base_image_sha256_cache, &base_image_path)
-            .with_context(|| format!("hash trusted base image {}", base_image_path.display()))?;
         let expected_base_image_sha256 = normalize_sha256("base_image.sha256", &manifest.base_image.sha256)?;
-        anyhow::ensure!(
-            actual_base_image_sha256 == expected_base_image_sha256,
-            "base_image.sha256 mismatch for {}: expected {}, got {}",
-            base_image_path.display(),
-            expected_base_image_sha256,
-            actual_base_image_sha256,
-        );
+        cached_verified_sha256_file(
+            &mut base_image_sha256_cache,
+            &base_image_path,
+            &expected_base_image_sha256,
+            "base_image",
+        )?;
 
         trusted_images.push(TrustedImage {
             pool_name: manifest.pool_name,
@@ -935,7 +932,6 @@ fn validate_existing_trusted_identity(
     manifest: &TrustedImageManifestDocument,
     final_base_image_path: &Path,
     final_manifest_path: &Path,
-    expected_base_image_sha256: &str,
 ) -> anyhow::Result<()> {
     let trusted_images = trusted_images(paths)?;
 
@@ -954,12 +950,9 @@ fn validate_existing_trusted_identity(
     }
 
     anyhow::ensure!(
-        !final_manifest_path.exists()
-            || !final_base_image_path.exists()
-            || sha256_file(final_base_image_path)? == expected_base_image_sha256,
-        "existing imported base image {} does not match the requested digest {}",
-        final_base_image_path.display(),
-        expected_base_image_sha256,
+        !final_manifest_path.exists() || final_base_image_path.exists(),
+        "existing imported artifact is incomplete for vm_name {}",
+        manifest.vm_name,
     );
 
     Ok(())
@@ -1194,14 +1187,114 @@ fn normalize_sha256(label: &str, digest: &str) -> anyhow::Result<String> {
     Ok(digest)
 }
 
-fn cached_sha256_file(cache: &mut HashMap<PathBuf, String>, path: &Path) -> anyhow::Result<String> {
+fn trusted_digest_stamp_path(base_image_path: &Path) -> anyhow::Result<PathBuf> {
+    let file_name = base_image_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("resolve trusted base image file name for digest stamp")?;
+    let parent = base_image_path
+        .parent()
+        .with_context(|| format!("resolve trusted base image parent for {}", base_image_path.display()))?;
+    Ok(parent.join(format!(".{file_name}.digest-stamp")))
+}
+
+fn read_trusted_digest_stamp(base_image_path: &Path) -> anyhow::Result<Option<TrustedDigestStamp>> {
+    let stamp_path = trusted_digest_stamp_path(base_image_path)?;
+    let bytes = match fs::read(&stamp_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return Ok(None),
+    };
+
+    match serde_json::from_slice::<TrustedDigestStamp>(&bytes) {
+        Ok(stamp) => Ok(Some(stamp)),
+        Err(_) => Ok(None),
+    }
+}
+
+fn persist_trusted_digest_stamp(base_image_path: &Path, sha256: &str, file_stamp: &FileStamp) -> anyhow::Result<()> {
+    let stamp_path = trusted_digest_stamp_path(base_image_path)?;
+    let stamp_file_name = stamp_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("resolve trusted digest stamp file name")?;
+    let temp_stamp_path = stamp_path
+        .parent()
+        .with_context(|| format!("resolve trusted digest stamp parent for {}", stamp_path.display()))?
+        .join(format!("{stamp_file_name}.tmp"));
+    let temp_guard = TempPathGuard::new(&temp_stamp_path);
+    write_json_atomically(
+        &temp_stamp_path,
+        &TrustedDigestStamp {
+            schema_version: TRUSTED_DIGEST_STAMP_SCHEMA_VERSION,
+            sha256: sha256.to_owned(),
+            file_stamp: file_stamp.clone(),
+        },
+    )?;
+    fs::rename(&temp_stamp_path, &stamp_path).with_context(|| {
+        format!(
+            "rename trusted digest stamp {} to {}",
+            temp_stamp_path.display(),
+            stamp_path.display(),
+        )
+    })?;
+    sync_parent_dir(&stamp_path)?;
+    temp_guard.disarm();
+    Ok(())
+}
+
+fn validate_base_image_digest_with_stamp(
+    base_image_path: &Path,
+    expected_sha256: &str,
+    label: &str,
+) -> anyhow::Result<ConsumeTrustedImageValidationMode> {
+    let pre_hash_stamp = FileStamp::capture(base_image_path.to_path_buf())?;
+
+    if let Some(stamp) = read_trusted_digest_stamp(base_image_path)?
+        && stamp.schema_version == TRUSTED_DIGEST_STAMP_SCHEMA_VERSION
+        && stamp.sha256 == expected_sha256
+        && stamp.file_stamp == pre_hash_stamp
+    {
+        return Ok(ConsumeTrustedImageValidationMode::Cached);
+    }
+
+    let actual_sha256 = sha256_file(base_image_path)?;
+    let post_hash_stamp = FileStamp::capture(base_image_path.to_path_buf())?;
+    anyhow::ensure!(
+        pre_hash_stamp == post_hash_stamp,
+        "{label} {} changed while verifying its digest",
+        base_image_path.display(),
+    );
+    anyhow::ensure!(
+        actual_sha256 == expected_sha256,
+        "{label}.sha256 mismatch for {}: expected {}, got {}",
+        base_image_path.display(),
+        expected_sha256,
+        actual_sha256,
+    );
+    let _ = persist_trusted_digest_stamp(base_image_path, expected_sha256, &post_hash_stamp);
+    Ok(ConsumeTrustedImageValidationMode::Hashed)
+}
+
+fn cached_verified_sha256_file(
+    cache: &mut HashMap<PathBuf, String>,
+    path: &Path,
+    expected_sha256: &str,
+    label: &str,
+) -> anyhow::Result<String> {
     if let Some(digest) = cache.get(path) {
+        anyhow::ensure!(
+            digest == expected_sha256,
+            "{label}.sha256 mismatch for {}: expected {}, got {}",
+            path.display(),
+            expected_sha256,
+            digest,
+        );
         return Ok(digest.clone());
     }
 
-    let digest = sha256_file(path)?;
-    cache.insert(path.to_path_buf(), digest.clone());
-    Ok(digest)
+    validate_base_image_digest_with_stamp(path, expected_sha256, label)?;
+    cache.insert(path.to_path_buf(), expected_sha256.to_owned());
+    Ok(expected_sha256.to_owned())
 }
 
 fn ensure_non_empty(label: &str, value: &str) -> anyhow::Result<()> {
@@ -1258,8 +1351,9 @@ mod tests {
     #[cfg(unix)]
     use super::import_lock_process_exists;
     use super::{
-        ConsumeTrustedImageState, TrustedImage, TrustedImageCatalog, cached_sha256_file, consume_trusted_image,
-        import_lock_path, normalize_sha256, read_trusted_image_manifest, sanitize_file_component, trusted_images,
+        ConsumeTrustedImageState, ConsumeTrustedImageValidationMode, TrustedImage, TrustedImageCatalog,
+        cached_verified_sha256_file, consume_trusted_image, import_lock_path, normalize_sha256,
+        read_trusted_image_manifest, sanitize_file_component, trusted_digest_stamp_path, trusted_images,
         validate_trusted_image_identity_in_catalog,
     };
     use crate::config::{PathConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuRtcBase};
@@ -1326,17 +1420,22 @@ mod tests {
     }
 
     #[test]
-    fn cached_sha256_file_reuses_digest_for_duplicate_manifest_base_images() {
+    fn cached_verified_sha256_file_reuses_digest_for_duplicate_manifest_base_images() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let base_image_path = tempdir.path().join("shared.qcow2");
-        fs::write(&base_image_path, b"first-image-bytes").expect("write first base image");
+        let first_bytes = b"first-image-bytes";
+        fs::write(&base_image_path, first_bytes).expect("write first base image");
 
         let mut cache = std::collections::HashMap::new();
-        let first_digest = cached_sha256_file(&mut cache, &base_image_path).expect("hash first base image");
+        let first_digest = format!("{:x}", Sha256::digest(first_bytes));
+        let cached_digest = cached_verified_sha256_file(&mut cache, &base_image_path, &first_digest, "base_image")
+            .expect("hash first base image");
 
         fs::write(&base_image_path, b"second-image-bytes").expect("overwrite base image");
-        let second_digest = cached_sha256_file(&mut cache, &base_image_path).expect("reuse cached base image digest");
+        let second_digest = cached_verified_sha256_file(&mut cache, &base_image_path, &first_digest, "base_image")
+            .expect("reuse cached base image digest");
 
+        assert_eq!(cached_digest, first_digest);
         assert_eq!(second_digest, first_digest);
     }
 
@@ -1376,7 +1475,7 @@ mod tests {
         assert!(format!("{error:#}").contains("trusted_catalog_invalid"), "{error:#}");
 
         let inspection = catalog.inspect();
-        assert_eq!(inspection.trusted_image_count, 1);
+        assert_eq!(inspection.trusted_image_count, 0);
         assert!(
             inspection
                 .invalid_reason
@@ -1505,6 +1604,7 @@ mod tests {
         let imported = consume_trusted_image(&paths, &bundle.manifest_path).expect("import trusted image bundle");
 
         assert_eq!(imported.import_state, ConsumeTrustedImageState::Imported);
+        assert_eq!(imported.validation_mode, ConsumeTrustedImageValidationMode::Hashed);
         assert!(imported.base_image_path.starts_with(&paths.image_store));
         assert!(imported.manifest_path.starts_with(paths.manifest_dir()));
         assert!(imported.base_image_path.is_file());
@@ -1575,7 +1675,9 @@ mod tests {
         let second = consume_trusted_image(&paths, &bundle.manifest_path).expect("second import should succeed");
 
         assert_eq!(first.import_state, ConsumeTrustedImageState::Imported);
+        assert_eq!(first.validation_mode, ConsumeTrustedImageValidationMode::Hashed);
         assert_eq!(second.import_state, ConsumeTrustedImageState::AlreadyPresent);
+        assert_eq!(second.validation_mode, ConsumeTrustedImageValidationMode::Cached);
         assert_eq!(first.base_image_path, second.base_image_path);
         assert_eq!(first.manifest_path, second.manifest_path);
     }
@@ -1592,12 +1694,80 @@ mod tests {
         let second = consume_trusted_image(&paths, &bundle.manifest_path).expect("second import should bypass lock");
 
         assert_eq!(second.import_state, ConsumeTrustedImageState::AlreadyPresent);
+        assert_eq!(second.validation_mode, ConsumeTrustedImageValidationMode::Cached);
         assert_eq!(second.manifest_path, first.manifest_path);
         assert!(
             import_lock_path(&paths.manifest_dir(), &first.manifest_path)
                 .expect("resolve import lock path")
                 .is_file()
         );
+    }
+
+    #[test]
+    fn consume_trusted_image_rehashes_when_the_digest_stamp_is_missing() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(
+            tempdir.path(),
+            "honeypot-import-missing-stamp",
+            "default",
+            "image-missing-stamp",
+        );
+
+        let first = consume_trusted_image(&paths, &bundle.manifest_path).expect("first import should succeed");
+        fs::remove_file(trusted_digest_stamp_path(&first.base_image_path).expect("resolve digest stamp path"))
+            .expect("remove digest stamp");
+
+        let second = consume_trusted_image(&paths, &bundle.manifest_path).expect("second import should succeed");
+
+        assert_eq!(second.import_state, ConsumeTrustedImageState::AlreadyPresent);
+        assert_eq!(second.validation_mode, ConsumeTrustedImageValidationMode::Hashed);
+    }
+
+    #[test]
+    fn consume_trusted_image_rehashes_when_the_digest_stamp_is_corrupt() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(
+            tempdir.path(),
+            "honeypot-import-corrupt-stamp",
+            "default",
+            "image-corrupt-stamp",
+        );
+
+        let first = consume_trusted_image(&paths, &bundle.manifest_path).expect("first import should succeed");
+        fs::write(
+            trusted_digest_stamp_path(&first.base_image_path).expect("resolve digest stamp path"),
+            b"{not-json",
+        )
+        .expect("corrupt digest stamp");
+
+        let second = consume_trusted_image(&paths, &bundle.manifest_path).expect("second import should succeed");
+
+        assert_eq!(second.import_state, ConsumeTrustedImageState::AlreadyPresent);
+        assert_eq!(second.validation_mode, ConsumeTrustedImageValidationMode::Hashed);
+    }
+
+    #[test]
+    fn consume_trusted_image_rehashes_when_base_image_metadata_drifts() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(
+            tempdir.path(),
+            "honeypot-import-drifted-stamp",
+            "default",
+            "image-drifted-stamp",
+        );
+
+        let first = consume_trusted_image(&paths, &bundle.manifest_path).expect("first import should succeed");
+        std::thread::sleep(Duration::from_millis(5));
+        let contents = fs::read(&first.base_image_path).expect("read imported base image");
+        fs::write(&first.base_image_path, &contents).expect("rewrite imported base image");
+
+        let second = consume_trusted_image(&paths, &bundle.manifest_path).expect("second import should succeed");
+
+        assert_eq!(second.import_state, ConsumeTrustedImageState::AlreadyPresent);
+        assert_eq!(second.validation_mode, ConsumeTrustedImageValidationMode::Hashed);
     }
 
     #[cfg(unix)]
