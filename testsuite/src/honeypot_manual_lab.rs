@@ -36,7 +36,10 @@ const MANUAL_LAB_HOST_COUNT: usize = 3;
 const MANUAL_LAB_ROOT_RELATIVE_PATH: &str = "target/manual-lab";
 const MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH: &str = "target/manual-lab/active.json";
 const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_RELATIVE_PATH: &str = "target/manual-lab/selected-source-manifest.json";
-const MANUAL_LAB_LOCAL_PROFILE_HINT: &str = "make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local";
+const MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT: &str = "make manual-lab-show-profile";
+const MANUAL_LAB_SELFTEST_BOOTSTRAP_HINT: &str = "make manual-lab-selftest-bootstrap-store-exec";
+const MANUAL_LAB_SELFTEST_PREFLIGHT_HINT: &str = "make manual-lab-selftest-preflight";
+const MANUAL_LAB_SELFTEST_UP_HINT: &str = "make manual-lab-selftest-up";
 const MANUAL_LAB_TARGET_ROOT_RELATIVE_PATH: &str = "target";
 const MANUAL_LAB_CONTROL_PLANE_CONFIG_RELATIVE_PATH: &str =
     "honeypot/docker/config/control-plane/manual-lab-bootstrap.toml";
@@ -1955,7 +1958,7 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
                     }
                     _ if bootstrap_report.is_success() => {
                         format!(
-                            "run `make manual-lab-bootstrap-store-exec` to populate the selected Tiny11 interop store, then rerun `make manual-lab-preflight`; if the canonical /srv lane is not writable on this host, rerun `{MANUAL_LAB_LOCAL_PROFILE_HINT}` instead"
+                            "for local manual self-test on a non-root host, run `{MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT}`, then `{MANUAL_LAB_SELFTEST_BOOTSTRAP_HINT}`, `{MANUAL_LAB_SELFTEST_PREFLIGHT_HINT}`, and `{MANUAL_LAB_SELFTEST_UP_HINT}`; for canonical /srv proof, run `make manual-lab-bootstrap-store-exec` and then rerun `make manual-lab-preflight`"
                         )
                     }
                     _ => remediation.unwrap_or_else(|| {
@@ -2081,7 +2084,7 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
 
 fn manual_lab_store_root_permission_remediation() -> String {
     format!(
-        "fix the configured store-root ownership, or rerun `{MANUAL_LAB_LOCAL_PROFILE_HINT}` and then `make manual-lab-preflight MANUAL_LAB_PROFILE=local` on a non-root host"
+        "fix the configured store-root ownership for canonical /srv proof, or on a non-root host run `{MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT}`, then `{MANUAL_LAB_SELFTEST_BOOTSTRAP_HINT}` and `{MANUAL_LAB_SELFTEST_PREFLIGHT_HINT}`"
     )
 }
 

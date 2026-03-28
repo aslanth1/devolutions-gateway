@@ -152,6 +152,14 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
   `make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local`,
   `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
   then `make manual-lab-up MANUAL_LAB_PROFILE=local`.
+- The live canonical `missing_store_root` blocker now points non-root operators at the self-test quick path first:
+  `make manual-lab-show-profile`,
+  `make manual-lab-selftest-bootstrap-store-exec`,
+  `make manual-lab-selftest-preflight`,
+  and `make manual-lab-selftest-up`.
+- That same blocker still keeps canonical `/srv` proof separate:
+  `make manual-lab-bootstrap-store-exec`,
+  then `make manual-lab-preflight`.
 - The shorter manual self-test quick path on this host is:
   `make manual-lab-show-profile`,
   `make manual-lab-selftest-preflight`,

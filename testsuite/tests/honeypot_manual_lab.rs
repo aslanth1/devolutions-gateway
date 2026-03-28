@@ -156,8 +156,13 @@ fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
         rendered.contains("manual lab blocked by missing_store_root"),
         "{rendered}"
     );
-    assert!(rendered.contains("manual-lab-bootstrap-store-exec"), "{rendered}");
-    assert!(rendered.contains("MANUAL_LAB_PROFILE=local"), "{rendered}");
+    assert!(rendered.contains("manual-lab-show-profile"), "{rendered}");
+    assert!(
+        rendered.contains("manual-lab-selftest-bootstrap-store-exec"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("manual-lab-selftest-preflight"), "{rendered}");
+    assert!(rendered.contains("manual-lab-selftest-up"), "{rendered}");
     assert!(
         !active_path.exists(),
         "preflight must not create active state at {}",
@@ -214,6 +219,14 @@ fn manual_lab_cli_preflight_and_up_share_missing_store_root_blocker() {
     let preflight_lines = blocker_lines(&preflight_rendered);
     let up_lines = blocker_lines(&up_rendered);
     assert_eq!(preflight_lines, up_lines);
+    assert!(
+        preflight_rendered.contains("manual-lab-selftest-bootstrap-store-exec"),
+        "{preflight_rendered}"
+    );
+    assert!(
+        preflight_rendered.contains("manual-lab-selftest-up"),
+        "{preflight_rendered}"
+    );
 }
 
 #[test]
@@ -384,7 +397,12 @@ fn manual_lab_cli_bootstrap_store_execute_reports_store_root_not_writable() {
         rendered.contains("manual lab bootstrap blocked by store_root_not_writable"),
         "{rendered}"
     );
-    assert!(rendered.contains("MANUAL_LAB_PROFILE=local"), "{rendered}");
+    assert!(rendered.contains("manual-lab-show-profile"), "{rendered}");
+    assert!(
+        rendered.contains("manual-lab-selftest-bootstrap-store-exec"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("manual-lab-selftest-preflight"), "{rendered}");
 
     fs::set_permissions(&locked_root, fs::Permissions::from_mode(0o755)).expect("restore root permissions");
 }

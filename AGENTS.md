@@ -859,6 +859,17 @@ Pass when: `make manual-lab-show-profile` prints the effective profile, control-
 - [x] Add docs and parity tests for the self-test alias lane.
 Pass when: the runbook and testing docs name the self-test aliases as the manual operator quick path, explain that the local self-test lane is not canonical `/srv` readiness proof, and docs-parity tests cover the new command surface.
 
+### Milestone 6i: Manual Deck Wrong-Lane Remediation Bridge
+
+- [x] Update Rust blocker remediation to prefer the self-test quick path on non-root hosts.
+Pass when: the `missing_store_root` and store-root permission remediation emitted by `testsuite::honeypot_manual_lab` points operators first to `make manual-lab-show-profile`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-preflight`, and `make manual-lab-selftest-up`, while still keeping canonical `/srv` proof guidance distinct.
+
+- [x] Keep canonical proof guidance explicit inside the same remediation contract.
+Pass when: the blocker text still explains that `make manual-lab-bootstrap-store-exec` plus `make manual-lab-preflight` is the canonical `/srv` proof lane and does not imply any automatic fallback.
+
+- [x] Add docs and tests for the remediation bridge.
+Pass when: the runbook and testing docs explain that canonical `missing_store_root` guidance now points to the self-test lane first on non-root hosts, and tests cover the new remediation strings so command names do not drift.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

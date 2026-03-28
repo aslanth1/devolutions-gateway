@@ -436,6 +436,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         "Add explicit local-profile self-test aliases for manual operators.",
     );
     assert_contains(agents_path, &agents, "Add a read-only manual-lab profile inspector.");
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6i: Manual Deck Wrong-Lane Remediation Bridge",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Update Rust blocker remediation to prefer the self-test quick path on non-root hosts.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -477,6 +487,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         "The `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience",
     );
     assert_contains(runbook_path, &runbook, "manual self-test quick path on this host is:");
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The live canonical `missing_store_root` blocker now points non-root operators at the self-test quick path first:",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "That same blocker still keeps canonical `/srv` proof separate:",
+    );
 
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);
@@ -530,6 +550,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "Self-test alias success must not be treated as canonical `/srv` readiness proof.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "When canonical `make manual-lab-up` or `make manual-lab-preflight` fails with `missing_store_root` on a non-root host, the Rust remediation now points to:",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "That same remediation still preserves the canonical `/srv` proof lane separately:",
     );
 }
 

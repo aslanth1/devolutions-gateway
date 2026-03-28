@@ -213,6 +213,14 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
   `make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local`,
   `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
   and `make manual-lab-up MANUAL_LAB_PROFILE=local`.
+- When canonical `make manual-lab-up` or `make manual-lab-preflight` fails with `missing_store_root` on a non-root host, the Rust remediation now points to:
+  `make manual-lab-show-profile`,
+  `make manual-lab-selftest-bootstrap-store-exec`,
+  `make manual-lab-selftest-preflight`,
+  and `make manual-lab-selftest-up`.
+- That same remediation still preserves the canonical `/srv` proof lane separately:
+  `make manual-lab-bootstrap-store-exec`,
+  then `make manual-lab-preflight`.
 - The shorter non-root manual self-test path is:
   `make manual-lab-show-profile`,
   `make manual-lab-selftest-preflight`,
