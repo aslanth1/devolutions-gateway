@@ -977,6 +977,9 @@ Pass when: the repo root `Makefile` exposes `manual-lab-webplayer-auth-check` an
 - [x] Keep the webplayer auth helper aligned with the existing containerized build contract.
 Pass when: the auth helper uses the same `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME`, `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and private-lockfile detection rules as `manual-lab-ensure-webplayer`, and missing private-registry auth fails fast with the same remediation anchors instead of introducing a second secret path.
 
+- [x] Make the webplayer auth helper reject readable-but-wrong private-registry config before `pnpm install`.
+Pass when: a readable `.npmrc` that omits `@devolutions:registry`, points that scope at npmjs, or lacks credentials for `devolutions.jfrog.io` fails early with a message that names the npmjs fallback risk, while the status helper reports the scoped-registry state separately from the auth-host state.
+
 - [x] Add docs and contract tests for the webplayer auth and status helpers.
 Pass when: the runbook and testing docs explain when to run `make manual-lab-webplayer-auth-check` and `make manual-lab-webplayer-status`, and tests pin the new command surface plus the updated troubleshooting text.
 

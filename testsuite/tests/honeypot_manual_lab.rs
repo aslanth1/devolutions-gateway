@@ -129,9 +129,12 @@ fn manual_lab_cli_help_lists_up_status_and_down() {
 #[cfg(unix)]
 #[test]
 fn make_manual_lab_selftest_routes_through_ensure_webplayer_and_artifacts_by_default() {
+    let tempdir = tempdir().expect("create tempdir");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
     let output = Command::new("make")
         .arg("-n")
         .arg("manual-lab-selftest")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
         .current_dir(repo_relative_path("."))
         .output()
         .expect("run make -n manual-lab-selftest");
@@ -179,6 +182,14 @@ fn make_manual_lab_webplayer_auth_check_exposes_private_registry_remediation() {
         "auth-check should surface the npmrc remediation anchor:\n{rendered}"
     );
     assert!(
+        rendered.contains("@devolutions:registry"),
+        "auth-check should mention the scoped registry contract:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("registry.npmjs.org"),
+        "auth-check should mention the fallback risk it guards against:\n{rendered}"
+    );
+    assert!(
         rendered.contains("DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>"),
         "auth-check should surface the prebuilt bundle override anchor:\n{rendered}"
     );
@@ -208,14 +219,105 @@ fn make_manual_lab_webplayer_status_reports_bundle_state() {
         rendered.contains("manual-lab webplayer private registry deps:"),
         "webplayer-status should report private-registry detection:\n{rendered}"
     );
+    assert!(
+        rendered.contains("manual-lab webplayer npm scope registry:"),
+        "webplayer-status should report the effective scoped registry state:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_webplayer_auth_check_rejects_npmrc_without_devolutions_scope_mapping() {
+    let tempdir = tempdir().expect("create tempdir");
+    let build_root = tempdir.path().join("webapp");
+    fs::create_dir_all(&build_root).expect("create fake webapp root");
+    fs::write(
+        build_root.join("pnpm-lock.yaml"),
+        "packages:\n  '@devolutions/iron-remote-desktop@0.0.1':\n    resolution:\n      tarball: https://devolutions.jfrog.io/artifactory/api/npm/npm/@devolutions/iron-remote-desktop/-/iron-remote-desktop-0.0.1.tgz\n  '@devolutions/icons@5.0.11':\n    resolution:\n      integrity: sha512-demo\n",
+    )
+    .expect("write fake pnpm lockfile");
+    let npmrc_path = tempdir.path().join(".npmrc");
+    fs::write(&npmrc_path, "registry=https://registry.npmjs.org/\n").expect("write fake npmrc");
+
+    let output = Command::new("make")
+        .arg("manual-lab-webplayer-auth-check")
+        .env("MANUAL_LAB_WEBPLAYER_BUILD_ROOT", &build_root)
+        .env("MANUAL_LAB_WEBPLAYER_NPMRC", &npmrc_path)
+        .env("MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME", "sh")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make manual-lab-webplayer-auth-check");
+    assert!(
+        !output.status.success(),
+        "auth-check should reject an npmrc without @devolutions:registry:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        rendered.contains("does not configure @devolutions:registry"),
+        "auth-check should explain the missing scope registry:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("registry.npmjs.org"),
+        "auth-check should explain the npmjs fallback risk:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_webplayer_auth_check_accepts_scope_mapping_with_matching_host_credentials() {
+    let tempdir = tempdir().expect("create tempdir");
+    let build_root = tempdir.path().join("webapp");
+    fs::create_dir_all(&build_root).expect("create fake webapp root");
+    fs::write(
+        build_root.join("pnpm-lock.yaml"),
+        "packages:\n  '@devolutions/iron-remote-desktop@0.0.1':\n    resolution:\n      tarball: https://devolutions.jfrog.io/artifactory/api/npm/npm/@devolutions/iron-remote-desktop/-/iron-remote-desktop-0.0.1.tgz\n  '@devolutions/icons@5.0.11':\n    resolution:\n      integrity: sha512-demo\n",
+    )
+    .expect("write fake pnpm lockfile");
+    let npmrc_path = tempdir.path().join(".npmrc");
+    fs::write(
+        &npmrc_path,
+        "@devolutions:registry=https://devolutions.jfrog.io/artifactory/api/npm/npm/\n//devolutions.jfrog.io/artifactory/api/npm/npm/:_authToken=test-token\n",
+    )
+    .expect("write fake npmrc");
+
+    let output = Command::new("make")
+        .arg("manual-lab-webplayer-auth-check")
+        .env("MANUAL_LAB_WEBPLAYER_BUILD_ROOT", &build_root)
+        .env("MANUAL_LAB_WEBPLAYER_NPMRC", &npmrc_path)
+        .env("MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME", "sh")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make manual-lab-webplayer-auth-check");
+    assert!(
+        output.status.success(),
+        "auth-check should accept a matching scoped registry and credentials:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("@devolutions:registry=https://devolutions.jfrog.io/artifactory/api/npm/npm/"),
+        "auth-check should echo the effective scoped registry on success:\n{rendered}"
+    );
 }
 
 #[cfg(unix)]
 #[test]
 fn make_manual_lab_selftest_up_routes_through_ensure_webplayer_and_artifacts_by_default() {
+    let tempdir = tempdir().expect("create tempdir");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
     let output = Command::new("make")
         .arg("-n")
         .arg("manual-lab-selftest-up")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
         .current_dir(repo_relative_path("."))
         .output()
         .expect("run make -n manual-lab-selftest-up");
@@ -278,9 +380,12 @@ fn make_manual_lab_selftest_up_can_disable_the_default_webplayer_precheck() {
 #[cfg(unix)]
 #[test]
 fn make_manual_lab_selftest_up_can_disable_the_default_precheck() {
+    let tempdir = tempdir().expect("create tempdir");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
     let output = Command::new("make")
         .arg("-n")
         .arg("manual-lab-selftest-up")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
         .env("MANUAL_LAB_SELFTEST_UP_PRECHECK", "0")
         .current_dir(repo_relative_path("."))
         .output()
@@ -309,9 +414,12 @@ fn make_manual_lab_selftest_up_can_disable_the_default_precheck() {
 #[cfg(unix)]
 #[test]
 fn make_manual_lab_selftest_up_no_browser_routes_through_ensure_artifacts_by_default() {
+    let tempdir = tempdir().expect("create tempdir");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
     let output = Command::new("make")
         .arg("-n")
         .arg("manual-lab-selftest-up-no-browser")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
         .current_dir(repo_relative_path("."))
         .output()
         .expect("run make -n manual-lab-selftest-up-no-browser");

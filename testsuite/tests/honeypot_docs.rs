@@ -654,12 +654,12 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the webapp sources, container-runtime availability, and private-registry auth readiness.",
+        "Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the webapp sources, container-runtime availability, and private-registry scope plus auth readiness.",
     );
     assert_contains(
         runbook_path,
         &runbook,
-        "Run `make manual-lab-webplayer-auth-check` when you want the same private-registry auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.",
+        "Run `make manual-lab-webplayer-auth-check` when you want the same private-registry scope and auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.",
     );
     assert_contains(
         runbook_path,
@@ -684,7 +684,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors",
+        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs",
     );
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(
@@ -834,12 +834,12 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, and private-registry auth readiness.",
+        "Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, and private-registry scope plus auth readiness.",
     );
     assert_contains(
         testing_path,
         &testing,
-        "Run `make manual-lab-webplayer-auth-check` when you want to exercise the same auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.",
+        "Run `make manual-lab-webplayer-auth-check` when you want to exercise the same scoped-registry and auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.",
     );
     assert_contains(
         testing_path,
@@ -864,7 +864,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors",
+        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs",
     );
     assert_contains(
         testing_path,

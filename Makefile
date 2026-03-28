@@ -14,6 +14,8 @@ MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME ?= docker
 MANUAL_LAB_WEBPLAYER_CONTAINER_HOME ?= $(CURDIR)/target/manual-lab/webplayer-home
 MANUAL_LAB_WEBPLAYER_CONTAINER_STORE ?= $(CURDIR)/target/manual-lab/pnpm-store
 MANUAL_LAB_WEBPLAYER_NPMRC ?= $(if $(NPM_CONFIG_USERCONFIG),$(NPM_CONFIG_USERCONFIG),$(HOME)/.npmrc)
+MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE ?= @devolutions
+MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST ?= devolutions.jfrog.io
 HONEYPOT_TEST_TIER_GATE ?= $(CURDIR)/target/honeypot/lab-e2e-gate.json
 HOST_SMOKE_TEST_ARGS ?=
 HOST_SMOKE_PRECHECK ?= 1
@@ -152,7 +154,8 @@ manual-lab-webplayer-auth-check:
 		printf 'manual-lab webplayer builder needs container runtime `%s`; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to use a prebuilt bundle instead\n' "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)"; \
 		exit 1; \
 	fi; \
-	if ! grep -q 'devolutions.jfrog.io' "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml"; then \
+	lockfile_path="$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml"; \
+	if ! grep -q "$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)" "$$lockfile_path"; then \
 		printf 'manual-lab webplayer auth-check ready: %s is available and the lockfile does not reference the private Devolutions registry\n' "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)"; \
 		exit 0; \
 	fi; \
@@ -169,7 +172,23 @@ manual-lab-webplayer-auth-check:
 		printf 'manual-lab webplayer npm auth config %s is empty; set MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc or NPM_CONFIG_USERCONFIG=/path/to/.npmrc, or use DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>\n' "$$npmrc_path"; \
 		exit 1; \
 	fi; \
-	printf 'manual-lab webplayer auth-check ready: using %s with npm auth config %s for the private Devolutions registry\n' "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)" "$$npmrc_path"
+	scope_registry="$$(awk -F= '/^[[:space:]]*$(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE):registry[[:space:]]*=/{print $$2}' "$$npmrc_path" | tail -n 1 | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//')"; \
+	if [[ -z "$$scope_registry" ]]; then \
+		printf 'manual-lab webplayer npm auth config %s does not configure $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE):registry; the containerized build would fall back to https://registry.npmjs.org for private packages such as $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE)/icons. Set MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc or NPM_CONFIG_USERCONFIG=/path/to/.npmrc to a file that maps $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE) to $(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST), or use DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>\n' "$$npmrc_path"; \
+		exit 1; \
+	fi; \
+	if [[ "$$scope_registry" != *"$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)"* ]]; then \
+		printf 'manual-lab webplayer npm auth config %s maps $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE):registry to %s; the containerized build needs a %s registry for private packages such as $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE)/icons. Set MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc or NPM_CONFIG_USERCONFIG=/path/to/.npmrc to a file that maps $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE) correctly, or use DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>\n' "$$npmrc_path" "$$scope_registry" "$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)"; \
+		exit 1; \
+	fi; \
+	auth_token_line="$$(grep -E '^[[:space:]]*//$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)/.*:(_authToken|_auth)[[:space:]]*=' "$$npmrc_path" | head -n 1 || true)"; \
+	username_line="$$(grep -E '^[[:space:]]*//$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)/.*:username[[:space:]]*=' "$$npmrc_path" | head -n 1 || true)"; \
+	password_line="$$(grep -E '^[[:space:]]*//$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)/.*:_password[[:space:]]*=' "$$npmrc_path" | head -n 1 || true)"; \
+	if [[ -z "$$auth_token_line" && ( -z "$$username_line" || -z "$$password_line" ) ]]; then \
+		printf 'manual-lab webplayer npm auth config %s maps $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE):registry to %s but does not define an auth token, _auth entry, or username/_password pair for %s; set MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc or NPM_CONFIG_USERCONFIG=/path/to/.npmrc to a file with credentials for that host, or use DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>\n' "$$npmrc_path" "$$scope_registry" "$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)"; \
+		exit 1; \
+	fi; \
+	printf 'manual-lab webplayer auth-check ready: using %s with npm auth config %s; $(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE):registry=%s and credentials for %s are present\n' "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)" "$$npmrc_path" "$$scope_registry" "$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)"
 
 .PHONY: manual-lab-webplayer-status
 manual-lab-webplayer-status:
@@ -190,11 +209,30 @@ manual-lab-webplayer-status:
 	else \
 		printf 'manual-lab webplayer container runtime: %s (missing)\n' "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)"; \
 	fi; \
-	if grep -q 'devolutions.jfrog.io' "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml"; then \
+	lockfile_path="$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml"; \
+	if grep -q "$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)" "$$lockfile_path"; then \
 		printf 'manual-lab webplayer private registry deps: yes\n'; \
 		npmrc_path="$(MANUAL_LAB_WEBPLAYER_NPMRC)"; \
 		if [[ -r "$$npmrc_path" && -s "$$npmrc_path" ]]; then \
-			printf 'manual-lab webplayer npm auth: ready (%s)\n' "$$npmrc_path"; \
+			scope_registry="$$(awk -F= '/^[[:space:]]*$(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE):registry[[:space:]]*=/{print $$2}' "$$npmrc_path" | tail -n 1 | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$$//')"; \
+			if [[ -n "$$scope_registry" ]]; then \
+				printf 'manual-lab webplayer npm scope registry: %s\n' "$$scope_registry"; \
+			else \
+				printf 'manual-lab webplayer npm scope registry: missing ($(MANUAL_LAB_WEBPLAYER_PRIVATE_SCOPE):registry is not set; the build would fall back to https://registry.npmjs.org)\n'; \
+			fi; \
+			auth_token_line="$$(grep -E '^[[:space:]]*//$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)/.*:(_authToken|_auth)[[:space:]]*=' "$$npmrc_path" | head -n 1 || true)"; \
+			username_line="$$(grep -E '^[[:space:]]*//$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)/.*:username[[:space:]]*=' "$$npmrc_path" | head -n 1 || true)"; \
+			password_line="$$(grep -E '^[[:space:]]*//$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)/.*:_password[[:space:]]*=' "$$npmrc_path" | head -n 1 || true)"; \
+			if [[ -n "$$auth_token_line" || ( -n "$$username_line" && -n "$$password_line" ) ]]; then \
+				printf 'manual-lab webplayer npm auth host entry: ready (%s)\n' "$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)"; \
+			else \
+				printf 'manual-lab webplayer npm auth host entry: missing (%s)\n' "$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)"; \
+			fi; \
+			if [[ -n "$$scope_registry" && "$$scope_registry" == *"$(MANUAL_LAB_WEBPLAYER_PRIVATE_REGISTRY_HOST)"* && ( -n "$$auth_token_line" || ( -n "$$username_line" && -n "$$password_line" ) ) ]]; then \
+				printf 'manual-lab webplayer npm auth: ready (%s)\n' "$$npmrc_path"; \
+			else \
+				printf 'manual-lab webplayer npm auth: blocked (%s)\n' "$$npmrc_path"; \
+			fi; \
 		else \
 			printf 'manual-lab webplayer npm auth: missing (%s)\n' "$$npmrc_path"; \
 		fi; \
@@ -259,21 +297,8 @@ manual-lab-ensure-webplayer:
 		printf 'manual-lab webplayer builder needs container runtime `%s`; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to use a prebuilt bundle instead\n' "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)"; \
 		exit 1; \
 	fi; \
+	$(MAKE) --no-print-directory manual-lab-webplayer-auth-check; \
 	npmrc_path="$(MANUAL_LAB_WEBPLAYER_NPMRC)"; \
-	if grep -q 'devolutions.jfrog.io' "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml"; then \
-		if [[ ! -f "$$npmrc_path" ]]; then \
-			printf 'manual-lab webplayer build needs npm auth config at %s because webapp/pnpm-lock.yaml references the private Devolutions registry; set MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc or NPM_CONFIG_USERCONFIG=/path/to/.npmrc, or use DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>\n' "$$npmrc_path"; \
-			exit 1; \
-		fi; \
-		if [[ ! -r "$$npmrc_path" ]]; then \
-			printf 'manual-lab webplayer npm auth config %s is not readable; set MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc or NPM_CONFIG_USERCONFIG=/path/to/.npmrc, or use DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>\n' "$$npmrc_path"; \
-			exit 1; \
-		fi; \
-		if [[ ! -s "$$npmrc_path" ]]; then \
-			printf 'manual-lab webplayer npm auth config %s is empty; set MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc or NPM_CONFIG_USERCONFIG=/path/to/.npmrc, or use DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>\n' "$$npmrc_path"; \
-			exit 1; \
-		fi; \
-	fi; \
 	printf 'ensuring manual-lab webplayer builder image %s with %s\n' "$(MANUAL_LAB_WEBPLAYER_BUILDER_IMAGE)" "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)"; \
 	"$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)" build \
 		-t "$(MANUAL_LAB_WEBPLAYER_BUILDER_IMAGE)" \

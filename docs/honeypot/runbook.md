@@ -177,14 +177,15 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - The live manual deck also requires a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
 - By default the launcher expects `webapp/dist/recording-player/index.html` in this repo checkout.
 - Override that source bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the player build lives elsewhere.
-- Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the webapp sources, container-runtime availability, and private-registry auth readiness.
-- Run `make manual-lab-webplayer-auth-check` when you want the same private-registry auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.
+- Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the webapp sources, container-runtime availability, and private-registry scope plus auth readiness.
+- Run `make manual-lab-webplayer-auth-check` when you want the same private-registry scope and auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.
 - Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.
 - `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` already run that containerized builder automatically.
 - The host only needs the selected container runtime for that builder; it does not need host `pnpm`.
 - Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.
 - If `webapp/pnpm-lock.yaml` references private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
-- `make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when that private-registry auth is still missing.
+- That `.npmrc` must both map `@devolutions:registry` to `devolutions.jfrog.io` and include credentials for that host, otherwise the containerized build falls back to `registry.npmjs.org` for private packages such as `@devolutions/icons`.
+- `make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs.
 - If the player bundle is still missing after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>`, then rerun `make manual-lab-preflight`.
 - `DGW_HONEYPOT_INTEROP_IMAGE_STORE` and `DGW_HONEYPOT_INTEROP_MANIFEST_DIR` are optional if the canonical sealed store under `/srv/honeypot/images` is already present and trusted.
 - `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS` remain optional overrides for unusual lab hosts.
