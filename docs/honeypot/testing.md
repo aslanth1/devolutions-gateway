@@ -183,7 +183,9 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 
 - The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight|remember-source-manifest|bootstrap-store|up|status|down`.
 - The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
-- The Make targets only create a local lab-e2e gate file and set `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE` for `preflight`, `bootstrap-store`, and `up`; they do not replace the required `DGW_HONEYPOT_INTEROP_*` inputs.
+- The Make targets only create a local lab-e2e gate file and set `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE` for `preflight`, `bootstrap-store`, and `up`; they do not replace the Rust readiness authority.
+- `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser` now also inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
+- Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses different guest credentials.
 - `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
 - `canonical` is the default `/srv/honeypot/...` lane.
 - `local` is the explicit non-root lane and binds the same Rust authority to repo-local state under `target/manual-lab/state/`.

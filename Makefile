@@ -19,8 +19,11 @@ MANUAL_LAB_INTEROP_MANIFEST_DIR ?=
 endif
 
 MANUAL_LAB_SOURCE_MANIFEST ?=
+MANUAL_LAB_INTEROP_RDP_USERNAME ?= $(if $(DGW_HONEYPOT_INTEROP_RDP_USERNAME),$(DGW_HONEYPOT_INTEROP_RDP_USERNAME),operator)
+MANUAL_LAB_INTEROP_RDP_PASSWORD ?= $(if $(DGW_HONEYPOT_INTEROP_RDP_PASSWORD),$(DGW_HONEYPOT_INTEROP_RDP_PASSWORD),password)
 MANUAL_LAB_INTEROP_ENV = $(if $(MANUAL_LAB_INTEROP_IMAGE_STORE),DGW_HONEYPOT_INTEROP_IMAGE_STORE="$(MANUAL_LAB_INTEROP_IMAGE_STORE)") $(if $(MANUAL_LAB_INTEROP_MANIFEST_DIR),DGW_HONEYPOT_INTEROP_MANIFEST_DIR="$(MANUAL_LAB_INTEROP_MANIFEST_DIR)")
 MANUAL_LAB_GATE_ENV = DGW_HONEYPOT_LAB_E2E=1 DGW_HONEYPOT_TIER_GATE="$(MANUAL_LAB_TIER_GATE)" MANUAL_LAB_CONTROL_PLANE_CONFIG="$(MANUAL_LAB_CONTROL_PLANE_CONFIG)" $(MANUAL_LAB_INTEROP_ENV)
+MANUAL_LAB_RUNTIME_ENV = $(MANUAL_LAB_GATE_ENV) DGW_HONEYPOT_INTEROP_RDP_USERNAME="$(MANUAL_LAB_INTEROP_RDP_USERNAME)" DGW_HONEYPOT_INTEROP_RDP_PASSWORD="$(MANUAL_LAB_INTEROP_RDP_PASSWORD)"
 MANUAL_LAB_BOOTSTRAP_ARGS = --config "$(MANUAL_LAB_CONTROL_PLANE_CONFIG)" $(if $(MANUAL_LAB_SOURCE_MANIFEST),--source-manifest "$(MANUAL_LAB_SOURCE_MANIFEST)",)
 
 .PHONY: manual-lab-tier-gate
@@ -34,25 +37,25 @@ $(MANUAL_LAB_TIER_GATE):
 .PHONY: manual-lab-preflight
 manual-lab-preflight: $(MANUAL_LAB_TIER_GATE)
 	@printf 'using manual-lab profile %s with tier gate %s\n' "$(MANUAL_LAB_PROFILE)" "$(MANUAL_LAB_TIER_GATE)"
-	@$(MANUAL_LAB_GATE_ENV) \
+	@$(MANUAL_LAB_RUNTIME_ENV) \
 	cargo run -p testsuite --bin honeypot-manual-lab -- preflight
 
 .PHONY: manual-lab-preflight-no-browser
 manual-lab-preflight-no-browser: $(MANUAL_LAB_TIER_GATE)
 	@printf 'using manual-lab profile %s with tier gate %s\n' "$(MANUAL_LAB_PROFILE)" "$(MANUAL_LAB_TIER_GATE)"
-	@$(MANUAL_LAB_GATE_ENV) \
+	@$(MANUAL_LAB_RUNTIME_ENV) \
 	cargo run -p testsuite --bin honeypot-manual-lab -- preflight --no-browser
 
 .PHONY: manual-lab-bootstrap-store
 manual-lab-bootstrap-store: $(MANUAL_LAB_TIER_GATE)
 	@printf 'using manual-lab profile %s with tier gate %s\n' "$(MANUAL_LAB_PROFILE)" "$(MANUAL_LAB_TIER_GATE)"
-	@$(MANUAL_LAB_GATE_ENV) \
+	@$(MANUAL_LAB_RUNTIME_ENV) \
 	cargo run -p testsuite --bin honeypot-manual-lab -- bootstrap-store $(MANUAL_LAB_BOOTSTRAP_ARGS)
 
 .PHONY: manual-lab-bootstrap-store-exec
 manual-lab-bootstrap-store-exec: $(MANUAL_LAB_TIER_GATE)
 	@printf 'using manual-lab profile %s with tier gate %s\n' "$(MANUAL_LAB_PROFILE)" "$(MANUAL_LAB_TIER_GATE)"
-	@$(MANUAL_LAB_GATE_ENV) \
+	@$(MANUAL_LAB_RUNTIME_ENV) \
 	cargo run -p testsuite --bin honeypot-manual-lab -- bootstrap-store --execute $(MANUAL_LAB_BOOTSTRAP_ARGS)
 
 .PHONY: manual-lab-remember-source-manifest
@@ -61,12 +64,12 @@ manual-lab-remember-source-manifest:
 
 .PHONY: manual-lab-up
 manual-lab-up: manual-lab-preflight
-	@$(MANUAL_LAB_GATE_ENV) \
+	@$(MANUAL_LAB_RUNTIME_ENV) \
 	cargo run -p testsuite --bin honeypot-manual-lab -- up
 
 .PHONY: manual-lab-up-no-browser
 manual-lab-up-no-browser: manual-lab-preflight-no-browser
-	@$(MANUAL_LAB_GATE_ENV) \
+	@$(MANUAL_LAB_RUNTIME_ENV) \
 	cargo run -p testsuite --bin honeypot-manual-lab -- up --no-browser
 
 .PHONY: manual-lab-status

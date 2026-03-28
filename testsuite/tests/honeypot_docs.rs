@@ -415,6 +415,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add an explicit local-state manual-lab profile for non-root hosts.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6g: Manual Deck Makefile Runtime Env Defaults",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add Make-managed guest-auth env defaults for readiness and launch verbs.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -436,6 +446,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         runbook_path,
         &runbook,
         "remove `target/manual-lab/selected-source-manifest.json` to clear the local hint",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD`",
     );
 
     let testing_path = "docs/honeypot/testing.md";
@@ -460,6 +480,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD`",
     );
 }
 
