@@ -111,12 +111,15 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - Use the Rust launcher when you want a real operator deck with three live Tiny11-backed sessions and a browser view you can click through.
 - The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight`, `remember-source-manifest`, `bootstrap-store`, `up`, `status`, and `down`.
 - The repo root `Makefile` also provides thin convenience wrappers `make manual-lab-preflight`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-status`, and `make manual-lab-down`.
+- For manual operator self-test on a non-root host, prefer the explicit local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down`.
+- `make manual-lab-show-profile` is the read-only visibility helper for the effective profile, config path, store root, manifest dir, and masked guest-auth state.
 - Those wrappers still call the same Rust launcher and only pre-create a local lab-e2e gate file plus set `DGW_HONEYPOT_LAB_E2E=1` and `DGW_HONEYPOT_TIER_GATE` for `preflight`, `bootstrap-store`, and `up`.
 - For `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
 - Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses a different guest account.
 - `MANUAL_LAB_PROFILE=canonical|local` selects the sanctioned host-state lane for those Make wrappers.
 - `canonical` is the default and keeps the checked-in `/srv/honeypot/...` paths.
 - `local` is the explicit non-root operator lane and switches the wrappers to repo-local state under `target/manual-lab/state/`.
+- The `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience, but they do not change the canonical `manual-lab-*` defaults.
 - Use the preflight-first sequence for manual operator work:
   `make manual-lab-preflight`,
   run `make manual-lab-bootstrap-store`,
@@ -149,6 +152,11 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
   `make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local`,
   `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
   then `make manual-lab-up MANUAL_LAB_PROFILE=local`.
+- The shorter manual self-test quick path on this host is:
+  `make manual-lab-show-profile`,
+  `make manual-lab-selftest-preflight`,
+  `make manual-lab-selftest-up`,
+  then `make manual-lab-selftest-status` and `make manual-lab-selftest-down`.
 - The local profile is for operator self-test and uses repo-local writable state only.
 - It does not replace the canonical `/srv` lane for production-like host readiness proof.
 - If `preflight` or `up` reports `missing_store_root`, bootstrap the canonical store through `make manual-lab-bootstrap-store` first instead of editing a placeholder `consume-image` command by hand.

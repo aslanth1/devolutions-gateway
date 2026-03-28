@@ -425,12 +425,26 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add Make-managed guest-auth env defaults for readiness and launch verbs.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6h: Manual Deck Self-Test Alias Lane",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add explicit local-profile self-test aliases for manual operators.",
+    );
+    assert_contains(agents_path, &agents, "Add a read-only manual-lab profile inspector.");
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
     assert_contains(runbook_path, &runbook, "make manual-lab-remember-source-manifest");
+    assert_contains(runbook_path, &runbook, "make manual-lab-selftest-preflight");
+    assert_contains(runbook_path, &runbook, "make manual-lab-selftest-up");
+    assert_contains(runbook_path, &runbook, "make manual-lab-show-profile");
     assert_contains(runbook_path, &runbook, "MANUAL_LAB_PROFILE=canonical|local");
     assert_contains(
         runbook_path,
@@ -457,6 +471,12 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &runbook,
         "Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD`",
     );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience",
+    );
+    assert_contains(runbook_path, &runbook, "manual self-test quick path on this host is:");
 
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);
@@ -490,6 +510,26 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "preferred convenience lane is `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`make manual-lab-show-profile` is the read-only helper",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "The `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Self-test alias success must not be treated as canonical `/srv` readiness proof.",
     );
 }
 

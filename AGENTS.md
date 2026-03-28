@@ -848,6 +848,17 @@ Pass when: `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PA
 - [x] Add docs and tests for the Make-managed runtime env contract.
 Pass when: the runbook and testing docs name the `operator/password` wrapper defaults, explain the override knobs, state which verbs consume those defaults, and docs-parity tests cover the new contract.
 
+### Milestone 6h: Manual Deck Self-Test Alias Lane
+
+- [x] Add explicit local-profile self-test aliases for manual operators.
+Pass when: the repo root `Makefile` exposes `manual-lab-selftest-preflight`, `manual-lab-selftest-preflight-no-browser`, `manual-lab-selftest-bootstrap-store`, `manual-lab-selftest-bootstrap-store-exec`, `manual-lab-selftest-up`, `manual-lab-selftest-up-no-browser`, `manual-lab-selftest-status`, and `manual-lab-selftest-down`, and each readiness or launch alias delegates to the existing wrapper with `MANUAL_LAB_PROFILE=local` while keeping canonical `manual-lab-*` defaults unchanged.
+
+- [x] Add a read-only manual-lab profile inspector.
+Pass when: `make manual-lab-show-profile` prints the effective profile, control-plane config path, image-store root, manifest dir, and masked guest-auth state without mutating the host or bypassing Rust readiness checks.
+
+- [x] Add docs and parity tests for the self-test alias lane.
+Pass when: the runbook and testing docs name the self-test aliases as the manual operator quick path, explain that the local self-test lane is not canonical `/srv` readiness proof, and docs-parity tests cover the new command surface.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
