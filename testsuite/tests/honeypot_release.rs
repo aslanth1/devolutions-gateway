@@ -12,18 +12,19 @@ use testsuite::honeypot_control_plane::{HoneypotControlPlaneTestConfig, write_ho
 use testsuite::honeypot_frontend::{HoneypotFrontendTestConfig, write_honeypot_frontend_config};
 use testsuite::honeypot_release::{
     HONEYPOT_COMPOSE_PATH, HONEYPOT_CONTROL_PLANE_CONFIG_PATH, HONEYPOT_CONTROL_PLANE_ENV_PATH,
-    HONEYPOT_FRONTEND_CONFIG_PATH, HONEYPOT_FRONTEND_ENV_PATH, HONEYPOT_IMAGES_LOCK_PATH, HONEYPOT_PROXY_CONFIG_PATH,
-    HONEYPOT_PROXY_ENV_PATH, HoneypotImagesLock, HoneypotService, ImageSlot, ServiceSchemaVersions,
-    ServiceVersionSelection, build_honeypot_service_image, create_docker_network, docker_logs,
-    load_honeypot_images_lock, remove_docker_container_if_exists, remove_docker_image_if_exists,
-    remove_docker_network_if_exists, repo_relative_path, resolve_honeypot_images_for_selection, run_docker_compose,
-    run_docker_container, validate_honeypot_compose_document, validate_honeypot_compose_document_for_selection,
+    HONEYPOT_FRONTEND_CONFIG_PATH, HONEYPOT_FRONTEND_ENV_PATH, HONEYPOT_IMAGES_LOCK_PATH,
+    HONEYPOT_PROMOTION_MANIFEST_PATH, HONEYPOT_PROXY_CONFIG_PATH, HONEYPOT_PROXY_ENV_PATH, HoneypotImagesLock,
+    HoneypotService, ImageSlot, ServiceSchemaVersions, ServiceVersionSelection, build_honeypot_service_image,
+    create_docker_network, docker_logs, load_honeypot_images_lock, remove_docker_container_if_exists,
+    remove_docker_image_if_exists, remove_docker_network_if_exists, repo_relative_path,
+    resolve_honeypot_images_for_selection, run_docker_compose, run_docker_container,
+    validate_honeypot_compose_document, validate_honeypot_compose_document_for_selection,
     validate_honeypot_control_plane_compose_runtime_document, validate_honeypot_control_plane_env_document,
     validate_honeypot_control_plane_runtime_contract, validate_honeypot_dockerfile_packaging_contract,
     validate_honeypot_frontend_compose_runtime_document, validate_honeypot_frontend_env_document,
     validate_honeypot_frontend_runtime_contract, validate_honeypot_images_lock_document,
-    validate_honeypot_proxy_compose_runtime_document, validate_honeypot_proxy_env_document,
-    validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
+    validate_honeypot_promotion_manifest_document, validate_honeypot_proxy_compose_runtime_document,
+    validate_honeypot_proxy_env_document, validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
     validate_mixed_version_contract_compatibility, validate_restored_service_contract_compatibility,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
@@ -145,6 +146,44 @@ fn rewrite_compose_service_ports(compose_data: &str, service: &'static str, port
     service_entry.insert(ports_key, serde_yaml::Value::Sequence(port_entries));
 
     serde_yaml::to_string(&document).expect("serialize compose document")
+}
+
+fn sample_promotion_manifest() -> String {
+    json!({
+        "schema_version": 1,
+        "generated_at": "2026-03-28T09:00:00Z",
+        "builder_id": "testsuite-fixture",
+        "source_commit": "0123456789abcdef0123456789abcdef01234567",
+        "source_ref": "refs/tags/v0.1.0",
+        "signature_ref": "attestation://promotion-manifest-test",
+        "services": [
+            {
+                "service": "control-plane",
+                "image": "devolutions-gateway-honeypot/control-plane",
+                "registry": "ghcr.io/fork-owner",
+                "tag": "v0.1.0",
+                "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "source_ref": "refs/tags/v0.1.0"
+            },
+            {
+                "service": "proxy",
+                "image": "devolutions-gateway-honeypot/proxy",
+                "registry": "ghcr.io/fork-owner",
+                "tag": "v0.1.0",
+                "digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                "source_ref": "refs/tags/v0.1.0"
+            },
+            {
+                "service": "frontend",
+                "image": "devolutions-gateway-honeypot/frontend",
+                "registry": "ghcr.io/fork-owner",
+                "tag": "v0.1.0",
+                "digest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                "source_ref": "refs/tags/v0.1.0"
+            }
+        ]
+    })
+    .to_string()
 }
 
 fn honeypot_scope_token(scope: &str) -> String {
@@ -1349,6 +1388,7 @@ fn release_inputs_on_disk_match_the_honeypot_lockfile_contract() {
 
     validate_honeypot_release_inputs(
         &repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH),
+        &repo_relative_path(HONEYPOT_PROMOTION_MANIFEST_PATH),
         &repo_relative_path(HONEYPOT_COMPOSE_PATH),
     )
     .expect("on-disk release inputs should match the DF-07 contract");
@@ -1378,6 +1418,98 @@ fn honeypot_service_dockerfiles_keep_legacy_packaging_reference_only() {
 
     validate_honeypot_dockerfile_packaging_contract()
         .expect("honeypot Dockerfiles should build direct service binaries without legacy package or webapp drift");
+}
+
+#[test]
+fn promotion_manifest_rejects_missing_signature_ref() {
+    let mut manifest: Value = serde_json::from_str(&sample_promotion_manifest()).expect("parse manifest fixture");
+    manifest["signature_ref"] = Value::String(String::new());
+
+    let error = validate_honeypot_promotion_manifest_document(&manifest.to_string())
+        .expect_err("promotion manifest should reject empty signature_ref");
+
+    assert!(format!("{error:#}").contains("signature_ref"), "{error:#}");
+}
+
+#[test]
+fn promotion_manifest_rejects_unknown_or_duplicate_service_records() {
+    let mut manifest: Value = serde_json::from_str(&sample_promotion_manifest()).expect("parse manifest fixture");
+    manifest["services"]
+        .as_array_mut()
+        .expect("services should be an array")
+        .push(json!({
+            "service": "proxy",
+            "image": "devolutions-gateway-honeypot/proxy",
+            "registry": "ghcr.io/fork-owner",
+            "tag": "v0.1.0",
+            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "source_ref": "refs/tags/v0.1.0"
+        }));
+
+    let duplicate_error = validate_honeypot_promotion_manifest_document(&manifest.to_string())
+        .expect_err("promotion manifest should reject duplicate service records");
+    assert!(
+        format!("{duplicate_error:#}").contains("duplicate service record proxy"),
+        "{duplicate_error:#}"
+    );
+
+    let mut manifest: Value = serde_json::from_str(&sample_promotion_manifest()).expect("parse manifest fixture");
+    manifest["services"]
+        .as_array_mut()
+        .expect("services should be an array")
+        .push(json!({
+            "service": "gateway",
+            "image": "devolutions-gateway-honeypot/gateway",
+            "registry": "ghcr.io/fork-owner",
+            "tag": "v0.1.0",
+            "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "source_ref": "refs/tags/v0.1.0"
+        }));
+
+    let unknown_error = validate_honeypot_promotion_manifest_document(&manifest.to_string())
+        .expect_err("promotion manifest should reject unknown service records");
+    assert!(
+        format!("{unknown_error:#}").contains("is not one of control-plane, proxy, or frontend"),
+        "{unknown_error:#}"
+    );
+}
+
+#[test]
+fn promotion_manifest_rejects_floating_tags() {
+    let mut manifest: Value = serde_json::from_str(&sample_promotion_manifest()).expect("parse manifest fixture");
+    manifest["services"][0]["tag"] = Value::String("latest".to_owned());
+
+    let error = validate_honeypot_promotion_manifest_document(&manifest.to_string())
+        .expect_err("promotion manifest should reject floating tags");
+
+    assert!(format!("{error:#}").contains("manifest.tag"), "{error:#}");
+}
+
+#[test]
+fn release_inputs_reject_promotion_manifest_lock_mismatch() {
+    let tempdir = tempfile::tempdir().expect("create temporary manifest fixture directory");
+    let manifest_path = tempdir.path().join("promotion-manifest.json");
+    let mut manifest: Value = serde_json::from_str(
+        &std::fs::read_to_string(repo_relative_path(HONEYPOT_PROMOTION_MANIFEST_PATH))
+            .expect("read on-disk promotion manifest"),
+    )
+    .expect("parse on-disk promotion manifest");
+    manifest["services"][1]["digest"] =
+        Value::String("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_owned());
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("serialize manifest"),
+    )
+    .expect("write mismatched promotion manifest");
+
+    let error = validate_honeypot_release_inputs(
+        &repo_relative_path(HONEYPOT_IMAGES_LOCK_PATH),
+        &manifest_path,
+        &repo_relative_path(HONEYPOT_COMPOSE_PATH),
+    )
+    .expect_err("release inputs should reject promotion manifest drift from images.lock");
+
+    assert!(format!("{error:#}").contains("proxy digest"), "{error:#}");
 }
 
 #[test]

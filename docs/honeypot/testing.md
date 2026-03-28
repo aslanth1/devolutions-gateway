@@ -98,6 +98,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - That lane deliberately uses a compose-network driver request from a peer service instead of assuming Docker-published localhost ports are reachable on every workstation namespace.
 - That lane is intentionally narrower than `lab-e2e`: it proves operator-path frontend wiring for the full stack without claiming live attacker traffic, Tiny11 guest boot, or Chrome-driven session interaction.
 
+## Release Input Contract Evidence
+
+- `AGENTS.md` pass rows around `DF-07` release governance are now anchored by the always-on contract tier before any host-smoke or lab-e2e release drill is attempted.
+- `testsuite/src/honeypot_release.rs` validates the checked-in `honeypot/docker/promotion-manifest.json` contract, requires a non-empty `signature_ref`, rejects unknown or duplicate service records plus floating tags, and binds manifest service records to the `current` entries in `honeypot/docker/images.lock`.
+- `testsuite/tests/honeypot_release.rs` proves the checked-in release inputs still satisfy that binding in `release_inputs_on_disk_match_the_honeypot_lockfile_contract` and includes negative tests for missing `signature_ref`, floating tags, duplicate or unknown service records, and lockfile-manifest drift.
+- This contract-tier release evidence is intentionally narrower than protected-branch or release-time provenance workflows: it proves one manifest-shaped rollout input is present and bound to the checked-in lockfile, but it does not by itself claim external PKI or registry-backed promotion proof.
+
 ## Gold Image Consumption Evidence
 
 - `AGENTS.md` pass row `Build or consume the Tiny11-derived Windows 11 gold image flow without Bash or Python wrappers.` is satisfied by the Rust-native consume path in `honeypot-control-plane`.

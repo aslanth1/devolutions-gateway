@@ -47,6 +47,7 @@ It must not be read as permission to add a fourth runtime service, a second rele
 - The only allowed writer for `honeypot/docker/images.lock` is an immutable or attested artifact named `promotion-manifest.json`.
 - `promotion-manifest.json` must carry `schema_version`, `generated_at`, `builder_id`, `source_commit`, `source_ref`, and `signature_ref`.
 - `promotion-manifest.json` must also carry one service record for each promoted service.
+- The checked-in contract artifact for that policy lives at `honeypot/docker/promotion-manifest.json` and the contract-tier release test binds its service records to the `current` entries in `honeypot/docker/images.lock`.
 - Each service record must carry `service`, `image`, `registry`, `tag`, `digest`, and `source_ref`.
 - The lockfile update step shifts the existing `current` fields into `previous` when a new promoted digest differs from the existing `current` digest.
 - A promotion manifest that leaves `current` and `previous` identical for a service is rejected unless it is an audited no-op validation run.
@@ -54,6 +55,8 @@ It must not be read as permission to add a fourth runtime service, a second rele
 ## Validation And Rejection Rules
 
 - The manifest signature or attestation referenced by `signature_ref` must verify before any lockfile update is allowed.
+- The current contract-tier implementation verifies that `signature_ref` is present and that the checked-in promotion manifest matches the checked-in lockfile `current` entries for all three services.
+- Stronger cryptographic verification of the artifact referenced by `signature_ref` may be layered into stricter release workflows without changing the single-manifest contract.
 - The `image` and `registry` in the manifest must match the canonical image family for the named service.
 - The `digest` in the manifest must resolve in the registry and match the bytes addressed by the named `tag`.
 - The `source_ref` in the manifest must match the signed build metadata for that digest.
@@ -99,5 +102,6 @@ It must not be read as permission to add a fourth runtime service, a second rele
 ## Relationship To Future Files
 
 - `honeypot/docker/images.lock` is the concrete file that will encode the policy defined here.
+- `honeypot/docker/promotion-manifest.json` is the checked-in contract artifact that current contract-tier tests use to bind `images.lock` to one manifest-shaped rollout input.
 - `honeypot/docker/compose.yaml` must consume `honeypot/docker/images.lock` and not bypass it with direct tag references.
 - Later milestones may add the lockfile and compose file, but they must follow the canonical image names, tag policy, promotion-manifest contract, and current or previous retention window frozen here.

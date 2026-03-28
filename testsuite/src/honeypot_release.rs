@@ -11,6 +11,7 @@ use honeypot_frontend::config::{DEFAULT_FRONTEND_CONFIG_PATH, FrontendConfig};
 use serde::Deserialize;
 
 pub const HONEYPOT_IMAGES_LOCK_PATH: &str = "honeypot/docker/images.lock";
+pub const HONEYPOT_PROMOTION_MANIFEST_PATH: &str = "honeypot/docker/promotion-manifest.json";
 pub const HONEYPOT_COMPOSE_PATH: &str = "honeypot/docker/compose.yaml";
 pub const HONEYPOT_CONTROL_PLANE_DOCKERFILE_PATH: &str = "honeypot/docker/control-plane/Dockerfile";
 pub const HONEYPOT_PROXY_DOCKERFILE_PATH: &str = "honeypot/docker/proxy/Dockerfile";
@@ -93,6 +94,27 @@ pub struct HoneypotImageLockEntry {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct HoneypotImageRevision {
+    pub tag: String,
+    pub digest: String,
+    pub source_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HoneypotPromotionManifest {
+    pub schema_version: u32,
+    pub generated_at: String,
+    pub builder_id: String,
+    pub source_commit: String,
+    pub source_ref: String,
+    pub signature_ref: String,
+    pub services: Vec<HoneypotPromotionServiceRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct HoneypotPromotionServiceRecord {
+    pub service: String,
+    pub image: String,
+    pub registry: String,
     pub tag: String,
     pub digest: String,
     pub source_ref: String,
@@ -215,6 +237,12 @@ pub fn load_honeypot_images_lock(path: &Path) -> anyhow::Result<HoneypotImagesLo
     validate_honeypot_images_lock_document(&data)
 }
 
+pub fn load_honeypot_promotion_manifest(path: &Path) -> anyhow::Result<HoneypotPromotionManifest> {
+    let data =
+        std::fs::read_to_string(path).with_context(|| format!("read promotion manifest at {}", path.display()))?;
+    validate_honeypot_promotion_manifest_document(&data)
+}
+
 pub fn validate_honeypot_images_lock_document(data: &str) -> anyhow::Result<HoneypotImagesLock> {
     let document: serde_yaml::Value = serde_yaml::from_str(data).context("parse images.lock YAML value")?;
     let mapping = document
@@ -247,6 +275,51 @@ pub fn validate_honeypot_images_lock_document(data: &str) -> anyhow::Result<Hone
     }
 
     Ok(lockfile)
+}
+
+pub fn validate_honeypot_promotion_manifest_document(data: &str) -> anyhow::Result<HoneypotPromotionManifest> {
+    let manifest: HoneypotPromotionManifest =
+        serde_json::from_str(data).context("deserialize promotion-manifest.json")?;
+
+    anyhow::ensure!(
+        manifest.schema_version > 0,
+        "promotion-manifest.json schema_version must be greater than zero",
+    );
+
+    for (field_name, value) in [
+        ("generated_at", manifest.generated_at.as_str()),
+        ("builder_id", manifest.builder_id.as_str()),
+        ("source_commit", manifest.source_commit.as_str()),
+        ("source_ref", manifest.source_ref.as_str()),
+        ("signature_ref", manifest.signature_ref.as_str()),
+    ] {
+        anyhow::ensure!(
+            !value.trim().is_empty(),
+            "promotion-manifest.json {field_name} must not be empty",
+        );
+    }
+
+    anyhow::ensure!(
+        !manifest.services.is_empty(),
+        "promotion-manifest.json must include at least one service record",
+    );
+
+    let mut seen_services = BTreeSet::new();
+    for record in &manifest.services {
+        anyhow::ensure!(
+            SERVICE_NAMES.contains(&record.service.as_str()),
+            "promotion-manifest.json service {} is not one of control-plane, proxy, or frontend",
+            record.service,
+        );
+        anyhow::ensure!(
+            seen_services.insert(record.service.clone()),
+            "promotion-manifest.json must not contain duplicate service record {}",
+            record.service,
+        );
+        validate_promotion_service_record(record)?;
+    }
+
+    Ok(manifest)
 }
 
 pub fn validate_honeypot_compose_document(data: &str, lockfile: &HoneypotImagesLock) -> anyhow::Result<()> {
@@ -315,11 +388,83 @@ pub fn validate_honeypot_compose_document_for_selection(
     Ok(())
 }
 
-pub fn validate_honeypot_release_inputs(lock_path: &Path, compose_path: &Path) -> anyhow::Result<()> {
+pub fn validate_honeypot_release_inputs(
+    lock_path: &Path,
+    manifest_path: &Path,
+    compose_path: &Path,
+) -> anyhow::Result<()> {
     let lockfile = load_honeypot_images_lock(lock_path)?;
+    let manifest = load_honeypot_promotion_manifest(manifest_path)?;
+    validate_honeypot_promotion_manifest_binding(&lockfile, &manifest)?;
     let compose_data = std::fs::read_to_string(compose_path)
         .with_context(|| format!("read compose file at {}", compose_path.display()))?;
     validate_honeypot_compose_document(&compose_data, &lockfile)
+}
+
+pub fn validate_honeypot_promotion_manifest_binding(
+    lockfile: &HoneypotImagesLock,
+    manifest: &HoneypotPromotionManifest,
+) -> anyhow::Result<()> {
+    let actual_services = manifest
+        .services
+        .iter()
+        .map(|record| record.service.clone())
+        .collect::<BTreeSet<_>>();
+    let expected_services = SERVICE_NAMES
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>();
+    anyhow::ensure!(
+        actual_services == expected_services,
+        "promotion-manifest.json must bind current entries for control-plane, proxy, and frontend",
+    );
+
+    for service in SERVICE_NAMES {
+        let record = manifest
+            .services
+            .iter()
+            .find(|record| record.service == service)
+            .with_context(|| format!("missing promotion manifest record for {service}"))?;
+        let entry = lockfile.service_entry(service);
+
+        anyhow::ensure!(
+            record.registry == entry.registry,
+            "promotion-manifest.json {} registry {} does not match images.lock current registry {}",
+            service,
+            record.registry,
+            entry.registry,
+        );
+        anyhow::ensure!(
+            record.image == entry.image,
+            "promotion-manifest.json {} image {} does not match images.lock current image {}",
+            service,
+            record.image,
+            entry.image,
+        );
+        anyhow::ensure!(
+            record.tag == entry.current.tag,
+            "promotion-manifest.json {} tag {} does not match images.lock current tag {}",
+            service,
+            record.tag,
+            entry.current.tag,
+        );
+        anyhow::ensure!(
+            record.digest == entry.current.digest,
+            "promotion-manifest.json {} digest {} does not match images.lock current digest {}",
+            service,
+            record.digest,
+            entry.current.digest,
+        );
+        anyhow::ensure!(
+            record.source_ref == entry.current.source_ref,
+            "promotion-manifest.json {} source_ref {} does not match images.lock current source_ref {}",
+            service,
+            record.source_ref,
+            entry.current.source_ref,
+        );
+    }
+
+    Ok(())
 }
 
 pub fn validate_honeypot_dockerfile_packaging_contract() -> anyhow::Result<()> {
@@ -827,6 +972,28 @@ fn validate_service_entry(service: &'static str, entry: &HoneypotImageLockEntry)
         "{service} current and previous digests must not be identical",
     );
 
+    Ok(())
+}
+
+fn validate_promotion_service_record(record: &HoneypotPromotionServiceRecord) -> anyhow::Result<()> {
+    let expected_image = canonical_image_name(&record.service);
+    anyhow::ensure!(
+        record.registry == CANONICAL_REGISTRY,
+        "promotion-manifest.json {} registry must be {CANONICAL_REGISTRY}",
+        record.service,
+    );
+    anyhow::ensure!(
+        record.image == expected_image,
+        "promotion-manifest.json {} image must be {expected_image}",
+        record.service,
+    );
+    validate_tag(&record.service, "manifest", &record.tag)?;
+    validate_digest(&record.service, "manifest", &record.digest)?;
+    anyhow::ensure!(
+        !record.source_ref.trim().is_empty(),
+        "promotion-manifest.json {} source_ref must not be empty",
+        record.service,
+    );
     Ok(())
 }
 
