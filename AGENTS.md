@@ -414,6 +414,12 @@ Pass when: the same approved RDP credentials that succeed against the manually v
 - [ ] Prove whether the trusted-image contract needs boot-critical firmware or NVRAM state in addition to the imported qcow2 artifact.
 Pass when: the repo either demonstrates that qcow2-only import preserves the boot and auth state needed for the control-plane RDP acceptance lane, or it extends the trusted-image contract and runtime launch path to carry the additional sealed firmware inputs required for that proof.
 
+- [ ] Seal the manually verified Tiny11 boot profile into the trusted-image contract instead of treating the imported qcow2 as self-contained.
+Pass when: the sanctioned import path records and validates the firmware code input, writable vars input, disk interface, NIC model, and any other boot-critical launch-shape inputs that were required for the manually verified Tiny11 auth success.
+
+- [ ] Replay the sealed Tiny11 boot profile through a control-plane launch and prove it preserves the manually verified auth behavior.
+Pass when: a control-plane-launched imported Tiny11 lease using the sealed boot profile accepts the same approved RDP credentials that succeeded in the manual-good verification lane, and the repo records which launch-shape inputs were actually required.
+
 - [x] Add image integrity checks before lease.
 Pass when: the control plane verifies qcow2 chain health and refuses to lease dirty or corrupt images.
 
