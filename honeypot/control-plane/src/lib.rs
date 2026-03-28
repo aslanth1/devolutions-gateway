@@ -31,8 +31,8 @@ use self::auth::{AuthError, ControlPlaneAuth};
 use self::backend_credentials::{BackendCredentialStore, build_backend_credential_store};
 use self::config::ControlPlaneConfig;
 use self::health::ServiceState;
-use self::image::trusted_images;
 pub use self::image::{ConsumeTrustedImageState, ConsumedTrustedImage, consume_trusted_image};
+use self::image::{TrustedImageCatalog, TrustedImageCatalogInspection};
 use self::lease::{LeaseError, LeaseRegistry};
 use self::qemu::validate_qemu_runtime_contract;
 
@@ -41,6 +41,7 @@ pub struct ControlPlaneRuntime {
     config: ControlPlaneConfig,
     auth: ControlPlaneAuth,
     backend_credentials: Arc<dyn BackendCredentialStore>,
+    trusted_image_catalog: Mutex<TrustedImageCatalog>,
     leases: Mutex<LeaseRegistry>,
 }
 
@@ -50,18 +51,21 @@ impl ControlPlaneRuntime {
         validate_startup_contract(&config, backend_credentials.as_ref())
             .context("validate control-plane startup contract")?;
         let auth = ControlPlaneAuth::from_config(&config.auth).context("build control-plane auth gate")?;
+        let trusted_image_catalog =
+            TrustedImageCatalog::load(config.paths.clone()).context("validate control-plane startup contract")?;
         let leases =
             LeaseRegistry::load(&config, backend_credentials.as_ref()).context("load control-plane lease registry")?;
         Ok(Self {
             config,
             auth,
             backend_credentials,
+            trusted_image_catalog: Mutex::new(trusted_image_catalog),
             leases: Mutex::new(leases),
         })
     }
 
     pub fn health_response(&self) -> HealthResponse {
-        let inspection = inspect_runtime(&self.config, self.backend_credentials.as_ref());
+        let inspection = inspect_runtime(self);
 
         let service_state = if !inspection.unsafe_reasons.is_empty() {
             ServiceState::Unsafe
@@ -161,9 +165,18 @@ async fn acquire_vm_handler(
 ) -> Result<Json<AcquireVmResponse>, ControlPlaneApiError> {
     runtime.authorize_request(&headers)?;
 
+    let trusted_images = runtime
+        .lock_trusted_image_catalog()?
+        .trusted_images()
+        .map_err(|error| ControlPlaneApiError::host_unavailable(error.to_string()))?;
     let mut leases = runtime.lock_leases()?;
     let response = leases
-        .acquire(&runtime.config, runtime.backend_credentials.as_ref(), &request)
+        .acquire(
+            &runtime.config,
+            runtime.backend_credentials.as_ref(),
+            &trusted_images,
+            &request,
+        )
         .map_err(ControlPlaneApiError::from)?;
     Ok(Json(response))
 }
@@ -254,7 +267,6 @@ fn validate_startup_contract(
     backend_credentials
         .validate_startup_contract()
         .context("validate backend credential store contract")?;
-    trusted_images(&config.paths).context("validate trusted image attestation manifests")?;
 
     if config.runtime.enable_guest_agent {
         let qga_dir = config.paths.qga_dir()?;
@@ -264,7 +276,8 @@ fn validate_startup_contract(
     Ok(())
 }
 
-fn inspect_runtime(config: &ControlPlaneConfig, backend_credentials: &dyn BackendCredentialStore) -> RuntimeInspection {
+fn inspect_runtime(runtime: &ControlPlaneRuntime) -> RuntimeInspection {
+    let config = &runtime.config;
     let mut inspection = RuntimeInspection {
         kvm_available: config.paths.kvm_path.exists(),
         ..RuntimeInspection::default()
@@ -282,7 +295,7 @@ fn inspect_runtime(config: &ControlPlaneConfig, backend_credentials: &dyn Backen
     inspect_dir("qmp_dir", &config.paths.qmp_dir, &mut inspection);
     inspect_dir("secret_dir", &config.paths.secret_dir, &mut inspection);
     inspect_file("qemu_binary_path", &config.runtime.qemu.binary_path, &mut inspection);
-    if let Err(error) = backend_credentials.validate_startup_contract() {
+    if let Err(error) = runtime.backend_credentials.validate_startup_contract() {
         inspection
             .unsafe_reasons
             .push(format!("invalid_backend_credentials:{error:#}"));
@@ -290,16 +303,22 @@ fn inspect_runtime(config: &ControlPlaneConfig, backend_credentials: &dyn Backen
 
     let manifest_dir = config.paths.manifest_dir();
     inspect_dir("manifest_dir", &manifest_dir, &mut inspection);
-    match trusted_images(&config.paths) {
-        Ok(trusted_images) => {
-            inspection.trusted_image_count = trusted_images.len();
-            if inspection.unsafe_reasons.is_empty() && inspection.trusted_image_count == 0 {
+    match runtime.trusted_image_catalog.lock() {
+        Ok(mut trusted_image_catalog) => {
+            let TrustedImageCatalogInspection {
+                trusted_image_count,
+                invalid_reason,
+            } = trusted_image_catalog.inspect();
+            inspection.trusted_image_count = trusted_image_count;
+            if let Some(invalid_reason) = invalid_reason {
+                inspection
+                    .unsafe_reasons
+                    .push(format!("invalid_trusted_images:{invalid_reason}"));
+            } else if inspection.unsafe_reasons.is_empty() && inspection.trusted_image_count == 0 {
                 inspection.degraded_reasons.push("no_trusted_images".to_owned());
             }
         }
-        Err(error) => inspection
-            .unsafe_reasons
-            .push(format!("invalid_trusted_images:{error:#}")),
+        Err(_) => inspection.unsafe_reasons.push("trusted_catalog_poisoned".to_owned()),
     }
 
     inspection.active_lease_count = count_entries(&config.paths.lease_store, only_json_files);
@@ -378,6 +397,14 @@ impl ControlPlaneRuntime {
         self.leases
             .lock()
             .map_err(|_| ControlPlaneApiError::host_unavailable("lease registry is poisoned"))
+    }
+
+    fn lock_trusted_image_catalog(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, TrustedImageCatalog>, ControlPlaneApiError> {
+        self.trusted_image_catalog
+            .lock()
+            .map_err(|_| ControlPlaneApiError::host_unavailable("trusted image catalog is poisoned"))
     }
 }
 

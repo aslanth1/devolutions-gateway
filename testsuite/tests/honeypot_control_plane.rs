@@ -1800,7 +1800,7 @@ async fn control_plane_reports_unsafe_when_base_image_digest_changes_after_start
         health
             .degraded_reasons
             .iter()
-            .any(|reason| reason.contains("invalid_trusted_images:")),
+            .any(|reason| reason.contains("invalid_trusted_images:trusted_catalog_invalid:")),
         "{:?}",
         health.degraded_reasons
     );
@@ -1853,17 +1853,13 @@ async fn control_plane_reports_host_unavailable_when_base_image_digest_mismatche
 
     assert!(status_line.contains("503"), "{status_line}");
     assert_eq!(error.error_code, ErrorCode::HostUnavailable);
-    assert!(
-        error.message.contains("base_image.sha256 mismatch"),
-        "{}",
-        error.message
-    );
+    assert!(error.message.contains("trusted_catalog_invalid"), "{}", error.message);
     record_row706_passed_anchor_result(
         ROW706_ANCHOR_DIGEST_MISMATCH_NEGATIVE_CONTROL,
         None,
         None,
         Some(fixture.image_store.as_path()),
-        Some("digest mismatch negative control rejected the tampered base image before lease use".to_owned()),
+        Some("catalog drift negative control rejected the tampered base image before lease use".to_owned()),
     );
 
     child.kill().await.expect("kill control-plane");

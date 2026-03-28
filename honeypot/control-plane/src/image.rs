@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,62 @@ pub(crate) struct TrustedBootProfileV1 {
     pub(crate) firmware_mode: QemuFirmwareMode,
     pub(crate) firmware_code_path: Option<PathBuf>,
     pub(crate) vars_seed_path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+pub(crate) struct TrustedImageCatalog {
+    paths: PathConfig,
+    state: TrustedImageCatalogState,
+}
+
+#[derive(Debug, Clone)]
+enum TrustedImageCatalogState {
+    Ready(CachedTrustedImageCatalog),
+    Invalid(InvalidTrustedImageCatalog),
+}
+
+#[derive(Debug, Clone)]
+struct CachedTrustedImageCatalog {
+    trusted_images: Vec<TrustedImage>,
+    store_stamp: TrustedImageStoreStamp,
+}
+
+#[derive(Debug, Clone)]
+struct InvalidTrustedImageCatalog {
+    reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TrustedImageStoreStamp {
+    manifests: Vec<ManifestStamp>,
+    tracked_files: Vec<FileStamp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManifestStamp {
+    path: PathBuf,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileStamp {
+    path: PathBuf,
+    len: u64,
+    modified_millis: u128,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    ctime_secs: i64,
+    #[cfg(unix)]
+    ctime_nsecs: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrustedImageCatalogInspection {
+    pub(crate) trusted_image_count: usize,
+    pub(crate) invalid_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -322,6 +379,81 @@ pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedIm
     Ok(trusted_images)
 }
 
+impl TrustedImageCatalog {
+    pub(crate) fn load(paths: PathConfig) -> anyhow::Result<Self> {
+        let trusted_images = trusted_images(&paths)?;
+        let store_stamp = TrustedImageStoreStamp::capture(&paths, &trusted_images)?;
+
+        Ok(Self {
+            paths,
+            state: TrustedImageCatalogState::Ready(CachedTrustedImageCatalog {
+                trusted_images,
+                store_stamp,
+            }),
+        })
+    }
+
+    pub(crate) fn inspect(&mut self) -> TrustedImageCatalogInspection {
+        match self.ensure_current() {
+            Ok(trusted_images) => TrustedImageCatalogInspection {
+                trusted_image_count: trusted_images.len(),
+                invalid_reason: None,
+            },
+            Err(error) => {
+                let invalid_reason = match &self.state {
+                    TrustedImageCatalogState::Ready(_) => Some(error.to_string()),
+                    TrustedImageCatalogState::Invalid(invalid) => Some(invalid.reason.clone()),
+                };
+
+                TrustedImageCatalogInspection {
+                    trusted_image_count: self.trusted_image_count(),
+                    invalid_reason,
+                }
+            }
+        }
+    }
+
+    pub(crate) fn trusted_images(&mut self) -> anyhow::Result<Vec<TrustedImage>> {
+        self.ensure_current().cloned()
+    }
+
+    fn trusted_image_count(&self) -> usize {
+        match &self.state {
+            TrustedImageCatalogState::Ready(catalog) => catalog.trusted_images.len(),
+            TrustedImageCatalogState::Invalid(_) => 0,
+        }
+    }
+
+    fn ensure_current(&mut self) -> anyhow::Result<&Vec<TrustedImage>> {
+        let cached_catalog = match &self.state {
+            TrustedImageCatalogState::Ready(catalog) => catalog.clone(),
+            TrustedImageCatalogState::Invalid(invalid) => anyhow::bail!(invalid.reason.clone()),
+        };
+
+        let current_stamp = match TrustedImageStoreStamp::capture(&self.paths, &cached_catalog.trusted_images) {
+            Ok(stamp) => stamp,
+            Err(error) => {
+                let reason = format!("trusted_catalog_invalid:{error:#}");
+                self.state = TrustedImageCatalogState::Invalid(InvalidTrustedImageCatalog { reason: reason.clone() });
+                anyhow::bail!(reason);
+            }
+        };
+
+        if current_stamp != cached_catalog.store_stamp {
+            let reason =
+                "trusted_catalog_invalid:trusted image store drift detected; restart the control-plane to revalidate"
+                    .to_owned();
+            self.state = TrustedImageCatalogState::Invalid(InvalidTrustedImageCatalog { reason: reason.clone() });
+            anyhow::bail!(reason);
+        }
+
+        match &self.state {
+            TrustedImageCatalogState::Ready(catalog) => Ok(&catalog.trusted_images),
+            TrustedImageCatalogState::Invalid(invalid) => anyhow::bail!(invalid.reason.clone()),
+        }
+    }
+}
+
 pub(crate) fn validate_trusted_image_identity(
     paths: &PathConfig,
     pool_name: &str,
@@ -341,6 +473,77 @@ pub(crate) fn validate_trusted_image_identity(
         base_image_path.display(),
     );
     Ok(())
+}
+
+impl TrustedImageStoreStamp {
+    fn capture(paths: &PathConfig, trusted_images: &[TrustedImage]) -> anyhow::Result<Self> {
+        let mut manifests = json_files(&paths.manifest_dir())?;
+        manifests.sort();
+        let manifests = manifests
+            .into_iter()
+            .map(ManifestStamp::capture)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let mut tracked_paths = trusted_images
+            .iter()
+            .flat_map(|trusted_image| {
+                let mut paths = vec![trusted_image.base_image_path.clone()];
+                if let Some(boot_profile_v1) = &trusted_image.boot_profile_v1 {
+                    if let Some(path) = &boot_profile_v1.firmware_code_path {
+                        paths.push(path.clone());
+                    }
+                    if let Some(path) = &boot_profile_v1.vars_seed_path {
+                        paths.push(path.clone());
+                    }
+                }
+                paths
+            })
+            .collect::<Vec<_>>();
+        tracked_paths.sort();
+        tracked_paths.dedup();
+        let tracked_files = tracked_paths
+            .into_iter()
+            .map(FileStamp::capture)
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(Self {
+            manifests,
+            tracked_files,
+        })
+    }
+}
+
+impl ManifestStamp {
+    fn capture(path: PathBuf) -> anyhow::Result<Self> {
+        let sha256 = sha256_file(&path).with_context(|| format!("hash trusted manifest {}", path.display()))?;
+
+        Ok(Self { path, sha256 })
+    }
+}
+
+impl FileStamp {
+    fn capture(path: PathBuf) -> anyhow::Result<Self> {
+        let metadata = fs::metadata(&path).with_context(|| format!("read metadata for {}", path.display()))?;
+        let modified_millis = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |duration| duration.as_millis());
+
+        Ok(Self {
+            path,
+            len: metadata.len(),
+            modified_millis,
+            #[cfg(unix)]
+            dev: std::os::unix::fs::MetadataExt::dev(&metadata),
+            #[cfg(unix)]
+            ino: std::os::unix::fs::MetadataExt::ino(&metadata),
+            #[cfg(unix)]
+            ctime_secs: std::os::unix::fs::MetadataExt::ctime(&metadata),
+            #[cfg(unix)]
+            ctime_nsecs: std::os::unix::fs::MetadataExt::ctime_nsec(&metadata),
+        })
+    }
 }
 
 fn read_trusted_image_manifest(path: &Path) -> anyhow::Result<TrustedImageManifestDocument> {
@@ -915,11 +1118,12 @@ fn is_json_file(path: &Path) -> bool {
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
-    use super::{ConsumeTrustedImageState, consume_trusted_image, trusted_images};
+    use super::{ConsumeTrustedImageState, TrustedImageCatalog, consume_trusted_image, trusted_images};
     use crate::config::{PathConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuRtcBase};
 
     #[test]
@@ -981,6 +1185,51 @@ mod tests {
 
         let error = trusted_images(&paths).expect_err("digest mismatch should fail");
         assert!(format!("{error:#}").contains("base_image.sha256 mismatch"), "{error:#}");
+    }
+
+    #[test]
+    fn trusted_image_catalog_returns_cached_trusted_images_when_store_is_unchanged() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(tempdir.path(), "honeypot-import-0", "default", "image-0");
+
+        consume_trusted_image(&paths, &bundle.manifest_path).expect("import trusted image bundle");
+
+        let mut catalog = TrustedImageCatalog::load(paths).expect("load trusted image catalog");
+        let inspection = catalog.inspect();
+        let trusted_images = catalog.trusted_images().expect("read cached trusted images");
+
+        assert_eq!(inspection.trusted_image_count, 1);
+        assert_eq!(inspection.invalid_reason, None);
+        assert_eq!(trusted_images.len(), 1);
+        assert_eq!(trusted_images[0].vm_name, "honeypot-import-0");
+    }
+
+    #[test]
+    fn trusted_image_catalog_fails_closed_when_imported_base_image_drifts() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(tempdir.path(), "honeypot-import-0", "default", "image-0");
+
+        let imported = consume_trusted_image(&paths, &bundle.manifest_path).expect("import trusted image bundle");
+        let mut catalog = TrustedImageCatalog::load(paths).expect("load trusted image catalog");
+
+        std::thread::sleep(Duration::from_millis(5));
+        fs::write(&imported.base_image_path, b"tampered-base-image").expect("tamper imported base image");
+
+        let error = catalog
+            .trusted_images()
+            .expect_err("drifted trusted image catalog should fail closed");
+        assert!(format!("{error:#}").contains("trusted_catalog_invalid"), "{error:#}");
+
+        let inspection = catalog.inspect();
+        assert_eq!(inspection.trusted_image_count, 1);
+        assert!(
+            inspection
+                .invalid_reason
+                .expect("invalid reason should be recorded")
+                .contains("trusted_catalog_invalid"),
+        );
     }
 
     #[test]

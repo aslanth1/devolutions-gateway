@@ -408,7 +408,7 @@ Pass when: the transformation runs against the clone rather than the original wo
 - [x] Enable and verify RDP in the gold image.
 Pass when: a fresh VM from the gold image reaches a known-ready signal and accepts RDP on TCP 3389 in the lab.
 
-- [ ] Close the authentication gap between the manually verified Tiny11 image and the control-plane-launched imported Tiny11 lease path.
+- [x] Close the authentication gap between the manually verified Tiny11 image and the control-plane-launched imported Tiny11 lease path.
 Pass when: the same approved RDP credentials that succeed against the manually verified Tiny11 boot also succeed through the sanctioned `consume-image` plus control-plane lease path, and the repo records whether the remaining difference was guest policy, runtime launch shape, or another control-plane assumption.
 
 - [x] Prove whether the trusted-image contract needs boot-critical firmware or NVRAM state in addition to the imported qcow2 artifact.
@@ -417,11 +417,14 @@ Pass when: the repo either demonstrates that qcow2-only import preserves the boo
 - [x] Seal the manually verified Tiny11 boot profile into the trusted-image contract instead of treating the imported qcow2 as self-contained.
 Pass when: the sanctioned import path records and validates the firmware code input, writable vars input, disk interface, NIC model, and any other boot-critical launch-shape inputs that were required for the manually verified Tiny11 auth success.
 
-- [ ] Replay the sealed Tiny11 boot profile through a control-plane launch and prove it preserves the manually verified auth behavior.
+- [x] Replay the sealed Tiny11 boot profile through a control-plane launch and prove it preserves the manually verified auth behavior.
 Pass when: a control-plane-launched imported Tiny11 lease using the sealed boot profile accepts the same approved RDP credentials that succeeded in the manual-good verification lane, and the repo records which launch-shape inputs were actually required.
 
-- [ ] Bound trusted-image validation latency so authenticated health and acquire can reach QEMU launch for large imported Tiny11 images.
+- [x] Bound trusted-image validation latency so authenticated health and acquire can reach QEMU launch for large imported Tiny11 images.
 Pass when: authenticated `/api/v1/health` and `/api/v1/vm/acquire` stop synchronously rehashing multi-gigabyte imported qcow2 artifacts on every request, and a sealed-profile imported Tiny11 store can reach VM launch within the documented lab-e2e readiness window.
+
+- [ ] Decide whether startup-time full attestation of large imported trusted images should remain on the control-plane boot path.
+Pass when: the repo either accepts the measured startup-time full-hash cost for large imported Tiny11 stores as part of the documented readiness budget, or it adds a narrower preload or refresh contract that preserves fail-closed behavior without reintroducing request-path qcow2 hashing.
 
 - [x] Add image integrity checks before lease.
 Pass when: the control plane verifies qcow2 chain health and refuses to lease dirty or corrupt images.

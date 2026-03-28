@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend_credentials::{BackendCredentialResolveError, BackendCredentialStore};
 use crate::config::{ControlPlaneConfig, PathConfig};
-use crate::image::{trusted_images, validate_trusted_image_identity};
+use crate::image::{TrustedImage, validate_trusted_image_identity};
 use crate::qemu::QemuLaunchPlan;
 use crate::vm::{
     cleanup_orphaned_vm, create_vm, destroy_vm, reset_vm as reset_vm_runtime, runtime_looks_active, start_vm, stop_vm,
@@ -58,6 +58,7 @@ impl LeaseRegistry {
         &mut self,
         config: &ControlPlaneConfig,
         backend_credentials: &dyn BackendCredentialStore,
+        trusted_images: &[TrustedImage],
         request: &AcquireVmRequest,
     ) -> Result<AcquireVmResponse, LeaseError> {
         request
@@ -79,10 +80,10 @@ impl LeaseRegistry {
 
         cleanup_untracked_runtime_artifacts(&config.paths, &self.leases).map_err(LeaseError::host_unavailable)?;
 
-        let trusted_images = trusted_images(&config.paths).map_err(LeaseError::host_unavailable)?;
         let trusted_images = trusted_images
-            .into_iter()
+            .iter()
             .filter(|trusted_image| trusted_image.pool_name == request.requested_pool)
+            .cloned()
             .collect::<Vec<_>>();
         if trusted_images.is_empty() {
             return Err(LeaseError::no_capacity(format!(
