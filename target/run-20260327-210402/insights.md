@@ -1,0 +1,8 @@
+- What worked: a bounded closure-integrity probe was enough once `AGENTS.md` had no unchecked rows.
+- What worked: the authoritative row-`706` envelope remained a stable source of truth when checked explicitly by run id instead of by newest-directory heuristics.
+- What worked: the startup-attestation budget remained reproducible on the current host at about `104` to `107` seconds.
+- What worked: the focused Tiny11 acceptance lane still proved auth, recycle, and cleanup without reopening the full heavy row-`706` battery.
+- What failed: a single focused row-`706` anchor rerun still emits a fresh partial run directory, which can confuse “latest run” eyeballing if left behind.
+- What to avoid next time: do not infer row-`706` authority from the most recent directory when an explicit canonical run id already exists.
+- What to avoid next time: do not reopen implementation work when the only remaining value is bounded closure verification.
+- Promising next directions: if repeated closure passes become common, add a first-class Rust verifier for the canonical row-`706` envelope so this integrity check no longer depends on ad hoc shell `jq` checks.
