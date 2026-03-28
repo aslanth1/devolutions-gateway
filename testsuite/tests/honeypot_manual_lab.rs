@@ -2,6 +2,8 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::process::Command;
 
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -111,6 +113,95 @@ fn manual_lab_cli_help_lists_up_status_and_down() {
     assert!(rendered.contains("remember-source-manifest"), "{rendered}");
     assert!(rendered.contains("status"), "{rendered}");
     assert!(rendered.contains("down"), "{rendered}");
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_selftest_up_routes_through_ensure_artifacts_by_default() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-selftest-up")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-selftest-up");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-selftest-up failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    let ensure_idx = rendered
+        .find("manual-lab-selftest-ensure-artifacts")
+        .expect("default selftest-up should route through ensure-artifacts");
+    let up_idx = rendered
+        .find("manual-lab-up MANUAL_LAB_PROFILE=local")
+        .expect("selftest-up should still launch manual-lab-up");
+
+    assert!(
+        ensure_idx < up_idx,
+        "ensure-artifacts should appear before the local up command:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_selftest_up_can_disable_the_default_precheck() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-selftest-up")
+        .env("MANUAL_LAB_SELFTEST_UP_PRECHECK", "0")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-selftest-up with precheck disabled");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-selftest-up with precheck disabled failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("manual-lab self-test up precheck disabled; skipping ensure-artifacts"),
+        "precheck-disabled selftest-up should print the skip message:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("make manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local"),
+        "precheck-disabled selftest-up should not expand the nested ensure-artifacts invocation:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("manual-lab-up MANUAL_LAB_PROFILE=local"),
+        "precheck-disabled selftest-up should still launch the local up target:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_selftest_up_no_browser_routes_through_ensure_artifacts_by_default() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-selftest-up-no-browser")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-selftest-up-no-browser");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-selftest-up-no-browser failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    let ensure_idx = rendered
+        .find("manual-lab-selftest-ensure-artifacts")
+        .expect("default selftest-up-no-browser should route through ensure-artifacts");
+    let up_idx = rendered
+        .find("manual-lab-up-no-browser MANUAL_LAB_PROFILE=local")
+        .expect("selftest-up-no-browser should still launch manual-lab-up-no-browser");
+
+    assert!(
+        ensure_idx < up_idx,
+        "ensure-artifacts should appear before the local up-no-browser command:\n{rendered}"
+    );
 }
 
 #[test]

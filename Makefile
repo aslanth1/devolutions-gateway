@@ -3,6 +3,7 @@ SHELL := /bin/bash
 MANUAL_LAB_PROFILE ?= canonical
 MANUAL_LAB_TIER_GATE ?= $(CURDIR)/target/manual-lab/lab-e2e-gate.json
 MANUAL_LAB_LOCAL_STATE_ROOT ?= target/manual-lab/state
+MANUAL_LAB_SELFTEST_UP_PRECHECK ?= 1
 
 ifneq ($(filter $(MANUAL_LAB_PROFILE),canonical local),$(MANUAL_LAB_PROFILE))
 $(error MANUAL_LAB_PROFILE must be canonical or local)
@@ -125,11 +126,21 @@ manual-lab-selftest-ensure-artifacts:
 .PHONY: manual-lab-selftest-up
 manual-lab-selftest-up:
 	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
+	@if [[ "$(MANUAL_LAB_SELFTEST_UP_PRECHECK)" != "0" ]]; then \
+		$(MAKE) manual-lab-selftest-ensure-artifacts; \
+	else \
+		printf 'manual-lab self-test up precheck disabled; skipping ensure-artifacts\n'; \
+	fi
 	@$(MAKE) manual-lab-up MANUAL_LAB_PROFILE=local
 
 .PHONY: manual-lab-selftest-up-no-browser
 manual-lab-selftest-up-no-browser:
 	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
+	@if [[ "$(MANUAL_LAB_SELFTEST_UP_PRECHECK)" != "0" ]]; then \
+		$(MAKE) manual-lab-selftest-ensure-artifacts; \
+	else \
+		printf 'manual-lab self-test up precheck disabled; skipping ensure-artifacts\n'; \
+	fi
 	@$(MAKE) manual-lab-up-no-browser MANUAL_LAB_PROFILE=local
 
 .PHONY: manual-lab-selftest

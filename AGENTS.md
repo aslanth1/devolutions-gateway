@@ -914,6 +914,17 @@ Pass when: `ensure-artifacts` never copies mutable local store state into canoni
 - [x] Add Make, docs, and parity tests for the artifact ensure lane.
 Pass when: the repo root `Makefile` exposes `manual-lab-ensure-artifacts` and `manual-lab-selftest-ensure-artifacts`, `manual-lab-selftest` uses the new ensure fast-path before launch, and docs or contract tests pin the new command surface plus the `ensure-artifacts -> preflight -> up` sequencing.
 
+### Milestone 6n: Manual Deck Granular Self-Test Up Precheck
+
+- [x] Route granular local self-test launch aliases through the artifact fast-path by default.
+Pass when: `manual-lab-selftest-up` and `manual-lab-selftest-up-no-browser` call `manual-lab-selftest-ensure-artifacts` before `manual-lab-up*` under the local profile, while canonical `manual-lab-up*` remain unchanged.
+
+- [x] Keep an explicit opt-out for raw local self-test launch behavior.
+Pass when: `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` skips the new precheck so scripted callers can preserve the prior raw local launch path without affecting canonical commands.
+
+- [x] Add docs and contract tests for the granular self-test up precheck lane.
+Pass when: the runbook and testing docs describe the default precheck plus the opt-out knob, and tests pin both the `make -n` target graph and the updated docs text.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

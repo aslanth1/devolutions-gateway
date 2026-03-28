@@ -486,6 +486,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add a Rust-owned `ensure-artifacts` command for QEMU-backed manual-lab preparation.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6n: Manual Deck Granular Self-Test Up Precheck",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Route granular local self-test launch aliases through the artifact fast-path by default.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -533,6 +543,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
+        "By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` run `make manual-lab-selftest-ensure-artifacts` first",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` when a scripted caller intentionally needs the older raw local `manual-lab-up*` launch shape and failure ordering.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "`ensure-artifacts` is the fast explicit prewarm lane for QEMU-backed runs.",
     );
     assert_contains(
@@ -574,6 +594,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
+        "The granular local launch aliases now use the same warmup step by default:",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "The live canonical `missing_store_root` blocker now points non-root operators at the self-test quick path first:",
     );
     assert_contains(
@@ -610,6 +635,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
+        "The granular self-test launch aliases now follow the same warmup contract by default:",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
         "If more than one admissible source manifest exists, `bootstrap-store` fails closed until the operator either remembers one with `MANUAL_LAB_SOURCE_MANIFEST=<path>` or passes `--source-manifest <path>` explicitly.",
     );
     assert_contains(
@@ -641,6 +671,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "`make manual-lab-show-profile` is the read-only helper",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` also run `make manual-lab-selftest-ensure-artifacts` before launch",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` when a scripted caller intentionally needs the older raw local `manual-lab-up*` launch path and failure ordering.",
     );
     assert_contains(
         testing_path,

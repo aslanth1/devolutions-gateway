@@ -121,6 +121,8 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - `canonical` is the default and keeps the checked-in `/srv/honeypot/...` paths.
 - `local` is the explicit non-root operator lane and switches the wrappers to repo-local state under `target/manual-lab/state/`.
 - `make manual-lab-selftest` and the `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience, but they do not change the canonical `manual-lab-*` defaults.
+- By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` run `make manual-lab-selftest-ensure-artifacts` first so warmed local stores skip repeat import work before launch.
+- Set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` when a scripted caller intentionally needs the older raw local `manual-lab-up*` launch shape and failure ordering.
 - `ensure-artifacts` is the fast explicit prewarm lane for QEMU-backed runs.
 - It first runs the same manual-lab readiness check with `preflight --no-browser`.
 - If the selected interop store is already ready, it returns immediately and skips `bootstrap-store`.
@@ -173,6 +175,10 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - The shorter manual self-test quick path on this host is:
   `make manual-lab-selftest`,
   then `make manual-lab-selftest-status` and `make manual-lab-selftest-down`.
+- The granular local launch aliases now use the same warmup step by default:
+  `make manual-lab-selftest-up`,
+  `make manual-lab-selftest-up-no-browser`.
+- Those aliases still share one local writable state root, so disable the precheck or serialize runs if you intentionally script parallel local launch attempts.
 - The local profile is for operator self-test and uses repo-local writable state only.
 - It does not replace the canonical `/srv` lane for production-like host readiness proof.
 - If `preflight` or `up` reports `missing_store_root`, run `make manual-lab-ensure-artifacts` first instead of editing a placeholder `consume-image` command by hand.

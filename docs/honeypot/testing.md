@@ -193,6 +193,8 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `canonical` is the default `/srv/honeypot/...` lane.
 - `local` is the explicit non-root lane and binds the same Rust authority to repo-local state under `target/manual-lab/state/`.
 - `make manual-lab-selftest` and the `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.
+- By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` also run `make manual-lab-selftest-ensure-artifacts` before launch so warmed local stores reuse known-good artifacts instead of repeating bootstrap work.
+- Set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` when a scripted caller intentionally needs the older raw local `manual-lab-up*` launch path and failure ordering.
 - `ensure-artifacts` is the explicit fast-path for QEMU-backed operator flows.
 - It reuses `preflight --no-browser` first and only provisions through the sanctioned `consume-image` path when store readiness is the blocker.
 - If the selected interop store is already ready, `ensure-artifacts` stops there and avoids a repeat import or hash of the trusted image bundle.
@@ -205,6 +207,9 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock; wait for that process or stop the reported pid if it is unexpected, then rerun `make manual-lab-selftest`.
 - The required manual sequence is `ensure-artifacts -> preflight -> up` when the source manifest is unique or already remembered.
 - When more than one admissible manifest exists, the required sequence is `remember-source-manifest -> ensure-artifacts -> preflight -> up`.
+- The granular self-test launch aliases now follow the same warmup contract by default:
+  `manual-lab-selftest-ensure-artifacts -> manual-lab-selftest-up*`.
+- Those self-test launch aliases share one local writable state root, so parallel scripted callers should either serialize runs or set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` and handle readiness explicitly.
 - This lane is Rust-native and lives in `testsuite::honeypot_manual_lab`; it does not permit Bash or Python wrappers for service startup, Tiny11 fan-out, or teardown.
 - The launcher reuses the canonical Tiny11 interop gate instead of inventing a second store verifier.
 - It therefore requires the same `DGW_HONEYPOT_LAB_E2E`, `DGW_HONEYPOT_TIER_GATE`, and `DGW_HONEYPOT_INTEROP_*` runtime contract as the external-client live proof path.
