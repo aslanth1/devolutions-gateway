@@ -752,6 +752,26 @@ Pass when: plaintext RDP credentials, session tokens, and similar secrets are fo
 - [x] Add a VM artifact storage and retrieval checklist for manual-headed runs.
 Pass when: raw `.qcow2`, overlay, memory-dump, and equivalent heavy or sensitive VM state are forbidden from normal git history, the approved storage backend is recorded, and the checklist fails if the referenced artifact cannot be retrieved or its digest mismatches.
 
+### Milestone 6b: Three-Host Manual Observation Deck
+
+- [x] Add a Rust-native three-host manual observation deck launcher with `up`, `status`, and `down`.
+Pass when: `honeypot-manual-lab` exists as a Rust testsuite binary, `help`, `status`, and `down` behave deterministically without lab dependencies, and `up` is wired to the documented host-process topology plus the sanctioned Tiny11 lab gate instead of Bash or Python wrappers.
+
+- [x] Add a three-host Tiny11 trusted-image fan-out path for the manual deck.
+Pass when: one attested Tiny11 manifest lineage can be cloned into three trusted-image identities with unique `vm_name` and guest RDP ports for one run without copying the base qcow2 artifact, and focused tests lock that transform.
+
+- [x] Add real proxy-backed session priming for the manual deck.
+Pass when: the launcher code creates proxy-backed RDP session attempts, resolves `session_id` to `vm_lease_id`, requests stream tokens, and refuses success until the frontend reports three ready tiles.
+
+- [x] Add idempotent active-state tracking and teardown for the manual deck.
+Pass when: the launcher records one active state file for the current run, `status` and `down` report the inactive case cleanly, and the teardown path best-effort terminates helper clients and sessions, requests release plus recycle for known leases, stops service processes, and removes the active state file after partial startup failures.
+
+- [x] Add operator docs for the manual three-host observation deck and document the host-process topology choice.
+Pass when: the runbook and testing docs explain the required `DGW_HONEYPOT_INTEROP_*` inputs, the `cargo run -p testsuite --bin honeypot-manual-lab -- up|status|down` commands, the Chrome and `Xvfb` assumptions, and why the live deck uses host processes while compose remains the validated readiness and rollback path.
+
+- [ ] Add a live operator proof run for the three-host manual deck.
+Pass when: on a host with isolated helper-display support such as `Xvfb`, one sanctioned `honeypot-manual-lab up` run creates three distinct Tiny11-backed live sessions, the frontend reaches three ready tiles, and `honeypot-manual-lab down` drains the active lease count back to zero without orphaned helper processes.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

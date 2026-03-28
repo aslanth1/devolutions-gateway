@@ -172,6 +172,22 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The redaction lane still fails closed for tracked plaintext RDP credentials, session tokens, and similar secrets, but it now allows the single repo-local Windows provisioning key file documented in `WINDOWS11-LICENSE.md` for local Win11 host creation only.
 - That allowlist does not extend to manual-headed evidence, exports, screenshots, or any second tracked artifact; the provisioning key must stay confined to that one documented file or an approved mounted secret path.
 
+## Manual Three-Host Observation Deck
+
+- The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- up|status|down`.
+- This lane is Rust-native and lives in `testsuite::honeypot_manual_lab`; it does not permit Bash or Python wrappers for service startup, Tiny11 fan-out, or teardown.
+- The launcher reuses the canonical Tiny11 interop gate instead of inventing a second store verifier.
+- It therefore requires the same `DGW_HONEYPOT_LAB_E2E`, `DGW_HONEYPOT_TIER_GATE`, and `DGW_HONEYPOT_INTEROP_*` runtime contract as the external-client live proof path.
+- `up` clones one attested Tiny11 manifest lineage into three trusted-image identities with unique `vm_name` and guest RDP ports, starts host-process `control-plane`, `proxy`, and `frontend`, creates three real proxy-backed RDP sessions, requests stream tokens, and only succeeds after the frontend reports three ready tiles.
+- `status` reads the active state file at `target/manual-lab/active.json` and reports the bound run root, dashboard URL, process ids, health snapshots, and the known `session_id`, `vm_lease_id`, and `stream_id` values for each slot.
+- `down` uses that same active state to best-effort terminate helper clients, terminate live proxy sessions, release plus recycle known leases, stop the three services, and remove the active state file.
+- The live three-host deck uses host processes instead of `docker compose` because the current Tiny11 lease path exposes guest RDP through host-loopback forwards such as `127.0.0.1:<guest_rdp_port>`.
+- That loopback-scoped transport is compatible with a host-process proxy and hidden `xfreerdp` drivers, but it is not a safe assumption for a separate proxy container.
+- Compose therefore remains the validated readiness, health, and rollback topology, while `honeypot-manual-lab` is the sanctioned live observation topology for a real three-host operator deck.
+- Chrome opens automatically by default when `up` succeeds.
+- Pass `--no-browser` to leave the deck running without opening Chrome, and set `DGW_HONEYPOT_MANUAL_LAB_CHROME` or `DGW_HONEYPOT_MANUAL_LAB_XVFB` if your host needs non-default binary paths.
+- A full live-proof run remains separate from the contract-tier tests because it needs an operator host with isolated helper-display support such as `Xvfb`, or the helper `xfreerdp` sessions will render on the active desktop.
+
 ## Tiny11 Production And Recycle Evidence
 
 - `AGENTS.md` row `The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.` is stricter than a compile-only or skipped lane.

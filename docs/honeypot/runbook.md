@@ -106,6 +106,36 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - A `preflight_only` run may end in `blocked_prereq`, but it must not be cited as completion evidence for row `735`.
 - Any artifact referenced by a manual-headed run must remain retrievable through the approved storage backend and must match the recorded digest when re-read.
 
+## Three-Host Manual Observation Deck
+
+- Use the Rust launcher when you want a real operator deck with three live Tiny11-backed sessions and a browser view you can click through.
+- The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- up`, `status`, and `down`.
+- `up` is `lab-e2e` gated and refuses to start unless `DGW_HONEYPOT_LAB_E2E=1` is set and `DGW_HONEYPOT_TIER_GATE` points at a gate file whose `contract_passed` and `host_smoke_passed` fields are both `true`.
+- The live manual deck also requires the same canonical Tiny11 interop inputs as the external-client proof path:
+  `DGW_HONEYPOT_INTEROP_RDP_USERNAME`,
+  `DGW_HONEYPOT_INTEROP_RDP_PASSWORD`,
+  `DGW_HONEYPOT_INTEROP_IMAGE_STORE`,
+  `DGW_HONEYPOT_INTEROP_MANIFEST_DIR`,
+  `DGW_HONEYPOT_INTEROP_QEMU_BINARY`,
+  `DGW_HONEYPOT_INTEROP_KVM_PATH`,
+  and `DGW_HONEYPOT_INTEROP_XFREERDP_PATH`.
+- `DGW_HONEYPOT_INTEROP_IMAGE_STORE` and `DGW_HONEYPOT_INTEROP_MANIFEST_DIR` are optional if the canonical sealed store under `/srv/honeypot/images` is already present and trusted.
+- `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS` remain optional overrides for unusual lab hosts.
+- `up` opens Chrome by default after the frontend reports three ready tiles.
+- Set `DGW_HONEYPOT_MANUAL_LAB_CHROME` if Chrome is not on `PATH`.
+- Pass `--no-browser` when you want the deck live without opening a window.
+- The hidden `xfreerdp` drivers prefer `Xvfb` when available.
+- Set `DGW_HONEYPOT_MANUAL_LAB_XVFB` if `Xvfb` is installed outside `PATH`.
+- If `Xvfb` is unavailable, the launcher requires a live `DISPLAY` and the helper `xfreerdp` sessions will render on that active desktop.
+- The launcher writes its active state to `target/manual-lab/active.json` and stores run logs plus runtime files under `target/manual-lab/manual-lab-<uuid>/`.
+- Use `status` to print the current run root, dashboard URL, process ids, health snapshots, and known `session_id`, `vm_lease_id`, and `stream_id` values.
+- Use `down` to terminate the helper `xfreerdp` clients, request proxy session terminate, request control-plane release plus recycle for known leases, stop `control-plane`, `proxy`, and `frontend`, and clear the active state file.
+- This manual deck intentionally runs the three honeypot services as host processes rather than through `docker compose`.
+- The reason is that live Tiny11 leases currently expose guest RDP through host-loopback forwards such as `127.0.0.1:<guest_rdp_port>`, and a separate proxy container cannot reliably consume those loopback-scoped ports.
+- Keep the checked-in compose flow as the validated readiness, dependency-order, and rollback topology.
+- Use the host-process manual deck only for the live three-host observation workflow.
+- Treat isolated helper-display support such as `Xvfb` as the preferred operator-host shape for a real live-proof run so the three helper RDP clients do not steal focus on the operator desktop.
+
 ## Routine Observation
 
 - The frontend dashboard is the preferred operator surface for live sessions.

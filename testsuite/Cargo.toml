@@ -23,9 +23,14 @@ path = "src/fake_qemu_bin.rs"
 name = "honeypot-manual-headed-writer"
 path = "src/honeypot_manual_headed_writer_bin.rs"
 
+[[bin]]
+name = "honeypot-manual-lab"
+path = "src/honeypot_manual_lab_bin.rs"
+
 [dependencies]
 anyhow = "1.0"
 assert_cmd = "2.1"
+base64 = "0.22"
 devolutions-gateway.path = "../devolutions-gateway"
 dynosaur = "0.3"
 escargot = "0.5"
@@ -48,7 +53,6 @@ uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
-base64 = "0.22"
 devolutions-gateway-task.path = "../crates/devolutions-gateway-task"
 http-body-util = "0.1"
 proxy-socks = { path = "../crates/proxy-socks" }
