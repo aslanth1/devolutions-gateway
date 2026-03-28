@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub const CONTROL_PLANE_CONFIG_ENV: &str = "HONEYPOT_CONTROL_PLANE_CONFIG";
 pub const DEFAULT_CONTROL_PLANE_CONFIG_PATH: &str = "/etc/honeypot/control-plane/config.toml";
@@ -151,6 +151,8 @@ pub struct QemuConfig {
     pub cpu_model: String,
     pub vcpu_count: u8,
     pub memory_mib: u32,
+    pub rtc_base: QemuRtcBase,
+    pub firmware_mode: QemuFirmwareMode,
     pub disk_interface: QemuDiskInterface,
     pub network: QemuNetworkConfig,
 }
@@ -164,13 +166,15 @@ impl Default for QemuConfig {
             cpu_model: "host".to_owned(),
             vcpu_count: 4,
             memory_mib: 8192,
+            rtc_base: QemuRtcBase::Utc,
+            firmware_mode: QemuFirmwareMode::None,
             disk_interface: QemuDiskInterface::VirtioBlkPci,
             network: QemuNetworkConfig::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QemuAccelerator {
     Kvm,
@@ -184,16 +188,18 @@ impl QemuAccelerator {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QemuDiskInterface {
     VirtioBlkPci,
+    AhciIde,
 }
 
 impl QemuDiskInterface {
     pub fn as_qemu_device(self) -> &'static str {
         match self {
             Self::VirtioBlkPci => "virtio-blk-pci",
+            Self::AhciIde => "ahci_ide",
         }
     }
 }
@@ -218,7 +224,7 @@ impl Default for QemuNetworkConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QemuNetworkMode {
     User,
@@ -232,16 +238,50 @@ impl QemuNetworkMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum QemuNetworkDeviceModel {
     VirtioNetPci,
+    E1000,
 }
 
 impl QemuNetworkDeviceModel {
     pub fn as_qemu_device(self) -> &'static str {
         match self {
             Self::VirtioNetPci => "virtio-net-pci",
+            Self::E1000 => "e1000",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QemuRtcBase {
+    Utc,
+    Localtime,
+}
+
+impl QemuRtcBase {
+    pub fn as_qemu_value(self) -> &'static str {
+        match self {
+            Self::Utc => "utc",
+            Self::Localtime => "localtime",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QemuFirmwareMode {
+    None,
+    UefiPflash,
+}
+
+impl QemuFirmwareMode {
+    pub fn requires_pflash(self) -> bool {
+        match self {
+            Self::None => false,
+            Self::UefiPflash => true,
         }
     }
 }

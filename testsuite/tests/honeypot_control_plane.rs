@@ -371,6 +371,168 @@ async fn control_plane_consume_image_command_imports_a_trusted_bundle_without_ma
     let _ = child.wait().await.expect("wait for control-plane exit");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn control_plane_consume_image_command_preserves_boot_profile_v1_in_active_lease_snapshot() {
+    let tempdir = tempfile::tempdir().expect("create tempdir");
+    let port = find_unused_port();
+    let forwarded_rdp_port = find_unused_port();
+    let config_path = tempdir.path().join("control-plane.toml");
+    let fixture = create_runtime_fixture(tempdir.path(), 0);
+    let source_manifest_path = create_source_import_bundle_with_boot_profile(tempdir.path(), 0, forwarded_rdp_port);
+    let process_qemu_path = install_fake_qemu_binary(tempdir.path(), "fake-qemu-rdp-ready");
+
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr(format!("127.0.0.1:{port}"))
+        .data_dir(fixture.data_dir.clone())
+        .image_store(fixture.image_store.clone())
+        .manifest_dir(fixture.manifest_dir.clone())
+        .lease_store(fixture.lease_store.clone())
+        .quarantine_store(fixture.quarantine_store.clone())
+        .qmp_dir(fixture.qmp_dir.clone())
+        .qga_dir(fixture.qga_dir.clone())
+        .secret_dir(fixture.secret_dir.clone())
+        .kvm_path(fixture.kvm_path.clone())
+        .enable_guest_agent(true)
+        .lifecycle_driver("process")
+        .stop_timeout_secs(1)
+        .qemu_binary_path(process_qemu_path)
+        .build();
+
+    write_honeypot_control_plane_config(&config_path, &config).expect("write config");
+
+    honeypot_control_plane_assert_cmd()
+        .arg("consume-image")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest_path)
+        .assert()
+        .success();
+
+    let mut child = honeypot_control_plane_tokio_cmd();
+    child.env(CONTROL_PLANE_CONFIG_ENV, &config_path);
+    let mut child = child.spawn().expect("spawn control-plane");
+
+    wait_for_tcp_port(port).await.expect("wait for control-plane port");
+
+    let (_, acquire): (String, AcquireVmResponse) = post_authed_json_response(
+        port,
+        "/api/v1/vm/acquire",
+        &acquire_request("session-imported-boot-profile"),
+    )
+    .await
+    .expect("acquire imported trusted image with boot profile");
+
+    assert_eq!(acquire.guest_rdp_port, forwarded_rdp_port);
+    wait_for_tcp_port(forwarded_rdp_port)
+        .await
+        .expect("wait for forwarded RDP port to become reachable");
+
+    let active_snapshot_path = fixture.lease_store.join(format!("{}.json", acquire.vm_lease_id));
+    assert!(
+        active_snapshot_path.is_file(),
+        "expected active lease snapshot at {}",
+        active_snapshot_path.display()
+    );
+    let runtime_vars_path = fixture.lease_store.join(&acquire.vm_lease_id).join("OVMF_VARS.fd");
+    assert!(
+        runtime_vars_path.is_file(),
+        "expected runtime vars file at {}",
+        runtime_vars_path.display()
+    );
+    assert_eq!(
+        fs::read(&runtime_vars_path).expect("read runtime vars file"),
+        b"fake vars seed",
+    );
+
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&fs::read(&active_snapshot_path).expect("read active lease snapshot"))
+            .expect("parse active lease snapshot");
+    let launch_plan = snapshot
+        .get("launch_plan")
+        .expect("launch_plan should be present in active lease snapshot");
+    let firmware_code_path = launch_plan
+        .get("firmware_code_path")
+        .and_then(serde_json::Value::as_str)
+        .expect("launch_plan.firmware_code_path should be present");
+    let vars_seed_path = launch_plan
+        .get("vars_seed_path")
+        .and_then(serde_json::Value::as_str)
+        .expect("launch_plan.vars_seed_path should be present");
+    let runtime_vars_path_value = launch_plan
+        .get("runtime_vars_path")
+        .and_then(serde_json::Value::as_str)
+        .expect("launch_plan.runtime_vars_path should be present");
+    assert!(std::path::Path::new(firmware_code_path).starts_with(&fixture.image_store));
+    assert!(std::path::Path::new(vars_seed_path).starts_with(&fixture.image_store));
+    assert_eq!(runtime_vars_path_value, runtime_vars_path.display().to_string());
+    assert_eq!(
+        fs::read(firmware_code_path).expect("read imported firmware code"),
+        b"fake firmware code",
+    );
+    assert_eq!(
+        fs::read(vars_seed_path).expect("read imported vars seed"),
+        b"fake vars seed"
+    );
+
+    let argv = launch_plan
+        .get("argv")
+        .and_then(serde_json::Value::as_array)
+        .expect("launch_plan.argv should be present");
+    let argv = argv
+        .iter()
+        .map(|value| value.as_str().expect("argv element should be a string"))
+        .collect::<Vec<_>>();
+    assert!(argv.contains(&"ich9-ahci,id=sata"));
+    assert!(argv.contains(&"ide-hd,drive=os-disk,bus=sata.0"));
+    assert!(argv.contains(&"e1000,netdev=net0"));
+    assert!(argv.windows(2).any(|window| window == ["-rtc", "base=localtime"]));
+    assert!(
+        argv.iter()
+            .any(|arg| arg.contains("if=pflash,format=raw,readonly=on,file="))
+    );
+    assert!(
+        argv.iter()
+            .any(|arg| arg.contains("if=pflash,format=raw,file=") && arg.contains("OVMF_VARS.fd"))
+    );
+
+    let (_, release): (String, ReleaseVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/release", acquire.vm_lease_id),
+        &ReleaseVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "release-imported-boot-profile-1".to_owned(),
+            session_id: "session-imported-boot-profile".to_owned(),
+            release_reason: "session_ended".to_owned(),
+            terminal_outcome: "disconnected".to_owned(),
+        },
+    )
+    .await
+    .expect("release lease");
+    assert_eq!(release.release_state, ReleaseState::Recycling);
+
+    let (_, recycle): (String, RecycleVmResponse) = post_authed_json_response(
+        port,
+        &format!("/api/v1/vm/{}/recycle", acquire.vm_lease_id),
+        &RecycleVmRequest {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            request_id: "recycle-imported-boot-profile-1".to_owned(),
+            session_id: "session-imported-boot-profile".to_owned(),
+            recycle_reason: "release_cleanup".to_owned(),
+            quarantine_on_failure: true,
+            force_quarantine: false,
+        },
+    )
+    .await
+    .expect("recycle lease");
+    assert_eq!(recycle.recycle_state, RecycleState::Recycled);
+    assert_eq!(recycle.pool_state, PoolState::Ready);
+
+    child.kill().await.expect("kill control-plane");
+    let _ = child.wait().await.expect("wait for control-plane exit");
+}
+
 #[tokio::test]
 async fn control_plane_reports_unsafe_if_kvm_disappears_after_start() {
     let tempdir = tempfile::tempdir().expect("create tempdir");
@@ -3807,6 +3969,84 @@ fn create_source_import_bundle(root: &std::path::Path, index: usize) -> std::pat
     fs::create_dir_all(&source_root).expect("create source import bundle root");
     fs::write(&base_image_path, base_image_contents.as_bytes()).expect("write source import base image");
     write_attested_manifest(&manifest_path, &base_image_path, index, base_image_contents.as_bytes());
+
+    manifest_path
+}
+
+fn create_source_import_bundle_with_boot_profile(
+    root: &std::path::Path,
+    index: usize,
+    guest_rdp_port: u16,
+) -> std::path::PathBuf {
+    let source_root = root.join(format!("source-bundle-boot-profile-{index}"));
+    let manifest_path = source_root.join(format!("import-image-boot-profile-{index}.json"));
+    let base_image_path = source_root.join(format!("import-image-boot-profile-{index}.qcow2"));
+    let firmware_code_path = source_root.join(format!("OVMF_CODE-{index}.fd"));
+    let vars_seed_path = source_root.join(format!("OVMF_VARS-{index}.seed.fd"));
+    let base_image_contents = base_image_contents(index);
+    let firmware_code_contents = b"fake firmware code";
+    let vars_seed_contents = b"fake vars seed";
+
+    fs::create_dir_all(&source_root).expect("create source import bundle root");
+    fs::write(&base_image_path, base_image_contents.as_bytes()).expect("write source import base image");
+    fs::write(&firmware_code_path, firmware_code_contents).expect("write source import firmware code");
+    fs::write(&vars_seed_path, vars_seed_contents).expect("write source import vars seed");
+
+    let manifest = serde_json::json!({
+        "pool_name": "default",
+        "vm_name": format!("honeypot-image-{index}"),
+        "attestation_ref": format!("attestation://gold-image-{index}"),
+        "guest_rdp_port": guest_rdp_port,
+        "base_image_path": base_image_path.file_name().and_then(std::ffi::OsStr::to_str).expect("base image file name"),
+        "boot_profile_v1": {
+            "disk_interface": "ahci_ide",
+            "network_device_model": "e1000",
+            "rtc_base": "localtime",
+            "firmware_mode": "uefi_pflash",
+            "firmware_code": {
+                "path": firmware_code_path.file_name().and_then(std::ffi::OsStr::to_str).expect("firmware code file name"),
+                "sha256": sha256_hex(firmware_code_contents),
+            },
+            "vars_seed": {
+                "path": vars_seed_path.file_name().and_then(std::ffi::OsStr::to_str).expect("vars seed file name"),
+                "sha256": sha256_hex(vars_seed_contents),
+            }
+        },
+        "source_iso": {
+            "acquisition_channel": "visual-studio-subscription",
+            "acquisition_date": "2026-03-25",
+            "filename": "windows11-pro-x64-en-us.iso",
+            "size_bytes": 1024u64,
+            "edition": "Windows 11 Pro x64",
+            "language": "en-US",
+            "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        "transformation": {
+            "timestamp": "2026-03-25T12:00:00Z",
+            "inputs": [
+                {
+                    "reference": "tiny11-builder.ps1",
+                    "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                },
+                {
+                    "reference": "tiny11-base.wim",
+                    "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+                }
+            ]
+        },
+        "base_image": {
+            "sha256": sha256_hex(base_image_contents.as_bytes())
+        },
+        "approval": {
+            "approved_by": "operator@example.test"
+        }
+    });
+
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).expect("serialize attested manifest with boot profile"),
+    )
+    .expect("write attested manifest with boot profile");
 
     manifest_path
 }

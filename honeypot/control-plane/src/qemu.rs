@@ -1,6 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use crate::config::{ControlPlaneConfig, QemuNetworkMode};
+use anyhow::Context as _;
+
+use crate::config::{ControlPlaneConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuNetworkMode};
+use crate::image::TrustedBootProfileV1;
 
 const GUEST_RDP_PORT: u16 = 3389;
 
@@ -14,6 +17,9 @@ pub(crate) struct QemuLaunchPlan {
     pub pid_file_path: PathBuf,
     pub qmp_socket_path: PathBuf,
     pub qga_socket_path: Option<PathBuf>,
+    pub firmware_code_path: Option<PathBuf>,
+    pub vars_seed_path: Option<PathBuf>,
+    pub runtime_vars_path: Option<PathBuf>,
     pub argv: Vec<String>,
 }
 
@@ -24,6 +30,7 @@ impl QemuLaunchPlan {
         vm_name: &str,
         base_image_path: &Path,
         guest_rdp_port: u16,
+        boot_profile_v1: Option<&TrustedBootProfileV1>,
     ) -> anyhow::Result<Self> {
         validate_lease_id(vm_lease_id)?;
         validate_qemu_runtime_contract(config)?;
@@ -40,6 +47,27 @@ impl QemuLaunchPlan {
         };
 
         let qemu_config = &config.runtime.qemu;
+        let disk_interface = boot_profile_v1
+            .map(|profile| profile.disk_interface)
+            .unwrap_or(qemu_config.disk_interface);
+        let network_device_model = boot_profile_v1
+            .map(|profile| profile.network_device_model)
+            .unwrap_or(qemu_config.network.device_model);
+        let rtc_base = boot_profile_v1
+            .map(|profile| profile.rtc_base)
+            .unwrap_or(qemu_config.rtc_base);
+        let firmware_mode = boot_profile_v1
+            .map(|profile| profile.firmware_mode)
+            .unwrap_or(qemu_config.firmware_mode);
+        let firmware_code_path = boot_profile_v1.and_then(|profile| profile.firmware_code_path.clone());
+        let vars_seed_path = boot_profile_v1.and_then(|profile| profile.vars_seed_path.clone());
+        let runtime_vars_path = if vars_seed_path.is_some() {
+            Some(runtime_dir.join("OVMF_VARS.fd"))
+        } else {
+            None
+        };
+        validate_firmware_runtime_contract(firmware_mode, firmware_code_path.as_deref(), vars_seed_path.as_deref())?;
+
         let mut argv = vec![
             "-name".to_owned(),
             vm_name.to_owned(),
@@ -55,6 +83,8 @@ impl QemuLaunchPlan {
             qemu_config.vcpu_count.to_string(),
             "-m".to_owned(),
             qemu_config.memory_mib.to_string(),
+            "-rtc".to_owned(),
+            format!("base={}", rtc_base.as_qemu_value()),
             "-nodefaults".to_owned(),
             "-display".to_owned(),
             "none".to_owned(),
@@ -64,16 +94,25 @@ impl QemuLaunchPlan {
             pid_file_path.display().to_string(),
             "-qmp".to_owned(),
             format!("unix:{},server=on,wait=off", qmp_socket_path.display()),
-            "-drive".to_owned(),
-            format!(
-                "if=none,id=os-disk,file={},format=qcow2,cache=writeback",
-                overlay_path.display()
-            ),
-            "-device".to_owned(),
-            format!("{},drive=os-disk", qemu_config.disk_interface.as_qemu_device()),
         ];
 
-        argv.extend(network_argv(config, guest_rdp_port));
+        if firmware_mode.requires_pflash() {
+            let firmware_code_path = firmware_code_path
+                .as_ref()
+                .context("uefi_pflash firmware mode requires firmware_code_path")?;
+            let runtime_vars_path = runtime_vars_path
+                .as_ref()
+                .context("uefi_pflash firmware mode requires runtime_vars_path")?;
+            argv.extend([
+                "-drive".to_owned(),
+                format!("if=pflash,format=raw,readonly=on,file={}", firmware_code_path.display()),
+                "-drive".to_owned(),
+                format!("if=pflash,format=raw,file={}", runtime_vars_path.display()),
+            ]);
+        }
+
+        argv.extend(disk_argv(&overlay_path, disk_interface));
+        argv.extend(network_argv(config, guest_rdp_port, network_device_model));
 
         if let Some(qga_socket_path) = &qga_socket_path {
             argv.extend([
@@ -97,6 +136,9 @@ impl QemuLaunchPlan {
             pid_file_path,
             qmp_socket_path,
             qga_socket_path,
+            firmware_code_path,
+            vars_seed_path,
+            runtime_vars_path,
             argv,
         })
     }
@@ -230,7 +272,7 @@ fn validate_control_socket_isolation(
     Ok(())
 }
 
-fn network_argv(config: &ControlPlaneConfig, guest_rdp_port: u16) -> Vec<String> {
+fn network_argv(config: &ControlPlaneConfig, guest_rdp_port: u16, device_model: QemuNetworkDeviceModel) -> Vec<String> {
     let network = &config.runtime.qemu.network;
 
     vec![
@@ -244,8 +286,62 @@ fn network_argv(config: &ControlPlaneConfig, guest_rdp_port: u16) -> Vec<String>
             GUEST_RDP_PORT
         ),
         "-device".to_owned(),
-        format!("{},netdev={}", network.device_model.as_qemu_device(), network.netdev_id),
+        format!("{},netdev={}", device_model.as_qemu_device(), network.netdev_id),
     ]
+}
+
+fn disk_argv(overlay_path: &Path, disk_interface: QemuDiskInterface) -> Vec<String> {
+    let mut argv = vec![
+        "-drive".to_owned(),
+        format!(
+            "if=none,id=os-disk,file={},format=qcow2,cache=writeback",
+            overlay_path.display()
+        ),
+    ];
+
+    match disk_interface {
+        QemuDiskInterface::VirtioBlkPci => {
+            argv.extend(["-device".to_owned(), "virtio-blk-pci,drive=os-disk".to_owned()]);
+        }
+        QemuDiskInterface::AhciIde => {
+            argv.extend([
+                "-device".to_owned(),
+                "ich9-ahci,id=sata".to_owned(),
+                "-device".to_owned(),
+                "ide-hd,drive=os-disk,bus=sata.0".to_owned(),
+            ]);
+        }
+    }
+
+    argv
+}
+
+fn validate_firmware_runtime_contract(
+    firmware_mode: QemuFirmwareMode,
+    firmware_code_path: Option<&Path>,
+    vars_seed_path: Option<&Path>,
+) -> anyhow::Result<()> {
+    match firmware_mode {
+        QemuFirmwareMode::None => {
+            anyhow::ensure!(
+                firmware_code_path.is_none(),
+                "runtime boot profile must not set firmware_code_path when firmware_mode is none",
+            );
+            anyhow::ensure!(
+                vars_seed_path.is_none(),
+                "runtime boot profile must not set vars_seed_path when firmware_mode is none",
+            );
+        }
+        QemuFirmwareMode::UefiPflash => {
+            let firmware_code_path =
+                firmware_code_path.context("uefi_pflash firmware mode requires firmware_code_path")?;
+            let vars_seed_path = vars_seed_path.context("uefi_pflash firmware mode requires vars_seed_path")?;
+            ensure_file("firmware_code_path", firmware_code_path)?;
+            ensure_file("vars_seed_path", vars_seed_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn validate_lease_id(vm_lease_id: &str) -> anyhow::Result<()> {
@@ -269,7 +365,8 @@ mod tests {
     use std::path::Path;
 
     use super::{QemuLaunchPlan, validate_control_socket_isolation};
-    use crate::config::ControlPlaneConfig;
+    use crate::config::{ControlPlaneConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuRtcBase};
+    use crate::image::TrustedBootProfileV1;
 
     #[test]
     fn qemu_launch_plan_uses_typed_runtime_contract() {
@@ -278,8 +375,15 @@ mod tests {
         let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
         fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
 
-        let plan = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
-            .expect("build qemu launch plan");
+        let plan = QemuLaunchPlan::build(
+            &config,
+            "lease-00000001",
+            "honeypot-gold-image",
+            &base_image_path,
+            3390,
+            None,
+        )
+        .expect("build qemu launch plan");
 
         assert_eq!(
             plan.qemu_binary_path,
@@ -307,6 +411,9 @@ mod tests {
             "{:?}",
             plan.argv
         );
+        assert!(plan.argv.windows(2).any(|window| {
+            window.first().map(String::as_str) == Some("-rtc") && window.get(1).map(String::as_str) == Some("base=utc")
+        }));
         assert!(
             plan.argv.iter().any(|arg| arg.contains("restrict=on")),
             "{:?}",
@@ -317,6 +424,77 @@ mod tests {
         }));
         assert!(!plan.argv.iter().any(|arg| arg == "-vnc"));
         assert!(!plan.argv.iter().any(|arg| arg == "-monitor"));
+        assert_eq!(plan.firmware_code_path, None);
+        assert_eq!(plan.vars_seed_path, None);
+        assert_eq!(plan.runtime_vars_path, None);
+    }
+
+    #[test]
+    fn qemu_launch_plan_replays_allowlisted_boot_profile_v1() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let config = test_config(tempdir.path());
+        let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
+        let firmware_code_path = tempdir.path().join("images").join("OVMF_CODE.fd");
+        let vars_seed_path = tempdir.path().join("images").join("OVMF_VARS.seed.fd");
+        fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
+        fs::write(&firmware_code_path, b"fake firmware code").expect("write fake firmware code");
+        fs::write(&vars_seed_path, b"fake vars seed").expect("write fake vars seed");
+        let boot_profile = TrustedBootProfileV1 {
+            disk_interface: QemuDiskInterface::AhciIde,
+            network_device_model: QemuNetworkDeviceModel::E1000,
+            rtc_base: QemuRtcBase::Localtime,
+            firmware_mode: QemuFirmwareMode::UefiPflash,
+            firmware_code_path: Some(firmware_code_path.clone()),
+            vars_seed_path: Some(vars_seed_path.clone()),
+        };
+
+        let plan = QemuLaunchPlan::build(
+            &config,
+            "lease-00000001",
+            "honeypot-gold-image",
+            &base_image_path,
+            3390,
+            Some(&boot_profile),
+        )
+        .expect("build qemu launch plan");
+
+        assert_eq!(plan.firmware_code_path, Some(firmware_code_path));
+        assert_eq!(plan.vars_seed_path, Some(vars_seed_path));
+        assert_eq!(plan.runtime_vars_path, Some(plan.runtime_dir.join("OVMF_VARS.fd")));
+        assert!(plan.argv.windows(2).any(|window| {
+            window.first().map(String::as_str) == Some("-rtc")
+                && window.get(1).map(String::as_str) == Some("base=localtime")
+        }));
+        assert!(
+            plan.argv.iter().any(|arg| arg == "ich9-ahci,id=sata"),
+            "{:?}",
+            plan.argv
+        );
+        assert!(
+            plan.argv.iter().any(|arg| arg == "ide-hd,drive=os-disk,bus=sata.0"),
+            "{:?}",
+            plan.argv
+        );
+        assert!(
+            plan.argv.iter().any(|arg| arg == "e1000,netdev=net0"),
+            "{:?}",
+            plan.argv
+        );
+        assert!(
+            plan.argv
+                .iter()
+                .any(|arg| arg.contains("if=pflash,format=raw,readonly=on,file=")),
+            "{:?}",
+            plan.argv
+        );
+        assert!(
+            plan.argv
+                .iter()
+                .any(|arg| arg.contains("if=pflash,format=raw,file=") && arg.contains("OVMF_VARS.fd")),
+            "{:?}",
+            plan.argv
+        );
+        assert!(!plan.argv.iter().any(|arg| arg == "virtio-blk-pci,drive=os-disk"));
     }
 
     #[test]
@@ -325,8 +503,15 @@ mod tests {
         let config = test_config(tempdir.path());
         let base_image_path = tempdir.path().join("images").join("missing.qcow2");
 
-        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
-            .expect_err("missing base image should fail");
+        let error = QemuLaunchPlan::build(
+            &config,
+            "lease-00000001",
+            "honeypot-gold-image",
+            &base_image_path,
+            3390,
+            None,
+        )
+        .expect_err("missing base image should fail");
 
         assert!(format!("{error:#}").contains("base_image_path"), "{error:#}");
     }
@@ -339,8 +524,15 @@ mod tests {
         let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
         fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
 
-        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
-            .expect_err("non-loopback user networking should fail");
+        let error = QemuLaunchPlan::build(
+            &config,
+            "lease-00000001",
+            "honeypot-gold-image",
+            &base_image_path,
+            3390,
+            None,
+        )
+        .expect_err("non-loopback user networking should fail");
 
         assert!(format!("{error:#}").contains("host_loopback_addr"), "{error:#}");
     }
@@ -353,8 +545,15 @@ mod tests {
         let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
         fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
 
-        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
-            .expect_err("vcpu counts above the configured runtime limit should fail");
+        let error = QemuLaunchPlan::build(
+            &config,
+            "lease-00000001",
+            "honeypot-gold-image",
+            &base_image_path,
+            3390,
+            None,
+        )
+        .expect_err("vcpu counts above the configured runtime limit should fail");
 
         assert!(format!("{error:#}").contains("max_vcpu_count"), "{error:#}");
     }
@@ -367,8 +566,15 @@ mod tests {
         let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
         fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
 
-        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
-            .expect_err("memory above the configured runtime limit should fail");
+        let error = QemuLaunchPlan::build(
+            &config,
+            "lease-00000001",
+            "honeypot-gold-image",
+            &base_image_path,
+            3390,
+            None,
+        )
+        .expect_err("memory above the configured runtime limit should fail");
 
         assert!(format!("{error:#}").contains("max_memory_mib"), "{error:#}");
     }
@@ -382,8 +588,15 @@ mod tests {
         let base_image_path = tempdir.path().join("images").join("gold-image.qcow2");
         fs::write(&base_image_path, b"not-a-real-qcow2").expect("write fake base image");
 
-        let error = QemuLaunchPlan::build(&config, "lease-00000001", "honeypot-gold-image", &base_image_path, 3390)
-            .expect_err("stop timeout above the configured runtime limit should fail");
+        let error = QemuLaunchPlan::build(
+            &config,
+            "lease-00000001",
+            "honeypot-gold-image",
+            &base_image_path,
+            3390,
+            None,
+        )
+        .expect_err("stop timeout above the configured runtime limit should fail");
 
         assert!(format!("{error:#}").contains("max_stop_timeout_secs"), "{error:#}");
     }

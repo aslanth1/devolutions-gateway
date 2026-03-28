@@ -113,6 +113,7 @@ impl LeaseRegistry {
                 &trusted_image.vm_name,
                 &trusted_image.base_image_path,
                 trusted_image.guest_rdp_port,
+                trusted_image.boot_profile_v1.as_ref(),
             ) {
                 Ok(launch_plan) => {
                     selected = Some((trusted_image, launch_plan));
@@ -471,6 +472,9 @@ pub(crate) struct LeaseLaunchPlanSnapshot {
     pub(crate) pid_file_path: PathBuf,
     pub(crate) qmp_socket_path: PathBuf,
     pub(crate) qga_socket_path: Option<PathBuf>,
+    pub(crate) firmware_code_path: Option<PathBuf>,
+    pub(crate) vars_seed_path: Option<PathBuf>,
+    pub(crate) runtime_vars_path: Option<PathBuf>,
     pub(crate) argv: Vec<String>,
 }
 
@@ -485,6 +489,9 @@ impl From<QemuLaunchPlan> for LeaseLaunchPlanSnapshot {
             pid_file_path: plan.pid_file_path,
             qmp_socket_path: plan.qmp_socket_path,
             qga_socket_path: plan.qga_socket_path,
+            firmware_code_path: plan.firmware_code_path,
+            vars_seed_path: plan.vars_seed_path,
+            runtime_vars_path: plan.runtime_vars_path,
             argv: plan.argv,
         }
     }

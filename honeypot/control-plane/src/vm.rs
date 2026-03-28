@@ -30,6 +30,15 @@ pub(crate) fn create_vm(config: &ControlPlaneConfig, plan: &LeaseLaunchPlanSnaps
             plan.overlay_path.display()
         )
     })?;
+    if let (Some(vars_seed_path), Some(runtime_vars_path)) = (&plan.vars_seed_path, &plan.runtime_vars_path) {
+        fs::copy(vars_seed_path, runtime_vars_path).with_context(|| {
+            format!(
+                "copy vars seed {} to lease runtime vars {}",
+                vars_seed_path.display(),
+                runtime_vars_path.display()
+            )
+        })?;
+    }
     let overlay_size = fs::metadata(&plan.overlay_path)
         .with_context(|| format!("stat overlay {}", plan.overlay_path.display()))?
         .len();
@@ -358,6 +367,7 @@ mod tests {
         create_vm(&config, &plan).expect("create simulated vm");
         assert!(plan.runtime_dir.is_dir());
         assert!(plan.overlay_path.is_file());
+        assert!(plan.runtime_vars_path.as_ref().expect("runtime vars path").is_file());
         assert!(!plan.pid_file_path.exists());
         assert!(!plan.qmp_socket_path.exists());
 
@@ -373,6 +383,7 @@ mod tests {
         reset_vm(&config, &plan).expect("reset simulated vm");
         assert!(plan.runtime_dir.is_dir());
         assert!(plan.overlay_path.is_file());
+        assert!(plan.runtime_vars_path.as_ref().expect("runtime vars path").is_file());
         assert!(plan.pid_file_path.is_file());
         assert!(plan.qmp_socket_path.exists());
 
@@ -396,6 +407,25 @@ mod tests {
         assert!(format!("{error:#}").contains("max_overlay_size_mib"), "{error:#}");
     }
 
+    #[test]
+    fn create_vm_copies_the_vars_seed_into_the_runtime_dir() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let mut config = test_config(tempdir.path());
+        config.runtime.lifecycle_driver = VmLifecycleDriver::Simulated;
+        let plan = test_plan(tempdir.path());
+        let runtime_vars_path = plan.runtime_vars_path.clone().expect("runtime vars path");
+        let vars_seed_path = plan.vars_seed_path.clone().expect("vars seed path");
+        let seed_contents = fs::read(&vars_seed_path).expect("read vars seed");
+
+        create_vm(&config, &plan).expect("create simulated vm");
+
+        assert_eq!(fs::read(&runtime_vars_path).expect("read runtime vars"), seed_contents);
+        assert_eq!(
+            fs::read(&vars_seed_path).expect("read vars seed after copy"),
+            seed_contents
+        );
+    }
+
     fn test_config(root: &Path) -> ControlPlaneConfig {
         let mut config = ControlPlaneConfig::default();
         let qga_dir = root.join("qga");
@@ -411,10 +441,12 @@ mod tests {
         let qmp_dir = root.join("qmp");
         let qga_dir = root.join("qga");
         let base_image_path = image_store.join("gold-image.qcow2");
+        let vars_seed_path = image_store.join("OVMF_VARS.seed.fd");
 
         fs::create_dir_all(&image_store).expect("create image store");
         fs::create_dir_all(&qmp_dir).expect("create qmp dir");
         fs::write(&base_image_path, b"fake-base-image").expect("write fake base image");
+        fs::write(&vars_seed_path, b"fake-vars-seed").expect("write fake vars seed");
 
         LeaseLaunchPlanSnapshot {
             qemu_binary_path: root.join("bin").join("qemu-system-x86_64"),
@@ -425,6 +457,9 @@ mod tests {
             pid_file_path: runtime_dir.join("qemu.pid"),
             qmp_socket_path: qmp_dir.join("lease-00000001.sock"),
             qga_socket_path: Some(qga_dir.join("lease-00000001.sock")),
+            firmware_code_path: Some(image_store.join("OVMF_CODE.fd")),
+            vars_seed_path: Some(vars_seed_path),
+            runtime_vars_path: Some(runtime_dir.join("OVMF_VARS.fd")),
             argv: Vec::new(),
         }
     }

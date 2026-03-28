@@ -7,7 +7,7 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::config::PathConfig;
+use crate::config::{PathConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuRtcBase};
 
 const DEFAULT_GUEST_RDP_PORT: u16 = 3389;
 const REQUIRED_WINDOWS_EDITION: &str = "Windows 11 Pro x64";
@@ -19,6 +19,17 @@ pub(crate) struct TrustedImage {
     pub(crate) attestation_ref: String,
     pub(crate) guest_rdp_port: u16,
     pub(crate) base_image_path: PathBuf,
+    pub(crate) boot_profile_v1: Option<TrustedBootProfileV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TrustedBootProfileV1 {
+    pub(crate) disk_interface: QemuDiskInterface,
+    pub(crate) network_device_model: QemuNetworkDeviceModel,
+    pub(crate) rtc_base: QemuRtcBase,
+    pub(crate) firmware_mode: QemuFirmwareMode,
+    pub(crate) firmware_code_path: Option<PathBuf>,
+    pub(crate) vars_seed_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -48,10 +59,32 @@ struct TrustedImageManifestDocument {
     #[serde(default)]
     guest_rdp_port: Option<u16>,
     base_image_path: PathBuf,
+    #[serde(default)]
+    boot_profile_v1: Option<BootProfileV1Record>,
     source_iso: SourceIsoRecord,
     transformation: TransformationRecord,
     base_image: BaseImageRecord,
     approval: ApprovalRecord,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootProfileV1Record {
+    disk_interface: QemuDiskInterface,
+    network_device_model: QemuNetworkDeviceModel,
+    rtc_base: QemuRtcBase,
+    firmware_mode: QemuFirmwareMode,
+    #[serde(default)]
+    firmware_code: Option<BootArtifactRecord>,
+    #[serde(default)]
+    vars_seed: Option<BootArtifactRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BootArtifactRecord {
+    path: PathBuf,
+    sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -115,6 +148,11 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
     let source_base_image_path = resolve_source_bundle_base_image_path(&source_bundle_root, &manifest.base_image_path)?;
     validate_non_symlink_file("source base image", &source_base_image_path)?;
     let expected_base_image_sha256 = normalize_sha256("base_image.sha256", &manifest.base_image.sha256)?;
+    let imported_boot_profile_v1 = manifest
+        .boot_profile_v1
+        .as_ref()
+        .map(|profile| import_boot_profile_v1(paths, &source_bundle_root, profile))
+        .transpose()?;
 
     let final_image_file_name = format!("sha256-{}.qcow2", expected_base_image_sha256);
     let final_base_image_path = paths.image_store.join(&final_image_file_name);
@@ -125,6 +163,7 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
     ));
     let imported_manifest = TrustedImageManifestDocument {
         base_image_path: PathBuf::from(&final_image_file_name),
+        boot_profile_v1: imported_boot_profile_v1,
         ..manifest
     };
 
@@ -269,6 +308,11 @@ pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedIm
                     .guest_rdp_port
                     .unwrap_or_else(|| DEFAULT_GUEST_RDP_PORT.saturating_add(u16::try_from(index).unwrap_or(0))),
                 base_image_path,
+                boot_profile_v1: manifest
+                    .boot_profile_v1
+                    .as_ref()
+                    .map(|profile| load_trusted_boot_profile_v1(paths, profile))
+                    .transpose()?,
             })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -348,6 +392,9 @@ fn validate_manifest(manifest: &TrustedImageManifestDocument, manifest_path: &Pa
     }
 
     let _ = normalize_sha256("base_image.sha256", &manifest.base_image.sha256)?;
+    if let Some(boot_profile_v1) = &manifest.boot_profile_v1 {
+        validate_boot_profile_v1(boot_profile_v1, manifest_path)?;
+    }
     ensure_non_empty("approval.approved_by", &manifest.approval.approved_by)?;
 
     Ok(())
@@ -396,22 +443,208 @@ fn validate_image_store_path(image_store: &Path, path: &Path) -> anyhow::Result<
 }
 
 fn resolve_source_bundle_base_image_path(source_bundle_root: &Path, configured_path: &Path) -> anyhow::Result<PathBuf> {
-    validate_bundle_relative_path("base_image_path", configured_path)?;
+    resolve_source_bundle_file_path(
+        source_bundle_root,
+        "base_image_path",
+        "source base image",
+        configured_path,
+    )
+}
+
+fn resolve_source_bundle_file_path(
+    source_bundle_root: &Path,
+    path_label: &str,
+    file_label: &str,
+    configured_path: &Path,
+) -> anyhow::Result<PathBuf> {
+    validate_bundle_relative_path(path_label, configured_path)?;
 
     let resolved_path = source_bundle_root.join(configured_path);
-    validate_non_symlink_file("source base image", &resolved_path)?;
+    validate_non_symlink_file(file_label, &resolved_path)?;
     let canonical_path = resolved_path
         .canonicalize()
-        .with_context(|| format!("canonicalize source base image {}", resolved_path.display()))?;
+        .with_context(|| format!("canonicalize {file_label} {}", resolved_path.display()))?;
 
     anyhow::ensure!(
         canonical_path.starts_with(source_bundle_root),
-        "source base image {} escapes source bundle {}",
+        "{file_label} {} escapes source bundle {}",
         canonical_path.display(),
         source_bundle_root.display(),
     );
 
     Ok(canonical_path)
+}
+
+fn import_boot_profile_v1(
+    paths: &PathConfig,
+    source_bundle_root: &Path,
+    profile: &BootProfileV1Record,
+) -> anyhow::Result<BootProfileV1Record> {
+    let firmware_code = profile
+        .firmware_code
+        .as_ref()
+        .map(|artifact| import_boot_artifact(paths, source_bundle_root, "boot_profile_v1.firmware_code", artifact))
+        .transpose()?;
+    let vars_seed = profile
+        .vars_seed
+        .as_ref()
+        .map(|artifact| import_boot_artifact(paths, source_bundle_root, "boot_profile_v1.vars_seed", artifact))
+        .transpose()?;
+
+    Ok(BootProfileV1Record {
+        disk_interface: profile.disk_interface,
+        network_device_model: profile.network_device_model,
+        rtc_base: profile.rtc_base,
+        firmware_mode: profile.firmware_mode,
+        firmware_code,
+        vars_seed,
+    })
+}
+
+fn import_boot_artifact(
+    paths: &PathConfig,
+    source_bundle_root: &Path,
+    label: &str,
+    artifact: &BootArtifactRecord,
+) -> anyhow::Result<BootArtifactRecord> {
+    let source_path =
+        resolve_source_bundle_file_path(source_bundle_root, &format!("{label}.path"), label, &artifact.path)?;
+    let expected_sha256 = normalize_sha256(&format!("{label}.sha256"), &artifact.sha256)?;
+    let final_file_name =
+        trusted_artifact_file_name(&expected_sha256, source_path.extension().and_then(|ext| ext.to_str()));
+    let final_path = paths.image_store.join(&final_file_name);
+
+    if final_path.exists() {
+        let actual_digest = sha256_file(&final_path)?;
+        anyhow::ensure!(
+            actual_digest == expected_sha256,
+            "existing imported artifact {} does not match the requested digest {}",
+            final_path.display(),
+            expected_sha256,
+        );
+    } else {
+        copy_file_atomically(&source_path, &final_path)?;
+        let actual_digest = sha256_file(&final_path)?;
+        anyhow::ensure!(
+            actual_digest == expected_sha256,
+            "{label}.sha256 mismatch for imported artifact {}: expected {}, got {}",
+            final_path.display(),
+            expected_sha256,
+            actual_digest,
+        );
+    }
+
+    Ok(BootArtifactRecord {
+        path: PathBuf::from(final_file_name),
+        sha256: expected_sha256,
+    })
+}
+
+fn load_trusted_boot_profile_v1(
+    paths: &PathConfig,
+    profile: &BootProfileV1Record,
+) -> anyhow::Result<TrustedBootProfileV1> {
+    let firmware_code_path = profile
+        .firmware_code
+        .as_ref()
+        .map(|artifact| load_trusted_boot_artifact(&paths.image_store, "boot_profile_v1.firmware_code", artifact))
+        .transpose()?;
+    let vars_seed_path = profile
+        .vars_seed
+        .as_ref()
+        .map(|artifact| load_trusted_boot_artifact(&paths.image_store, "boot_profile_v1.vars_seed", artifact))
+        .transpose()?;
+
+    Ok(TrustedBootProfileV1 {
+        disk_interface: profile.disk_interface,
+        network_device_model: profile.network_device_model,
+        rtc_base: profile.rtc_base,
+        firmware_mode: profile.firmware_mode,
+        firmware_code_path,
+        vars_seed_path,
+    })
+}
+
+fn load_trusted_boot_artifact(
+    image_store: &Path,
+    label: &str,
+    artifact: &BootArtifactRecord,
+) -> anyhow::Result<PathBuf> {
+    let artifact_path = resolve_trusted_image_store_path(image_store, label, &artifact.path)?;
+    validate_image_store_path(image_store, &artifact_path)
+        .with_context(|| format!("validate trusted image store contract for {}", artifact_path.display()))?;
+
+    let actual_digest = sha256_file(&artifact_path)
+        .with_context(|| format!("hash trusted boot artifact {}", artifact_path.display()))?;
+    let expected_digest = normalize_sha256(&format!("{label}.sha256"), &artifact.sha256)?;
+    anyhow::ensure!(
+        actual_digest == expected_digest,
+        "{label}.sha256 mismatch for {}: expected {}, got {}",
+        artifact_path.display(),
+        expected_digest,
+        actual_digest,
+    );
+
+    Ok(artifact_path)
+}
+
+fn validate_boot_profile_v1(profile: &BootProfileV1Record, manifest_path: &Path) -> anyhow::Result<()> {
+    match profile.firmware_mode {
+        QemuFirmwareMode::None => {
+            anyhow::ensure!(
+                profile.firmware_code.is_none(),
+                "boot_profile_v1.firmware_code must be absent when firmware_mode is none in {}",
+                manifest_path.display(),
+            );
+            anyhow::ensure!(
+                profile.vars_seed.is_none(),
+                "boot_profile_v1.vars_seed must be absent when firmware_mode is none in {}",
+                manifest_path.display(),
+            );
+        }
+        QemuFirmwareMode::UefiPflash => {
+            let firmware_code = profile.firmware_code.as_ref().with_context(|| {
+                format!(
+                    "boot_profile_v1.firmware_code must be present when firmware_mode is uefi_pflash in {}",
+                    manifest_path.display()
+                )
+            })?;
+            let vars_seed = profile.vars_seed.as_ref().with_context(|| {
+                format!(
+                    "boot_profile_v1.vars_seed must be present when firmware_mode is uefi_pflash in {}",
+                    manifest_path.display()
+                )
+            })?;
+            validate_boot_artifact("boot_profile_v1.firmware_code", firmware_code)?;
+            validate_boot_artifact("boot_profile_v1.vars_seed", vars_seed)?;
+        }
+    }
+
+    if matches!(profile.firmware_mode, QemuFirmwareMode::None) {
+        return Ok(());
+    }
+
+    Ok(())
+}
+
+fn validate_boot_artifact(label: &str, artifact: &BootArtifactRecord) -> anyhow::Result<()> {
+    validate_bundle_relative_path(&format!("{label}.path"), &artifact.path)?;
+    let _ = normalize_sha256(&format!("{label}.sha256"), &artifact.sha256)?;
+    Ok(())
+}
+
+fn resolve_trusted_image_store_path(
+    image_store: &Path,
+    label: &str,
+    configured_path: &Path,
+) -> anyhow::Result<PathBuf> {
+    validate_bundle_relative_path(label, configured_path)?;
+    Ok(image_store.join(configured_path))
+}
+
+fn trusted_artifact_file_name(digest: &str, extension: Option<&str>) -> String {
+    let extension = extension.filter(|value| !value.is_empty()).unwrap_or("bin");
+    format!("artifact-sha256-{}.{}", digest, sanitize_file_component(extension))
 }
 
 fn validate_bundle_relative_path(label: &str, path: &Path) -> anyhow::Result<()> {
@@ -687,7 +920,7 @@ mod tests {
     use sha2::{Digest as _, Sha256};
 
     use super::{ConsumeTrustedImageState, consume_trusted_image, trusted_images};
-    use crate::config::PathConfig;
+    use crate::config::{PathConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuRtcBase};
 
     #[test]
     fn trusted_images_reject_incomplete_attestation_manifests() {
@@ -863,6 +1096,53 @@ mod tests {
     }
 
     #[test]
+    fn consume_trusted_image_imports_boot_profile_artifacts_into_the_trusted_store() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle_with_boot_profile(
+            tempdir.path(),
+            "honeypot-import-boot-profile",
+            "default",
+            "image-boot-profile",
+            b"base-image-boot-profile",
+            b"fake firmware code",
+            b"fake vars seed",
+        );
+
+        let imported = consume_trusted_image(&paths, &bundle.manifest_path).expect("import trusted image bundle");
+        let trusted_images = trusted_images(&paths).expect("load imported trusted images");
+        let trusted_image = trusted_images
+            .into_iter()
+            .find(|trusted_image| trusted_image.vm_name == "honeypot-import-boot-profile")
+            .expect("find imported trusted image");
+        let boot_profile = trusted_image
+            .boot_profile_v1
+            .expect("imported trusted image should include boot_profile_v1");
+
+        assert_eq!(trusted_image.base_image_path, imported.base_image_path);
+        assert_eq!(boot_profile.disk_interface, QemuDiskInterface::AhciIde);
+        assert_eq!(boot_profile.network_device_model, QemuNetworkDeviceModel::E1000);
+        assert_eq!(boot_profile.rtc_base, QemuRtcBase::Localtime);
+        assert_eq!(boot_profile.firmware_mode, QemuFirmwareMode::UefiPflash);
+        let firmware_code_path = boot_profile
+            .firmware_code_path
+            .expect("boot profile should include firmware code");
+        let vars_seed_path = boot_profile
+            .vars_seed_path
+            .expect("boot profile should include vars seed");
+        assert!(firmware_code_path.starts_with(&paths.image_store));
+        assert!(vars_seed_path.starts_with(&paths.image_store));
+        assert_eq!(
+            fs::read(&firmware_code_path).expect("read imported firmware code"),
+            b"fake firmware code"
+        );
+        assert_eq!(
+            fs::read(&vars_seed_path).expect("read imported vars seed"),
+            b"fake vars seed"
+        );
+    }
+
+    #[test]
     fn consume_trusted_image_is_idempotent_for_the_same_bundle() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let paths = test_paths(tempdir.path());
@@ -1023,6 +1303,77 @@ mod tests {
             suffix,
             format!("base-image-{suffix}").as_bytes(),
         )
+    }
+
+    fn create_source_bundle_with_boot_profile(
+        root: &Path,
+        vm_name: &str,
+        pool_name: &str,
+        suffix: &str,
+        base_image_contents: &[u8],
+        firmware_code_contents: &[u8],
+        vars_seed_contents: &[u8],
+    ) -> SourceBundle {
+        let source_root = root.join(format!("source-bundle-{suffix}"));
+        let manifest_path = source_root.join(format!("{suffix}.json"));
+        let base_image_path = source_root.join(format!("{suffix}.qcow2"));
+        let firmware_code_path = source_root.join(format!("{suffix}-OVMF_CODE.fd"));
+        let vars_seed_path = source_root.join(format!("{suffix}-OVMF_VARS.seed.fd"));
+
+        fs::create_dir_all(&source_root).expect("create source bundle root");
+        fs::write(&base_image_path, base_image_contents).expect("write source base image");
+        fs::write(&firmware_code_path, firmware_code_contents).expect("write source firmware code");
+        fs::write(&vars_seed_path, vars_seed_contents).expect("write source vars seed");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "pool_name": pool_name,
+                "vm_name": vm_name,
+                "attestation_ref": format!("attestation://{suffix}"),
+                "guest_rdp_port": 3389,
+                "base_image_path": base_image_path.file_name().and_then(|value| value.to_str()).expect("source base image name"),
+                "boot_profile_v1": {
+                    "disk_interface": "ahci_ide",
+                    "network_device_model": "e1000",
+                    "rtc_base": "localtime",
+                    "firmware_mode": "uefi_pflash",
+                    "firmware_code": {
+                        "path": firmware_code_path.file_name().and_then(|value| value.to_str()).expect("firmware code name"),
+                        "sha256": format!("{:x}", Sha256::digest(firmware_code_contents))
+                    },
+                    "vars_seed": {
+                        "path": vars_seed_path.file_name().and_then(|value| value.to_str()).expect("vars seed name"),
+                        "sha256": format!("{:x}", Sha256::digest(vars_seed_contents))
+                    }
+                },
+                "source_iso": {
+                    "acquisition_channel": "msdn",
+                    "acquisition_date": "2026-03-25",
+                    "filename": "windows11-pro-x64.iso",
+                    "size_bytes": 1024,
+                    "edition": "Windows 11 Pro x64",
+                    "language": "en-US",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "transformation": {
+                    "timestamp": "2026-03-25T12:00:00Z",
+                    "inputs": [{
+                        "reference": "tiny11-builder.ps1",
+                        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                    }]
+                },
+                "base_image": {
+                    "sha256": format!("{:x}", Sha256::digest(base_image_contents))
+                },
+                "approval": {
+                    "approved_by": "operator@example.test"
+                }
+            }))
+            .expect("serialize source manifest"),
+        )
+        .expect("write source manifest");
+
+        SourceBundle { manifest_path }
     }
 
     fn create_source_bundle_with_contents(
