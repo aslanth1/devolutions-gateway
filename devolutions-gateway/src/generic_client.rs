@@ -109,15 +109,35 @@ where
                     RecordingPolicy::Proxy => anyhow::bail!("can't meet recording policy"),
                 }
 
+                let is_rdp = claims.jet_ap == token::ApplicationProtocol::Known(token::Protocol::Rdp);
+                if is_rdp {
+                    sessions
+                        .honeypot()
+                        .prepare_rdp_session(
+                            claims.jet_aid,
+                            claims.jet_ap.clone(),
+                            claims.jet_ttl,
+                            token,
+                            client_addr,
+                        )
+                        .await?;
+                }
+
                 trace!("Select and connect to target");
 
                 let ((mut server_stream, server_addr), selected_target) =
-                    utils::successive_try(&targets, utils::tcp_connect).await?;
+                    match utils::successive_try(&targets, utils::tcp_connect).await {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            if is_rdp {
+                                let _ = sessions.honeypot().abort_prepared_session(claims.jet_aid).await;
+                            }
+                            return Err(error);
+                        }
+                    };
 
                 trace!(%selected_target, "Connected");
                 span.record("target", selected_target.to_string());
-
-                let is_rdp = claims.jet_ap == token::ApplicationProtocol::Known(token::Protocol::Rdp);
 
                 let info = SessionInfo::builder()
                     .id(claims.jet_aid)
@@ -136,17 +156,6 @@ where
                 // If a credential mapping has been pushed, we automatically switch to this mode.
                 // Otherwise, we continue the generic procedure.
                 if is_rdp {
-                    sessions
-                        .honeypot()
-                        .prepare_rdp_session(
-                            info.id,
-                            info.application_protocol.clone(),
-                            info.time_to_live,
-                            token,
-                            client_addr,
-                        )
-                        .await?;
-
                     let token_id = token::extract_jti(token).context("failed to extract jti claim from token")?;
 
                     if let Some(entry) = credential_store.get(token_id) {

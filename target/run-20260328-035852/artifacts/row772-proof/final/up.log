@@ -1,0 +1,10 @@
+manual lab is live
+run_id=manual-lab-837e08fd6ad24ff98cf955d8c8116a82
+dashboard_url=http://127.0.0.1:33291/?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiI2YzVjMzViNi1hNzc1LTRhODAtYWVkMC1mYTA0YzYxMzkzODYiLCJpYXQiOjE3NzQ2OTU1NDksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzc0Njk1NTQ5LCJzY29wZSI6IioifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ
+run_root=/home/jf/src/devolutions-gateway/testsuite/../target/manual-lab/manual-lab-837e08fd6ad24ff98cf955d8c8116a82
+ports control_plane=41445 proxy_http=44785 proxy_tcp=35507 frontend=33291
+slot=1 session_id=340ceda0-632f-47a9-b744-d4c17694e627 guest_rdp_port=3391 vm_lease_id=lease-00000001 stream_id=stream-34865dcf-c4df-4ac6-84fc-59cd12ac5112
+slot=2 session_id=2f337a69-c490-481d-9528-bd75e812565b guest_rdp_port=3392 vm_lease_id=lease-00000002 stream_id=stream-6e6d72e1-458b-403c-9cce-2abd6982d01b
+slot=3 session_id=ea760d3f-e8c6-4450-bc1b-38719461e7c9 guest_rdp_port=3393 vm_lease_id=lease-00000003 stream_id=stream-f6286bac-8685-4ec5-a91e-02c44431989e
+chrome_pid=1801231
+xvfb_pid=1800336

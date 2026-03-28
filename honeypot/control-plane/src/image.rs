@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -331,48 +331,47 @@ pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedIm
     let mut manifests = json_files(&paths.manifest_dir())?;
     manifests.sort();
 
-    let trusted_images = manifests
-        .into_iter()
-        .enumerate()
-        .map(|(index, manifest_path)| {
-            let manifest = read_trusted_image_manifest(&manifest_path)?;
-            validate_manifest(&manifest, &manifest_path)?;
+    let mut base_image_sha256_cache = HashMap::new();
+    let mut trusted_images = Vec::with_capacity(manifests.len());
 
-            let base_image_path = resolve_base_image_path(paths, &manifest.base_image_path)?;
-            validate_image_store_path(&paths.image_store, &base_image_path).with_context(|| {
-                format!(
-                    "validate trusted image store contract for {}",
-                    base_image_path.display()
-                )
-            })?;
+    for (index, manifest_path) in manifests.into_iter().enumerate() {
+        let manifest = read_trusted_image_manifest(&manifest_path)?;
+        validate_manifest(&manifest, &manifest_path)?;
 
-            let actual_base_image_sha256 = sha256_file(&base_image_path)
-                .with_context(|| format!("hash trusted base image {}", base_image_path.display()))?;
-            let expected_base_image_sha256 = normalize_sha256("base_image.sha256", &manifest.base_image.sha256)?;
-            anyhow::ensure!(
-                actual_base_image_sha256 == expected_base_image_sha256,
-                "base_image.sha256 mismatch for {}: expected {}, got {}",
-                base_image_path.display(),
-                expected_base_image_sha256,
-                actual_base_image_sha256,
-            );
+        let base_image_path = resolve_base_image_path(paths, &manifest.base_image_path)?;
+        validate_image_store_path(&paths.image_store, &base_image_path).with_context(|| {
+            format!(
+                "validate trusted image store contract for {}",
+                base_image_path.display()
+            )
+        })?;
 
-            Ok(TrustedImage {
-                pool_name: manifest.pool_name,
-                vm_name: manifest.vm_name,
-                attestation_ref: manifest.attestation_ref,
-                guest_rdp_port: manifest
-                    .guest_rdp_port
-                    .unwrap_or_else(|| DEFAULT_GUEST_RDP_PORT.saturating_add(u16::try_from(index).unwrap_or(0))),
-                base_image_path,
-                boot_profile_v1: manifest
-                    .boot_profile_v1
-                    .as_ref()
-                    .map(|profile| load_trusted_boot_profile_v1(paths, profile))
-                    .transpose()?,
-            })
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        let actual_base_image_sha256 = cached_sha256_file(&mut base_image_sha256_cache, &base_image_path)
+            .with_context(|| format!("hash trusted base image {}", base_image_path.display()))?;
+        let expected_base_image_sha256 = normalize_sha256("base_image.sha256", &manifest.base_image.sha256)?;
+        anyhow::ensure!(
+            actual_base_image_sha256 == expected_base_image_sha256,
+            "base_image.sha256 mismatch for {}: expected {}, got {}",
+            base_image_path.display(),
+            expected_base_image_sha256,
+            actual_base_image_sha256,
+        );
+
+        trusted_images.push(TrustedImage {
+            pool_name: manifest.pool_name,
+            vm_name: manifest.vm_name,
+            attestation_ref: manifest.attestation_ref,
+            guest_rdp_port: manifest
+                .guest_rdp_port
+                .unwrap_or_else(|| DEFAULT_GUEST_RDP_PORT.saturating_add(u16::try_from(index).unwrap_or(0))),
+            base_image_path,
+            boot_profile_v1: manifest
+                .boot_profile_v1
+                .as_ref()
+                .map(|profile| load_trusted_boot_profile_v1(paths, profile))
+                .transpose()?,
+        });
+    }
 
     validate_unique_vm_names(&trusted_images)?;
 
@@ -462,6 +461,16 @@ pub(crate) fn validate_trusted_image_identity(
     base_image_path: &Path,
 ) -> anyhow::Result<()> {
     let trusted_images = trusted_images(paths)?;
+    validate_trusted_image_identity_in_catalog(&trusted_images, pool_name, vm_name, attestation_ref, base_image_path)
+}
+
+pub(crate) fn validate_trusted_image_identity_in_catalog(
+    trusted_images: &[TrustedImage],
+    pool_name: &str,
+    vm_name: &str,
+    attestation_ref: &str,
+    base_image_path: &Path,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         trusted_images.iter().any(|trusted_image| {
             trusted_image.pool_name == pool_name
@@ -1072,6 +1081,16 @@ fn normalize_sha256(label: &str, digest: &str) -> anyhow::Result<String> {
     Ok(digest)
 }
 
+fn cached_sha256_file(cache: &mut HashMap<PathBuf, String>, path: &Path) -> anyhow::Result<String> {
+    if let Some(digest) = cache.get(path) {
+        return Ok(digest.clone());
+    }
+
+    let digest = sha256_file(path)?;
+    cache.insert(path.to_path_buf(), digest.clone());
+    Ok(digest)
+}
+
 fn ensure_non_empty(label: &str, value: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!value.trim().is_empty(), "{label} must not be empty");
     Ok(())
@@ -1123,7 +1142,10 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
-    use super::{ConsumeTrustedImageState, TrustedImageCatalog, consume_trusted_image, trusted_images};
+    use super::{
+        ConsumeTrustedImageState, TrustedImage, TrustedImageCatalog, cached_sha256_file, consume_trusted_image,
+        trusted_images, validate_trusted_image_identity_in_catalog,
+    };
     use crate::config::{PathConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuRtcBase};
 
     #[test]
@@ -1188,6 +1210,21 @@ mod tests {
     }
 
     #[test]
+    fn cached_sha256_file_reuses_digest_for_duplicate_manifest_base_images() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let base_image_path = tempdir.path().join("shared.qcow2");
+        fs::write(&base_image_path, b"first-image-bytes").expect("write first base image");
+
+        let mut cache = std::collections::HashMap::new();
+        let first_digest = cached_sha256_file(&mut cache, &base_image_path).expect("hash first base image");
+
+        fs::write(&base_image_path, b"second-image-bytes").expect("overwrite base image");
+        let second_digest = cached_sha256_file(&mut cache, &base_image_path).expect("reuse cached base image digest");
+
+        assert_eq!(second_digest, first_digest);
+    }
+
+    #[test]
     fn trusted_image_catalog_returns_cached_trusted_images_when_store_is_unchanged() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let paths = test_paths(tempdir.path());
@@ -1230,6 +1267,27 @@ mod tests {
                 .expect("invalid reason should be recorded")
                 .contains("trusted_catalog_invalid"),
         );
+    }
+
+    #[test]
+    fn trusted_image_identity_validation_accepts_prevalidated_catalog_entries() {
+        let trusted_images = vec![TrustedImage {
+            pool_name: "default".to_owned(),
+            vm_name: "manual-deck-01".to_owned(),
+            attestation_ref: "attestation://tiny11-row420-sealed-profile".to_owned(),
+            guest_rdp_port: 3391,
+            base_image_path: PathBuf::from("/tmp/shared.qcow2"),
+            boot_profile_v1: None,
+        }];
+
+        validate_trusted_image_identity_in_catalog(
+            &trusted_images,
+            "default",
+            "manual-deck-01",
+            "attestation://tiny11-row420-sealed-profile",
+            Path::new("/tmp/shared.qcow2"),
+        )
+        .expect("validate identity against cached trusted image catalog");
     }
 
     #[test]

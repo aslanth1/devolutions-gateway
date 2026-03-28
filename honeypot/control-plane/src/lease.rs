@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend_credentials::{BackendCredentialResolveError, BackendCredentialStore};
 use crate::config::{ControlPlaneConfig, PathConfig};
-use crate::image::{TrustedImage, validate_trusted_image_identity};
+use crate::image::{TrustedImage, validate_trusted_image_identity, validate_trusted_image_identity_in_catalog};
 use crate::qemu::QemuLaunchPlan;
 use crate::vm::{
     cleanup_orphaned_vm, create_vm, destroy_vm, reset_vm as reset_vm_runtime, runtime_looks_active, start_vm, stop_vm,
@@ -249,6 +249,8 @@ impl LeaseRegistry {
         &mut self,
         config: &ControlPlaneConfig,
         backend_credentials: &dyn BackendCredentialStore,
+        trusted_catalog_is_current: bool,
+        trusted_images: &[TrustedImage],
         vm_lease_id: &str,
         request: &RecycleVmRequest,
     ) -> Result<RecycleVmResponse, LeaseError> {
@@ -293,15 +295,17 @@ impl LeaseRegistry {
 
         let snapshot = self.remove_lease(vm_lease_id, &request.session_id)?;
 
-        if validate_trusted_image_identity(
-            &config.paths,
-            &snapshot.pool_name,
-            &snapshot.vm_name,
-            &snapshot.attestation_ref,
-            &snapshot.launch_plan.base_image_path,
-        )
-        .is_err()
-        {
+        let trusted_image_identity_is_current = trusted_catalog_is_current
+            && validate_trusted_image_identity_in_catalog(
+                trusted_images,
+                &snapshot.pool_name,
+                &snapshot.vm_name,
+                &snapshot.attestation_ref,
+                &snapshot.launch_plan.base_image_path,
+            )
+            .is_ok();
+
+        if !trusted_image_identity_is_current {
             let mut snapshot = snapshot;
             snapshot.lease_state = LeaseState::Quarantined;
             snapshot.runtime_state = LeaseRuntimeState::Stopped;

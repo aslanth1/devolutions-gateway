@@ -1,0 +1,4 @@
+manual lab teardown attempted for run manual-lab-837e08fd6ad24ff98cf955d8c8116a82
+run_root=/home/jf/src/devolutions-gateway/testsuite/../target/manual-lab/manual-lab-837e08fd6ad24ff98cf955d8c8116a82
+removed_active_state=true
+notes=<none>

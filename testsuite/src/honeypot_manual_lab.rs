@@ -2,6 +2,8 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read as _, Write as _};
 use std::net::{Ipv4Addr, TcpStream};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::LazyLock;
@@ -37,6 +39,7 @@ const MANUAL_LAB_CONTROL_PLANE_SCOPE: &str = "gateway.honeypot.control-plane";
 const MANUAL_LAB_WILDCARD_SCOPE: &str = "*";
 const MANUAL_LAB_CHROME_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_CHROME";
 const MANUAL_LAB_XVFB_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_XVFB";
+const MANUAL_LAB_XEPHYR_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_XEPHYR";
 const MANUAL_LAB_FRONTEND_CONFIG_ENV: &str = "HONEYPOT_FRONTEND_CONFIG_PATH";
 const HONEYPOT_INTEROP_IMAGE_STORE_ENV: &str = "DGW_HONEYPOT_INTEROP_IMAGE_STORE";
 const HONEYPOT_INTEROP_MANIFEST_DIR_ENV: &str = "DGW_HONEYPOT_INTEROP_MANIFEST_DIR";
@@ -49,14 +52,16 @@ const HONEYPOT_INTEROP_RDP_SECURITY_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_SECURI
 const HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV: &str = "DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS";
 const HONEYPOT_INTEROP_XFREERDP_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_PATH";
 const MANUAL_LAB_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(500);
-const MANUAL_LAB_SERVICE_READY_TIMEOUT: Duration = Duration::from_secs(60);
+const MANUAL_LAB_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const MANUAL_LAB_SERVICE_READY_TIMEOUT_FLOOR_SECS: u16 = 60;
 const MANUAL_LAB_STREAM_READY_TIMEOUT: Duration = Duration::from_secs(45);
 const MANUAL_LAB_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const MANUAL_LAB_CONTROL_PLANE_DRAIN_TIMEOUT: Duration = Duration::from_secs(90);
+const MANUAL_LAB_DISPLAY_READY_TIMEOUT: Duration = Duration::from_secs(5);
 
 static GATEWAY_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
-        .manifest_path("../devolutions-gateway/Cargo.toml")
+        .manifest_path(manual_lab_manifest_path("Cargo.toml"))
         .bin("devolutions-gateway")
         .current_release()
         .current_target()
@@ -68,7 +73,7 @@ static GATEWAY_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
 
 static HONEYPOT_CONTROL_PLANE_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
-        .manifest_path("../honeypot/control-plane/Cargo.toml")
+        .manifest_path(manual_lab_manifest_path("honeypot/control-plane/Cargo.toml"))
         .bin("honeypot-control-plane")
         .current_release()
         .current_target()
@@ -80,7 +85,7 @@ static HONEYPOT_CONTROL_PLANE_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
 
 static HONEYPOT_FRONTEND_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
-        .manifest_path("../honeypot/frontend/Cargo.toml")
+        .manifest_path(manual_lab_manifest_path("honeypot/frontend/Cargo.toml"))
         .bin("honeypot-frontend")
         .current_release()
         .current_target()
@@ -92,7 +97,7 @@ static HONEYPOT_FRONTEND_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
 
 static HONEYPOT_MANUAL_LAB_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
-        .manifest_path("Cargo.toml")
+        .manifest_path(manual_lab_manifest_path("testsuite/Cargo.toml"))
         .bin("honeypot-manual-lab")
         .current_release()
         .current_target()
@@ -241,6 +246,10 @@ struct ManualLabRuntimeLayout {
 
 pub fn active_state_path() -> PathBuf {
     repo_relative_path(MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH)
+}
+
+fn manual_lab_manifest_path(relative_path: &str) -> PathBuf {
+    repo_relative_path(relative_path)
 }
 
 pub fn honeypot_manual_lab_assert_cmd() -> assert_cmd::Command {
@@ -456,25 +465,46 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         state.frontend = frontend;
         persist_active_state(&state)?;
 
-        wait_for_services_ready(&state)?;
+        let service_ready_timeout = manual_lab_service_ready_timeout(interop.ready_timeout_secs);
+        eprintln!("manual lab phase=services.wait run_id={}", state.run_id);
+        wait_for_services_ready(&state, service_ready_timeout)?;
+        eprintln!("manual lab phase=services.ready run_id={}", state.run_id);
 
         let session_timeout = Duration::from_secs(u64::from(interop.ready_timeout_secs));
         for index in 0..state.sessions.len() {
+            eprintln!(
+                "manual lab phase=session.driver.spawn run_id={} slot={} session_id={}",
+                state.run_id, state.sessions[index].slot, state.sessions[index].session_id
+            );
             let driver = {
                 let session = &state.sessions[index];
                 spawn_xfreerdp_driver(session, &interop, &state)?
             };
             state.sessions[index].xfreerdp_pid = Some(driver.pid);
             persist_active_state(&state)?;
+            eprintln!(
+                "manual lab phase=session.driver.started run_id={} slot={} session_id={} pid={}",
+                state.run_id, state.sessions[index].slot, state.sessions[index].session_id, driver.pid
+            );
 
             let bootstrap_session = wait_for_bootstrap_session(
                 state.ports.proxy_http,
                 &state.sessions[index].session_id,
                 &wildcard_token,
+                state.sessions[index].xfreerdp_pid.unwrap_or_default(),
+                &state.sessions[index].stdout_log,
+                &state.sessions[index].stderr_log,
                 session_timeout,
             )?;
             state.sessions[index].vm_lease_id = bootstrap_session.vm_lease_id.clone();
             persist_active_state(&state)?;
+            eprintln!(
+                "manual lab phase=session.assigned run_id={} slot={} session_id={} vm_lease_id={}",
+                state.run_id,
+                state.sessions[index].slot,
+                state.sessions[index].session_id,
+                bootstrap_session.vm_lease_id.as_deref().unwrap_or("<pending>")
+            );
         }
 
         for index in 0..state.sessions.len() {
@@ -488,9 +518,17 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
                 state.sessions[index].vm_lease_id = Some(token.vm_lease_id);
             }
             persist_active_state(&state)?;
+            eprintln!(
+                "manual lab phase=session.stream.ready run_id={} slot={} session_id={} stream_id={}",
+                state.run_id,
+                state.sessions[index].slot,
+                state.sessions[index].session_id,
+                state.sessions[index].stream_id.as_deref().unwrap_or("<pending>")
+            );
         }
 
         wait_for_frontend_tiles(state.ports.frontend_http, MANUAL_LAB_HOST_COUNT)?;
+        eprintln!("manual lab phase=frontend.tiles.ready run_id={}", state.run_id);
 
         if let Some(chrome_binary) = &state.chrome_binary {
             let chrome = spawn_chrome(chrome_binary, &layout, &state.dashboard_url)?;
@@ -498,6 +536,10 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
             state.chrome_stdout_log = Some(chrome.stdout_log);
             state.chrome_stderr_log = Some(chrome.stderr_log);
             persist_active_state(&state)?;
+            eprintln!(
+                "manual lab phase=chrome.started run_id={} pid={}",
+                state.run_id, chrome.pid
+            );
         }
 
         persist_active_state(&state)?;
@@ -634,6 +676,8 @@ fn teardown_internal(state: &ManualLabState) -> ManualLabTeardownReport {
     }
 
     let drain_deadline = Instant::now() + MANUAL_LAB_CONTROL_PLANE_DRAIN_TIMEOUT;
+    let mut observed_lease_drain = false;
+    let mut last_drain_observation = None;
     while Instant::now() < drain_deadline {
         match get_json(
             state.ports.control_plane_http,
@@ -641,10 +685,25 @@ fn teardown_internal(state: &ManualLabState) -> ManualLabTeardownReport {
             &[authorization_header(control_plane_token.clone())],
         ) {
             Ok(health) if health.get("active_lease_count").and_then(Value::as_u64) == Some(0) => {
+                observed_lease_drain = true;
                 break;
             }
-            Ok(_) | Err(_) => thread::sleep(MANUAL_LAB_HTTP_POLL_INTERVAL),
+            Ok(health) => {
+                last_drain_observation = Some(format!("health={health}"));
+                thread::sleep(MANUAL_LAB_HTTP_POLL_INTERVAL);
+            }
+            Err(error) => {
+                last_drain_observation = Some(format!("{error:#}"));
+                thread::sleep(MANUAL_LAB_HTTP_POLL_INTERVAL);
+            }
         }
+    }
+    if !observed_lease_drain {
+        notes.push(format!(
+            "control-plane drain did not reach active_lease_count=0 within {}s: {}",
+            MANUAL_LAB_CONTROL_PLANE_DRAIN_TIMEOUT.as_secs(),
+            last_drain_observation.unwrap_or_else(|| "no observation recorded".to_owned())
+        ));
     }
 
     if let Some(pid) = state.chrome_pid
@@ -693,8 +752,17 @@ fn create_runtime_layout(run_id: &str) -> anyhow::Result<ManualLabRuntimeLayout>
     let runtime_data_dir = run_root.join("runtime/control-plane-data");
     let lease_store_dir = run_root.join("runtime/leases");
     let quarantine_store_dir = run_root.join("runtime/quarantine");
-    let qmp_dir = run_root.join("runtime/qmp");
-    let qga_dir = run_root.join("runtime/qga");
+    let qemu_runtime_root = std::env::temp_dir().join(format!(
+        "dgw-manual-lab-{}",
+        run_id
+            .strip_prefix("manual-lab-")
+            .unwrap_or(run_id)
+            .chars()
+            .take(12)
+            .collect::<String>()
+    ));
+    let qmp_dir = qemu_runtime_root.join("qmp");
+    let qga_dir = qemu_runtime_root.join("qga");
     let chrome_profile_dir = run_root.join("chrome-profile");
 
     for dir in [
@@ -937,10 +1005,10 @@ fn spawn_frontend(layout: &ManualLabRuntimeLayout) -> anyhow::Result<ManualLabSe
     })
 }
 
-fn wait_for_services_ready(state: &ManualLabState) -> anyhow::Result<()> {
+fn wait_for_services_ready(state: &ManualLabState, service_ready_timeout: Duration) -> anyhow::Result<()> {
     let control_plane_token = scope_token(MANUAL_LAB_CONTROL_PLANE_SCOPE);
     wait_for_condition(
-        MANUAL_LAB_SERVICE_READY_TIMEOUT,
+        service_ready_timeout,
         || {
             if !process_is_running(state.control_plane.pid) {
                 bail!(
@@ -969,9 +1037,10 @@ fn wait_for_services_ready(state: &ManualLabState) -> anyhow::Result<()> {
         },
         "control-plane ready",
     )?;
+    eprintln!("manual lab phase=control-plane.ready run_id={}", state.run_id);
 
     wait_for_condition(
-        MANUAL_LAB_SERVICE_READY_TIMEOUT,
+        service_ready_timeout,
         || {
             if !process_is_running(state.proxy.pid) {
                 bail!(
@@ -997,9 +1066,10 @@ fn wait_for_services_ready(state: &ManualLabState) -> anyhow::Result<()> {
         },
         "proxy ready",
     )?;
+    eprintln!("manual lab phase=proxy.ready run_id={}", state.run_id);
 
     wait_for_condition(
-        MANUAL_LAB_SERVICE_READY_TIMEOUT,
+        service_ready_timeout,
         || {
             if !process_is_running(state.frontend.pid) {
                 bail!(
@@ -1022,7 +1092,9 @@ fn wait_for_services_ready(state: &ManualLabState) -> anyhow::Result<()> {
             Ok(())
         },
         "frontend ready",
-    )
+    )?;
+    eprintln!("manual lab phase=frontend.ready run_id={}", state.run_id);
+    Ok(())
 }
 
 fn spawn_xfreerdp_driver(
@@ -1041,7 +1113,7 @@ fn spawn_xfreerdp_driver(
         format!("/pcb:{association_token}"),
         "/cert:ignore".to_owned(),
         "/timeout:10000".to_owned(),
-        "/log-level:OFF".to_owned(),
+        "/log-level:ERROR".to_owned(),
         "/dynamic-resolution".to_owned(),
     ];
     if let Some(security) = &interop.rdp_security {
@@ -1063,6 +1135,9 @@ fn wait_for_bootstrap_session(
     proxy_http_port: u16,
     session_id: &str,
     wildcard_token: &str,
+    driver_pid: u32,
+    driver_stdout_log: &Path,
+    driver_stderr_log: &Path,
     timeout: Duration,
 ) -> anyhow::Result<honeypot_contracts::frontend::BootstrapSession> {
     let endpoint = "/jet/honeypot/bootstrap";
@@ -1070,6 +1145,7 @@ fn wait_for_bootstrap_session(
     wait_for_condition(
         timeout,
         || {
+            ensure_driver_is_live(session_id, driver_pid, driver_stdout_log, driver_stderr_log)?;
             let bootstrap: BootstrapResponse = get_json_typed(proxy_http_port, endpoint, &headers)?;
             bootstrap
                 .sessions
@@ -1231,6 +1307,12 @@ fn load_manual_lab_interop_config() -> anyhow::Result<ManualLabInteropConfig> {
     })
 }
 
+fn manual_lab_service_ready_timeout(interop_ready_timeout_secs: u16) -> Duration {
+    Duration::from_secs(u64::from(
+        interop_ready_timeout_secs.max(MANUAL_LAB_SERVICE_READY_TIMEOUT_FLOOR_SECS),
+    ))
+}
+
 #[derive(Debug, Clone)]
 struct ManualLabInteropPaths {
     image_store: PathBuf,
@@ -1334,9 +1416,11 @@ fn resolve_chrome_binary() -> anyhow::Result<PathBuf> {
 }
 
 fn resolve_driver_display(logs_dir: &Path) -> anyhow::Result<ResolvedDriverDisplay> {
-    let xvfb_binary = optional_env_path(MANUAL_LAB_XVFB_ENV).or_else(|| find_command_path(Path::new("Xvfb")).ok());
+    let mut helper_errors = Vec::new();
 
-    if let Some(xvfb_binary) = xvfb_binary {
+    if let Some(xvfb_binary) =
+        optional_env_path(MANUAL_LAB_XVFB_ENV).or_else(|| find_command_path(Path::new("Xvfb")).ok())
+    {
         let display = select_xvfb_display();
         let xvfb = spawn_logged_process(
             &xvfb_binary,
@@ -1354,17 +1438,63 @@ fn resolve_driver_display(logs_dir: &Path) -> anyhow::Result<ResolvedDriverDispl
             logs_dir.join("xvfb.stderr.log"),
         )
         .with_context(|| format!("spawn Xvfb on {display}"))?;
-        thread::sleep(Duration::from_secs(1));
-        return Ok(ResolvedDriverDisplay {
-            value: display,
-            xvfb: Some(xvfb),
-        });
+
+        match wait_for_display_server("Xvfb", &display, &xvfb) {
+            Ok(()) => {
+                return Ok(ResolvedDriverDisplay {
+                    value: display,
+                    xvfb: Some(xvfb),
+                });
+            }
+            Err(error) => helper_errors.push(format!("{error:#}")),
+        }
+    }
+
+    if interactive_browser_display_is_available()
+        && let Some(xephyr_binary) =
+            optional_env_path(MANUAL_LAB_XEPHYR_ENV).or_else(|| find_command_path(Path::new("Xephyr")).ok())
+    {
+        let parent_display = std::env::var("DISPLAY")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .context("manual lab requires DISPLAY to launch Xephyr")?;
+        let display = select_xvfb_display();
+        let xephyr = spawn_logged_process(
+            &xephyr_binary,
+            &[
+                OsString::from(&display),
+                OsString::from("-screen"),
+                OsString::from("1280x720"),
+                OsString::from("-ac"),
+            ],
+            &[(OsString::from("DISPLAY"), OsString::from(parent_display))],
+            logs_dir.join("xephyr.stdout.log"),
+            logs_dir.join("xephyr.stderr.log"),
+        )
+        .with_context(|| format!("spawn Xephyr on {display}"))?;
+
+        match wait_for_display_server("Xephyr", &display, &xephyr) {
+            Ok(()) => {
+                return Ok(ResolvedDriverDisplay {
+                    value: display,
+                    xvfb: Some(xephyr),
+                });
+            }
+            Err(error) => helper_errors.push(format!("{error:#}")),
+        }
     }
 
     let display = std::env::var("DISPLAY")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .context("manual lab requires Xvfb or a live DISPLAY for xfreerdp drivers")?;
+    if !helper_errors.is_empty() {
+        eprintln!(
+            "manual lab warning: isolated helper display failed, falling back to DISPLAY={}:\n{}",
+            display,
+            helper_errors.join("\n")
+        );
+    }
     Ok(ResolvedDriverDisplay {
         value: display,
         xvfb: None,
@@ -1408,8 +1538,17 @@ fn spawn_logged_process(
     for (key, value) in envs {
         command.env(key, value);
     }
+    command.stdin(Stdio::null());
     command.stdout(Stdio::from(stdout));
     command.stderr(Stdio::from(stderr));
+    #[cfg(unix)]
+    {
+        // SAFETY: `pre_exec` is installed before spawn on a freshly constructed `Command`
+        // so the child can enter its own session before it starts running user-controlled work.
+        unsafe {
+            command.pre_exec(detach_child_process_session);
+        }
+    }
 
     let child = command
         .spawn()
@@ -1434,6 +1573,52 @@ fn spawn_logged_process_with_display(
     envs.push((OsString::from("DISPLAY"), OsString::from(display)));
     let args = args.iter().map(OsString::from).collect::<Vec<_>>();
     spawn_logged_process(program, &args, &envs, stdout_log, stderr_log)
+}
+
+#[cfg(unix)]
+fn detach_child_process_session() -> std::io::Result<()> {
+    // SAFETY: `setsid` is async-signal-safe and is called in the child immediately before
+    // `exec` to detach the helper from the launcher session.
+    let result = unsafe { libc::setsid() };
+    if result == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn wait_for_display_server(label: &str, display: &str, process: &SpawnedProcess) -> anyhow::Result<()> {
+    wait_for_condition(
+        MANUAL_LAB_DISPLAY_READY_TIMEOUT,
+        || {
+            ensure!(
+                process_is_running(process.pid),
+                "{label} exited before {display} became ready\nstdout:\n{}\nstderr:\n{}",
+                read_log_tail(&process.stdout_log),
+                read_log_tail(&process.stderr_log)
+            );
+            ensure!(
+                display_socket_path(display).as_ref().is_some_and(|path| path.exists()),
+                "{label} has not created its display socket for {display} yet"
+            );
+            Ok(())
+        },
+        &format!("{label} ready on {display}"),
+    )
+}
+
+fn ensure_driver_is_live(
+    session_id: &str,
+    driver_pid: u32,
+    driver_stdout_log: &Path,
+    driver_stderr_log: &Path,
+) -> anyhow::Result<()> {
+    ensure!(
+        process_is_running(driver_pid),
+        "xfreerdp driver for session {session_id} exited early\nstdout:\n{}\nstderr:\n{}",
+        read_log_tail(driver_stdout_log),
+        read_log_tail(driver_stderr_log)
+    );
+    Ok(())
 }
 
 fn wait_for_condition<T, F>(timeout: Duration, mut operation: F, label: &str) -> anyhow::Result<T>
@@ -1528,10 +1713,10 @@ fn send_http_request(
     let mut stream =
         TcpStream::connect((Ipv4Addr::LOCALHOST, port)).with_context(|| format!("connect to 127.0.0.1:{port}"))?;
     stream
-        .set_read_timeout(Some(Duration::from_secs(10)))
+        .set_read_timeout(Some(MANUAL_LAB_HTTP_TIMEOUT))
         .context("set HTTP read timeout")?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(10)))
+        .set_write_timeout(Some(MANUAL_LAB_HTTP_TIMEOUT))
         .context("set HTTP write timeout")?;
 
     let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
@@ -1553,20 +1738,83 @@ fn send_http_request(
             .write_all(body)
             .with_context(|| format!("write HTTP request body to {path} on port {port}"))?;
     }
-    stream.shutdown(std::net::Shutdown::Write).ok();
-
     let mut response = Vec::new();
-    stream
-        .read_to_end(&mut response)
-        .with_context(|| format!("read HTTP response from {path} on port {port}"))?;
+    let mut header_end = None;
+    let mut content_length = None;
 
-    let header_end = response
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .context("split HTTP response headers and body")?;
+    loop {
+        let mut chunk = [0u8; 8192];
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read_len) => {
+                response.extend_from_slice(&chunk[..read_len]);
+                if header_end.is_none()
+                    && let Some(found_header_end) = response.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    header_end = Some(found_header_end);
+                    let headers =
+                        std::str::from_utf8(&response[..found_header_end]).context("decode HTTP response headers")?;
+                    content_length = parse_content_length(headers)?;
+                }
+
+                if let (Some(found_header_end), Some(expected_body_len)) = (header_end, content_length)
+                    && response.len() >= found_header_end + 4 + expected_body_len
+                {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if let (Some(found_header_end), Some(expected_body_len)) = (header_end, content_length)
+                    && response.len() >= found_header_end + 4 + expected_body_len
+                {
+                    break;
+                }
+                return Err(error).with_context(|| format!("read HTTP response from {path} on port {port}"));
+            }
+            Err(error) => return Err(error).with_context(|| format!("read HTTP response from {path} on port {port}")),
+        }
+    }
+
+    let header_end = header_end.context("split HTTP response headers and body")?;
     let headers = std::str::from_utf8(&response[..header_end]).context("decode HTTP response headers")?;
     let status_line = headers.lines().next().context("extract HTTP status line")?.to_owned();
-    Ok((status_line, response[(header_end + 4)..].to_vec()))
+    let body_start = header_end + 4;
+    let body = match content_length {
+        Some(expected_body_len) => response[body_start..(body_start + expected_body_len)].to_vec(),
+        None => response[body_start..].to_vec(),
+    };
+    Ok((status_line, body))
+}
+
+fn parse_content_length(headers: &str) -> anyhow::Result<Option<usize>> {
+    for line in headers.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            return value
+                .trim()
+                .parse::<usize>()
+                .with_context(|| format!("parse content-length header value {}", value.trim()))
+                .map(Some);
+        }
+    }
+
+    Ok(None)
+}
+
+fn display_socket_path(display: &str) -> Option<PathBuf> {
+    let display = display.strip_prefix(':')?;
+    let display_number = display.split('.').next()?;
+    if display_number.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(format!("/tmp/.X11-unix/X{display_number}")))
 }
 
 fn scope_token(scope: &str) -> String {
@@ -1584,7 +1832,7 @@ fn scope_token(scope: &str) -> String {
 fn association_token(session_id: &str, target_host: &str) -> String {
     let header = BASE64_URL_SAFE_NO_PAD.encode(r#"{"typ":"JWT","alg":"RS256"}"#);
     let payload = BASE64_URL_SAFE_NO_PAD.encode(format!(
-        r#"{{"type":"association","jti":"{}","iat":{},"exp":3331553599,"nbf":{},"jet_aid":"{}","jet_ap":"rdp","jet_cm":"fwd","dst_hst":"{}","jet_rec":"stream"}}"#,
+        r#"{{"type":"association","jti":"{}","iat":{},"exp":3331553599,"nbf":{},"jet_aid":"{}","jet_ap":"rdp","jet_cm":"fwd","dst_hst":"{}","jet_rec":"none"}}"#,
         Uuid::new_v4(),
         now_unix_secs(),
         now_unix_secs(),
@@ -1648,7 +1896,15 @@ fn process_is_running(pid: u32) -> bool {
         // Safety: `kill(pid, 0)` is the standard POSIX liveness probe and does not
         // deliver a signal. The pid comes from a child process id we previously recorded.
         let result = unsafe { libc::kill(pid, 0) };
-        return result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !(result == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)) {
+            return false;
+        }
+
+        let stat_path = PathBuf::from(format!("/proc/{pid}/stat"));
+        let Ok(stat) = fs::read_to_string(&stat_path) else {
+            return true;
+        };
+        return parse_proc_stat_process_state(&stat) != Some('Z');
     }
 
     #[allow(unreachable_code)]
@@ -1714,9 +1970,148 @@ fn read_log_tail(path: &Path) -> String {
     }
 }
 
+fn parse_proc_stat_process_state(stat: &str) -> Option<char> {
+    stat.find('(')?;
+    let close = stat.rfind(") ")?;
+    stat[(close + 2)..]
+        .chars()
+        .next()
+        .filter(|state| !state.is_whitespace())
+}
+
 fn now_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system clock should be after the unix epoch")
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use base64::Engine as _;
+    use serde_json::json;
+
+    use super::{
+        association_token, display_socket_path, manual_lab_manifest_path, manual_lab_service_ready_timeout,
+        parse_proc_stat_process_state,
+    };
+
+    #[test]
+    fn manual_lab_manifest_paths_resolve_from_repo_root() {
+        for relative_path in [
+            "Cargo.toml",
+            "honeypot/control-plane/Cargo.toml",
+            "honeypot/frontend/Cargo.toml",
+            "testsuite/Cargo.toml",
+        ] {
+            let manifest_path = manual_lab_manifest_path(relative_path);
+            assert!(
+                manifest_path.is_file(),
+                "missing manifest path {}",
+                manifest_path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn manual_lab_service_ready_timeout_reuses_interop_ready_budget() {
+        assert_eq!(manual_lab_service_ready_timeout(45), Duration::from_secs(60));
+        assert_eq!(manual_lab_service_ready_timeout(120), Duration::from_secs(120));
+        assert_eq!(manual_lab_service_ready_timeout(180), Duration::from_secs(180));
+    }
+
+    #[test]
+    fn manual_lab_send_http_request_reads_content_length_response_without_waiting_for_eof() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind localhost listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept manual-lab test connection");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read_len = stream.read(&mut chunk).expect("read manual-lab test request");
+                if read_len == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..read_len]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let body = br#"{"ok":true}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                body.len()
+            )
+            .expect("write manual-lab test response headers");
+            stream.write_all(body).expect("write manual-lab test response body");
+            stream.flush().expect("flush manual-lab test response");
+
+            loop {
+                let read_len = stream.read(&mut chunk).expect("wait for manual-lab client shutdown");
+                if read_len == 0 {
+                    break;
+                }
+            }
+        });
+
+        let (status, body) =
+            super::send_http_request(port, "GET", "/health", &[], None).expect("send manual lab http request");
+        assert!(status.contains("200"), "{status}");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).expect("parse json body"),
+            json!({ "ok": true })
+        );
+
+        server.join().expect("join manual-lab test server");
+    }
+
+    #[test]
+    fn manual_lab_display_socket_path_parses_x11_displays() {
+        assert_eq!(
+            display_socket_path(":90"),
+            Some(std::path::PathBuf::from("/tmp/.X11-unix/X90"))
+        );
+        assert_eq!(
+            display_socket_path(":91.0"),
+            Some(std::path::PathBuf::from("/tmp/.X11-unix/X91"))
+        );
+        assert_eq!(display_socket_path("wayland-0"), None);
+        assert_eq!(display_socket_path(""), None);
+    }
+
+    #[test]
+    fn manual_lab_process_probe_treats_zombies_as_exited() {
+        assert_eq!(
+            parse_proc_stat_process_state("1234 (honeypot-control-plane) S 1 2 3 4"),
+            Some('S')
+        );
+        assert_eq!(parse_proc_stat_process_state("5678 (xfreerdp) Z 1 2 3 4"), Some('Z'));
+        assert_eq!(parse_proc_stat_process_state("malformed"), None);
+    }
+
+    #[test]
+    fn manual_lab_association_token_does_not_require_external_recording() {
+        let token = association_token("642e76af-caa3-487b-b3ed-8abe864a7bc9", "tcp://127.0.0.1:3391");
+        let (_, payload, _) = token
+            .split_once('.')
+            .and_then(|(head, tail)| {
+                tail.rsplit_once('.')
+                    .map(|(payload, signature)| (head, payload, signature))
+            })
+            .expect("manual-lab association token should have three segments");
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload)
+            .expect("decode association token payload");
+        let claims: serde_json::Value = serde_json::from_slice(&decoded).expect("parse association token payload");
+
+        assert_eq!(claims.get("jet_rec"), Some(&json!("none")));
+    }
 }

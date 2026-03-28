@@ -224,11 +224,20 @@ async fn recycle_vm_handler(
 ) -> Result<Json<RecycleVmResponse>, ControlPlaneApiError> {
     runtime.authorize_request(&headers)?;
 
+    let (trusted_images, trusted_catalog_is_current) = {
+        let mut trusted_image_catalog = runtime.lock_trusted_image_catalog()?;
+        match trusted_image_catalog.trusted_images() {
+            Ok(trusted_images) => (trusted_images, true),
+            Err(_) => (Vec::new(), false),
+        }
+    };
     let mut leases = runtime.lock_leases()?;
     let response = leases
         .recycle(
             &runtime.config,
             runtime.backend_credentials.as_ref(),
+            trusted_catalog_is_current,
+            &trusted_images,
             &vm_lease_id,
             &request,
         )

@@ -769,7 +769,7 @@ Pass when: the launcher records one active state file for the current run, `stat
 - [x] Add operator docs for the manual three-host observation deck and document the host-process topology choice.
 Pass when: the runbook and testing docs explain the required `DGW_HONEYPOT_INTEROP_*` inputs, the `cargo run -p testsuite --bin honeypot-manual-lab -- up|status|down` commands, the Chrome and `Xvfb` assumptions, and why the live deck uses host processes while compose remains the validated readiness and rollback path.
 
-- [ ] Add a live operator proof run for the three-host manual deck.
+- [x] Add a live operator proof run for the three-host manual deck.
 Pass when: on a host with isolated helper-display support such as `Xvfb`, one sanctioned `honeypot-manual-lab up` run creates three distinct Tiny11-backed live sessions, the frontend reaches three ready tiles, and `honeypot-manual-lab down` drains the active lease count back to zero without orphaned helper processes.
 
 ## Verification Matrix

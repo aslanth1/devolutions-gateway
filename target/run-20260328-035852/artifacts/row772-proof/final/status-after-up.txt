@@ -1,0 +1,12 @@
+manual lab is active
+run_id=manual-lab-837e08fd6ad24ff98cf955d8c8116a82
+dashboard_url=http://127.0.0.1:33291/?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJ0eXBlIjoic2NvcGUiLCJqdGkiOiI2YzVjMzViNi1hNzc1LTRhODAtYWVkMC1mYTA0YzYxMzkzODYiLCJpYXQiOjE3NzQ2OTU1NDksImV4cCI6MzMzMTU1MzU5OSwibmJmIjoxNzc0Njk1NTQ5LCJzY29wZSI6IioifQ.aW52YWxpZC1zaWduYXR1cmUtYnV0LXZhbGlkYXRpb24tZGlzYWJsZWQ
+run_root=/home/jf/src/devolutions-gateway/testsuite/../target/manual-lab/manual-lab-837e08fd6ad24ff98cf955d8c8116a82
+pids control_plane=1800728 proxy=1800764 frontend=1800804 chrome=1801231 xvfb=1800336
+control_plane_health={"active_lease_count":3,"correlation_id":"health-1774695727651","degraded_reasons":[],"kvm_available":true,"quarantined_lease_count":0,"schema_version":1,"service_state":"ready","trusted_image_count":3}
+proxy_health={"honeypot":{"control_plane_reachable":true,"control_plane_service_state":"ready","degraded_reasons":[],"honeypot_enabled":true,"service_state":"ready"},"hostname":"aslan","id":null,"version":"2026.1.0"}
+frontend_health={"degraded_reasons":[],"live_session_count":3,"proxy_bootstrap_reachable":true,"ready_tile_count":3,"service_state":"ready"}
+bootstrap_session_count=3
+slot=1 session_id=340ceda0-632f-47a9-b744-d4c17694e627 vm_lease_id=lease-00000001 stream_id=stream-34865dcf-c4df-4ac6-84fc-59cd12ac5112 xfreerdp_pid=1800885
+slot=2 session_id=2f337a69-c490-481d-9528-bd75e812565b vm_lease_id=lease-00000002 stream_id=stream-6e6d72e1-458b-403c-9cce-2abd6982d01b xfreerdp_pid=1800998
+slot=3 session_id=ea760d3f-e8c6-4450-bc1b-38719461e7c9 vm_lease_id=lease-00000003 stream_id=stream-f6286bac-8685-4ec5-a91e-02c44431989e xfreerdp_pid=1801123

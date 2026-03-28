@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
@@ -332,15 +332,31 @@ impl HoneypotRuntime {
             return Ok(());
         };
 
-        if self.events.lock().session_binding(&session_id.to_string()).is_some() {
-            return Ok(());
+        let session_id = session_id.to_string();
+        loop {
+            let should_prepare = {
+                let mut events = self.events.lock();
+                if events.session_binding(&session_id).is_some() {
+                    return Ok(());
+                }
+
+                events.begin_session_prepare(&session_id)
+            };
+
+            if should_prepare {
+                break;
+            }
+
+            if self.wait_for_prepare_completion(&session_id).await? {
+                return Ok(());
+            }
         }
 
         let Some(client) = self.control_plane.as_ref() else {
+            self.events.lock().cancel_session_prepare(&session_id);
             return Ok(());
         };
 
-        let session_id = session_id.to_string();
         let request = AcquireVmRequest {
             schema_version: honeypot_contracts::SCHEMA_VERSION,
             request_id: format!("honeypot-acquire-{session_id}"),
@@ -357,26 +373,36 @@ impl HoneypotRuntime {
             Err(error) => {
                 let (reason_code, terminal_outcome) = acquire_failure(&error);
                 let mut events = self.events.lock();
+                events.cancel_session_prepare(&session_id);
                 events.push_proxy_status_degraded(vec![session_id.clone()], reason_code);
                 events.push_prepare_terminal(&session_id, attacker_addr, terminal_outcome, reason_code);
                 return Err(anyhow::Error::new(error)).context("acquire honeypot vm");
             }
         };
 
-        let credential_mapping = self
+        let binding = HoneypotSessionBinding::from_acquire_response(&response, attacker_addr);
+        let credential_mapping = match self
             .backend_credentials
             .resolve(&response.backend_credential_ref)
-            .with_context(|| format!("resolve backend credential ref {}", response.backend_credential_ref))?;
-        let binding = HoneypotSessionBinding::from_acquire_response(&response, attacker_addr);
+            .with_context(|| format!("resolve backend credential ref {}", response.backend_credential_ref))
+        {
+            Ok(mapping) => mapping,
+            Err(error) => {
+                self.cleanup_failed_prepare(&session_id, &binding).await;
+                self.events.lock().cancel_session_prepare(&session_id);
+                return Err(error);
+            }
+        };
 
         if let Err(error) =
             self.provision_session_credentials(&session_id, token, time_to_live, &binding, credential_mapping)
         {
             self.cleanup_failed_prepare(&session_id, &binding).await;
+            self.events.lock().cancel_session_prepare(&session_id);
             return Err(error);
         }
 
-        self.events.lock().bind_session(&session_id, binding);
+        self.events.lock().finish_session_prepare(&session_id, binding);
 
         Ok(())
     }
@@ -679,6 +705,32 @@ impl HoneypotRuntime {
             )
             .await;
     }
+
+    async fn wait_for_prepare_completion(&self, session_id: &str) -> anyhow::Result<bool> {
+        let deadline = tokio::time::Instant::now()
+            + std::time::Duration::from_secs(u64::from(self.requested_ready_timeout_secs).max(1));
+
+        loop {
+            let waiting_on_prepare = {
+                let events = self.events.lock();
+                if events.session_binding(session_id).is_some() {
+                    return Ok(true);
+                }
+
+                events.prepare_in_progress(session_id)
+            };
+
+            if !waiting_on_prepare {
+                return Ok(false);
+            }
+
+            if tokio::time::Instant::now() >= deadline {
+                anyhow::bail!("honeypot session prepare did not complete before timeout");
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -773,6 +825,7 @@ impl HoneypotBackendCredentialResolver {
 struct HoneypotEventJournal {
     events: VecDeque<EventEnvelope>,
     session_bindings: HashMap<String, HoneypotSessionBinding>,
+    preparing_sessions: HashSet<String>,
     session_sequences: HashMap<String, u64>,
     sender: broadcast::Sender<EventEnvelope>,
 }
@@ -782,6 +835,7 @@ impl HoneypotEventJournal {
         Self {
             events: VecDeque::with_capacity(HONEYPOT_EVENT_BUFFER_CAPACITY),
             session_bindings: HashMap::new(),
+            preparing_sessions: HashSet::new(),
             session_sequences: HashMap::new(),
             sender,
         }
@@ -1302,6 +1356,28 @@ impl HoneypotEventJournal {
 
     fn bind_session(&mut self, session_id: &str, binding: HoneypotSessionBinding) {
         self.session_bindings.insert(session_id.to_owned(), binding);
+    }
+
+    fn begin_session_prepare(&mut self, session_id: &str) -> bool {
+        if self.preparing_sessions.contains(session_id) {
+            return false;
+        }
+
+        self.preparing_sessions.insert(session_id.to_owned());
+        true
+    }
+
+    fn finish_session_prepare(&mut self, session_id: &str, binding: HoneypotSessionBinding) {
+        self.preparing_sessions.remove(session_id);
+        self.session_bindings.insert(session_id.to_owned(), binding);
+    }
+
+    fn cancel_session_prepare(&mut self, session_id: &str) {
+        self.preparing_sessions.remove(session_id);
+    }
+
+    fn prepare_in_progress(&self, session_id: &str) -> bool {
+        self.preparing_sessions.contains(session_id)
     }
 
     fn session_binding(&self, session_id: &str) -> Option<HoneypotSessionBinding> {
@@ -2655,6 +2731,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepared_rdp_session_deduplicates_concurrent_acquire_for_same_session() {
+        let harness = test_runtime_with_control_plane().await;
+        let session = test_session();
+        harness.write_backend_credentials(session.id);
+        harness.state.set_acquire_delay(std::time::Duration::from_millis(250));
+
+        let runtime_a = harness.runtime.clone();
+        let runtime_b = harness.runtime.clone();
+        let session_a = session.clone();
+        let session_b = session.clone();
+        let first_prepare = tokio::spawn(async move {
+            runtime_a
+                .prepare_rdp_session(
+                    session_a.id,
+                    session_a.application_protocol.clone(),
+                    session_a.time_to_live,
+                    TEST_PREPARED_SESSION_TOKEN,
+                    "127.0.0.1:7777".parse().expect("parse first attacker addr"),
+                )
+                .await
+        });
+        let second_prepare = tokio::spawn(async move {
+            runtime_b
+                .prepare_rdp_session(
+                    session_b.id,
+                    session_b.application_protocol.clone(),
+                    session_b.time_to_live,
+                    TEST_PREPARED_SESSION_TOKEN,
+                    "127.0.0.1:7778".parse().expect("parse second attacker addr"),
+                )
+                .await
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            first_prepare
+                .await
+                .expect("join first prepare task")
+                .expect("first prepare should succeed");
+            second_prepare
+                .await
+                .expect("join second prepare task")
+                .expect("second prepare should succeed");
+        })
+        .await
+        .expect("concurrent prepare tasks should not time out");
+
+        let acquired = harness.state.acquired.lock().clone();
+        assert_eq!(acquired, vec![session.id.to_string()]);
+        assert!(
+            harness
+                .runtime
+                .events
+                .lock()
+                .session_binding(&session.id.to_string())
+                .is_some(),
+            "session binding should exist after the shared prepare completes",
+        );
+
+        harness.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn prepared_session_credentials_are_revoked_on_session_end() {
         let harness = test_runtime_with_control_plane().await;
         let session = test_session();
@@ -2891,6 +3029,11 @@ mod tests {
             return (control_plane_test_error_status(error.error_code), Json(error)).into_response();
         }
 
+        let acquire_delay = *state.acquire_delay.lock();
+        if let Some(delay) = acquire_delay {
+            tokio::time::sleep(delay).await;
+        }
+
         state.acquired.lock().push(request.session_id.clone());
 
         Json(AcquireVmResponse {
@@ -2996,6 +3139,7 @@ mod tests {
         released: Arc<Mutex<Vec<String>>>,
         recycled: Arc<Mutex<Vec<String>>>,
         recycle_requests: Arc<Mutex<Vec<RecycleVmRequest>>>,
+        acquire_delay: Arc<Mutex<Option<std::time::Duration>>>,
         acquire_error: Arc<Mutex<Option<ErrorResponse>>>,
         release_error: Arc<Mutex<Option<ErrorResponse>>>,
         recycle_error: Arc<Mutex<Option<ErrorResponse>>>,
@@ -3005,6 +3149,10 @@ mod tests {
     impl TestControlPlaneState {
         fn set_acquire_error(&self, error_code: ErrorCode, message: &str, retryable: bool) {
             *self.acquire_error.lock() = Some(test_error_response(error_code, message, retryable));
+        }
+
+        fn set_acquire_delay(&self, delay: std::time::Duration) {
+            *self.acquire_delay.lock() = Some(delay);
         }
 
         fn set_release_error(&self, error_code: ErrorCode, message: &str, retryable: bool) {
