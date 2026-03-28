@@ -22,7 +22,10 @@ use testsuite::honeypot_control_plane::{
     send_http_request, validate_honeypot_interop_lease_binding, verify_row706_evidence_envelope,
     write_honeypot_control_plane_config, write_row706_anchor_result,
 };
-use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
+use testsuite::honeypot_tiers::{
+    HONEYPOT_RUNTIME_PROOF_STRICT_ENV, HoneypotTestTier, require_honeypot_tier, require_runtime_proof_honeypot_tier,
+    runtime_proof_strict_enabled,
+};
 use uuid::Uuid;
 
 const CONTROL_PLANE_CONFIG_ENV: &str = "HONEYPOT_CONTROL_PLANE_CONFIG";
@@ -2568,6 +2571,9 @@ async fn control_plane_lab_harness_teardown_cleans_runtime_artifacts_on_posix_ho
 #[cfg(unix)]
 #[tokio::test]
 async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
+    if let Err(error) = require_runtime_proof_honeypot_tier(HoneypotTestTier::LabE2e) {
+        panic!("runtime-proof external-client interoperability requires strict lab-e2e prerequisites: {error:#}");
+    }
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
         record_row706_skipped_anchor_result(ROW706_ANCHOR_EXTERNAL_CLIENT_INTEROP, format!("{error:#}"));
         eprintln!("skipping lab-e2e external-client interoperability test: {error:#}");
@@ -2711,6 +2717,9 @@ async fn control_plane_external_client_interoperability_smoke_uses_xfreerdp() {
 #[cfg(unix)]
 #[tokio::test]
 async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_cleanly() {
+    if let Err(error) = require_runtime_proof_honeypot_tier(HoneypotTestTier::LabE2e) {
+        panic!("runtime-proof gold-image acceptance requires strict lab-e2e prerequisites: {error:#}");
+    }
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
         record_row706_skipped_anchor_result(ROW706_ANCHOR_GOLD_IMAGE_ACCEPTANCE, format!("{error:#}"));
         eprintln!("skipping lab-e2e gold-image acceptance test: {error:#}");
@@ -2802,6 +2811,9 @@ async fn control_plane_gold_image_acceptance_boots_reaches_rdp_and_recycles_clea
 #[cfg(unix)]
 #[tokio::test]
 async fn control_plane_gold_image_acceptance_repeats_boot_and_recycle_without_leaking_runtime_artifacts() {
+    if let Err(error) = require_runtime_proof_honeypot_tier(HoneypotTestTier::LabE2e) {
+        panic!("runtime-proof repeated gold-image acceptance requires strict lab-e2e prerequisites: {error:#}");
+    }
     if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e) {
         record_row706_skipped_anchor_result(ROW706_ANCHOR_GOLD_IMAGE_REPEATABILITY, format!("{error:#}"));
         eprintln!("skipping lab-e2e repeated gold-image acceptance test: {error:#}");
@@ -4280,6 +4292,11 @@ fn load_external_client_interop_or_skip(anchor_id: &str, test_name: &str) -> Opt
     match load_external_client_interop_config() {
         Ok(interop) => Some(interop),
         Err(error) => {
+            if runtime_proof_strict_enabled() {
+                panic!(
+                    "runtime-proof {test_name} requires interop env and store prerequisites; disable {HONEYPOT_RUNTIME_PROOF_STRICT_ENV} for skip-capable mode: {error:#}"
+                );
+            }
             record_row706_skipped_anchor_result(anchor_id, format!("{error:#}"));
             eprintln!("skipping lab-e2e {test_name} test: {error:#}");
             None

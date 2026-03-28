@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub const HONEYPOT_HOST_SMOKE_ENV: &str = "DGW_HONEYPOT_HOST_SMOKE";
 pub const HONEYPOT_LAB_E2E_ENV: &str = "DGW_HONEYPOT_LAB_E2E";
 pub const HONEYPOT_TIER_GATE_ENV: &str = "DGW_HONEYPOT_TIER_GATE";
+pub const HONEYPOT_RUNTIME_PROOF_STRICT_ENV: &str = "DGW_HONEYPOT_RUNTIME_PROOF_STRICT";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HoneypotTestTier {
@@ -87,6 +88,15 @@ impl HoneypotTierSelection {
         Ok(())
     }
 
+    pub fn require_runtime_proof(&self, requested_tier: HoneypotTestTier, strict: bool) -> anyhow::Result<()> {
+        if !strict {
+            return Ok(());
+        }
+
+        self.require(requested_tier)
+            .with_context(|| format!("runtime-proof mode enabled by {HONEYPOT_RUNTIME_PROOF_STRICT_ENV}=1"))
+    }
+
     pub fn load_gate(&self) -> anyhow::Result<HoneypotTierGate> {
         let gate_path = self
             .gate_path
@@ -103,6 +113,14 @@ pub fn active_honeypot_tier() -> HoneypotTestTier {
 
 pub fn require_honeypot_tier(requested_tier: HoneypotTestTier) -> anyhow::Result<()> {
     HoneypotTierSelection::from_env().require(requested_tier)
+}
+
+pub fn runtime_proof_strict_enabled() -> bool {
+    env_var_truthy(HONEYPOT_RUNTIME_PROOF_STRICT_ENV)
+}
+
+pub fn require_runtime_proof_honeypot_tier(requested_tier: HoneypotTestTier) -> anyhow::Result<()> {
+    HoneypotTierSelection::from_env().require_runtime_proof(requested_tier, runtime_proof_strict_enabled())
 }
 
 pub fn load_honeypot_tier_gate(path: &Path) -> anyhow::Result<HoneypotTierGate> {
