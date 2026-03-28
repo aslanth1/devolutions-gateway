@@ -16,6 +16,7 @@ use honeypot_contracts::Versioned as _;
 use honeypot_contracts::control_plane::{RecycleVmRequest, ReleaseVmRequest};
 use honeypot_contracts::frontend::BootstrapResponse;
 use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse};
+use honeypot_control_plane::config::ControlPlaneConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -33,6 +34,9 @@ const MANUAL_LAB_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_HOST_COUNT: usize = 3;
 const MANUAL_LAB_ROOT_RELATIVE_PATH: &str = "target/manual-lab";
 const MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH: &str = "target/manual-lab/active.json";
+const MANUAL_LAB_TARGET_ROOT_RELATIVE_PATH: &str = "target";
+const MANUAL_LAB_CONTROL_PLANE_CONFIG_RELATIVE_PATH: &str =
+    "honeypot/docker/config/control-plane/manual-lab-bootstrap.toml";
 const MANUAL_LAB_DRIVER_PROXY_USERNAME: &str = "operator";
 const MANUAL_LAB_DRIVER_PROXY_PASSWORD: &str = "attacker-password";
 const MANUAL_LAB_CONTROL_PLANE_SCOPE: &str = "gateway.honeypot.control-plane";
@@ -51,6 +55,10 @@ const HONEYPOT_INTEROP_RDP_DOMAIN_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_DOMAIN";
 const HONEYPOT_INTEROP_RDP_SECURITY_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_SECURITY";
 const HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV: &str = "DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS";
 const HONEYPOT_INTEROP_XFREERDP_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_PATH";
+const MANUAL_LAB_SOURCE_MANIFEST_DISCOVERY_PATHS: [&str; 2] = [
+    "artifacts/bundle/bundle-manifest.json",
+    "artifacts/live-proof/source-bundle/bundle-manifest.json",
+];
 const MANUAL_LAB_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MANUAL_LAB_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MANUAL_LAB_SERVICE_READY_TIMEOUT_FLOOR_SECS: u16 = 60;
@@ -118,6 +126,177 @@ impl Default for ManualLabUpOptions {
     fn default() -> Self {
         Self { open_browser: true }
     }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ManualLabBootstrapOptions {
+    pub execute: bool,
+    pub source_manifest_path: Option<PathBuf>,
+    pub config_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBootstrapStatus {
+    Ready,
+    Executed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualLabBootstrapCandidate {
+    pub path: PathBuf,
+    pub admissible: bool,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualLabBootstrapReport {
+    pub status: ManualLabBootstrapStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
+    pub config_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_manifest_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub candidates: Vec<ManualLabBootstrapCandidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub consume_image_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post_import_preflight: Option<ManualLabPreflightReport>,
+}
+
+impl ManualLabBootstrapReport {
+    fn ready(
+        config_path: PathBuf,
+        source_manifest_path: PathBuf,
+        candidates: Vec<ManualLabBootstrapCandidate>,
+        consume_image_command: String,
+    ) -> Self {
+        Self {
+            status: ManualLabBootstrapStatus::Ready,
+            blocker: None,
+            config_path,
+            source_manifest_path: Some(source_manifest_path),
+            candidates,
+            consume_image_command: Some(consume_image_command),
+            detail: Some("bootstrap-store resolved one admissible source manifest and is ready to import it".to_owned()),
+            remediation: Some(
+                "rerun with `--execute` or `make manual-lab-bootstrap-store-exec`, then rerun `make manual-lab-preflight`"
+                    .to_owned(),
+            ),
+            post_import_preflight: None,
+        }
+    }
+
+    fn executed(
+        config_path: PathBuf,
+        source_manifest_path: PathBuf,
+        candidates: Vec<ManualLabBootstrapCandidate>,
+        consume_image_command: String,
+        post_import_preflight: ManualLabPreflightReport,
+    ) -> Self {
+        Self {
+            status: ManualLabBootstrapStatus::Executed,
+            blocker: None,
+            config_path,
+            source_manifest_path: Some(source_manifest_path),
+            candidates,
+            consume_image_command: Some(consume_image_command),
+            detail: Some(
+                "bootstrap-store imported the trusted image bundle and the post-import preflight is ready".to_owned(),
+            ),
+            remediation: None,
+            post_import_preflight: Some(post_import_preflight),
+        }
+    }
+
+    fn blocked(blocked: ManualLabBootstrapBlocked) -> Self {
+        Self {
+            status: ManualLabBootstrapStatus::Blocked,
+            blocker: Some(blocked.blocker),
+            config_path: blocked.config_path,
+            source_manifest_path: blocked.source_manifest_path,
+            candidates: blocked.candidates,
+            consume_image_command: blocked.consume_image_command,
+            detail: Some(blocked.detail),
+            remediation: blocked.remediation,
+            post_import_preflight: blocked.post_import_preflight,
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        matches!(
+            self.status,
+            ManualLabBootstrapStatus::Ready | ManualLabBootstrapStatus::Executed
+        )
+    }
+
+    pub fn render_json(&self) -> anyhow::Result<String> {
+        serde_json::to_string_pretty(self).context("serialize manual lab bootstrap report")
+    }
+
+    pub fn render_text(&self) -> String {
+        let mut lines = Vec::new();
+
+        match self.status {
+            ManualLabBootstrapStatus::Ready => lines.push("manual lab bootstrap ready".to_owned()),
+            ManualLabBootstrapStatus::Executed => lines.push("manual lab bootstrap executed".to_owned()),
+            ManualLabBootstrapStatus::Blocked => {
+                let blocker = self.blocker.as_deref().unwrap_or("blocked");
+                let detail = self.detail.as_deref().unwrap_or("bootstrap-store could not continue");
+                lines.push(format!("manual lab bootstrap blocked by {blocker}: {detail}"));
+            }
+        }
+
+        lines.push(format!("config_path={}", self.config_path.display()));
+        if let Some(path) = &self.source_manifest_path {
+            lines.push(format!("source_manifest_path={}", path.display()));
+        }
+        if let Some(command) = self.consume_image_command.as_deref() {
+            lines.push(format!("consume_image_command={command}"));
+        }
+        for candidate in &self.candidates {
+            let status = if candidate.admissible { "admissible" } else { "rejected" };
+            lines.push(format!(
+                "candidate[{status}]={} :: {}",
+                candidate.path.display(),
+                candidate.detail
+            ));
+        }
+        if let Some(report) = &self.post_import_preflight {
+            let status = if report.is_ready() { "ready" } else { "blocked" };
+            lines.push(format!("post_import_preflight_status={status}"));
+            if let Some(blocker) = report.blocker.as_deref() {
+                lines.push(format!("post_import_preflight_blocker={blocker}"));
+            }
+        }
+        if self.status != ManualLabBootstrapStatus::Blocked
+            && let Some(detail) = self.detail.as_deref()
+        {
+            lines.push(format!("detail={detail}"));
+        }
+        if let Some(remediation) = self.remediation.as_deref() {
+            lines.push(format!("remediation: {remediation}"));
+        }
+
+        lines.join("\n")
+    }
+}
+
+struct ManualLabBootstrapBlocked {
+    blocker: String,
+    config_path: PathBuf,
+    source_manifest_path: Option<PathBuf>,
+    candidates: Vec<ManualLabBootstrapCandidate>,
+    consume_image_command: Option<String>,
+    detail: String,
+    remediation: Option<String>,
+    post_import_preflight: Option<ManualLabPreflightReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +384,98 @@ struct ManualLabPreflightReady {
 enum ManualLabPreflightOutcome {
     Ready(Box<ManualLabPreflightReady>),
     Blocked(ManualLabPreflightReport),
+}
+
+struct ManualLabBootstrapPlan {
+    config_path: PathBuf,
+    source_manifest_path: PathBuf,
+    candidates: Vec<ManualLabBootstrapCandidate>,
+    consume_image_command: String,
+}
+
+struct ManualLabBootstrapReady {
+    report: ManualLabBootstrapReport,
+    plan: ManualLabBootstrapPlan,
+}
+
+enum ManualLabBootstrapOutcome {
+    Ready(ManualLabBootstrapReady),
+    Blocked(ManualLabBootstrapReport),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceManifestDocument {
+    pool_name: String,
+    vm_name: String,
+    attestation_ref: String,
+    #[serde(rename = "guest_rdp_port", default)]
+    _guest_rdp_port: Option<u16>,
+    base_image_path: PathBuf,
+    #[serde(default)]
+    boot_profile_v1: Option<ManualLabSourceBootProfileRecord>,
+    source_iso: ManualLabSourceIsoRecord,
+    transformation: ManualLabSourceTransformationRecord,
+    base_image: ManualLabSourceBaseImageRecord,
+    approval: ManualLabSourceApprovalRecord,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceBootProfileRecord {
+    disk_interface: String,
+    network_device_model: String,
+    rtc_base: String,
+    firmware_mode: String,
+    #[serde(default)]
+    firmware_code: Option<ManualLabSourceBootArtifactRecord>,
+    #[serde(default)]
+    vars_seed: Option<ManualLabSourceBootArtifactRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceBootArtifactRecord {
+    path: PathBuf,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceIsoRecord {
+    acquisition_channel: String,
+    acquisition_date: String,
+    filename: String,
+    size_bytes: u64,
+    edition: String,
+    language: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceTransformationRecord {
+    timestamp: String,
+    inputs: Vec<ManualLabSourceTransformationInputRecord>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceTransformationInputRecord {
+    reference: String,
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceBaseImageRecord {
+    sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManualLabSourceApprovalRecord {
+    approved_by: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -638,6 +909,80 @@ pub fn preflight(options: ManualLabUpOptions) -> anyhow::Result<ManualLabPreflig
         ManualLabPreflightOutcome::Ready(ready) => ready.report,
         ManualLabPreflightOutcome::Blocked(report) => report,
     })
+}
+
+pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<ManualLabBootstrapReport> {
+    let readiness = match evaluate_manual_lab_bootstrap(&options)? {
+        ManualLabBootstrapOutcome::Ready(ready) => ready,
+        ManualLabBootstrapOutcome::Blocked(report) => return Ok(report),
+    };
+
+    if !options.execute {
+        return Ok(readiness.report);
+    }
+
+    let output = Command::new(&*HONEYPOT_CONTROL_PLANE_BIN_PATH)
+        .arg("consume-image")
+        .arg("--config")
+        .arg(&readiness.plan.config_path)
+        .arg("--source-manifest")
+        .arg(&readiness.plan.source_manifest_path)
+        .output()
+        .with_context(|| format!("run {}", readiness.plan.consume_image_command))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let failure_detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("consume-image exited with status {}", output.status)
+        };
+        return Ok(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
+            blocker: "consume_image_failed".to_owned(),
+            config_path: readiness.plan.config_path,
+            source_manifest_path: Some(readiness.plan.source_manifest_path),
+            candidates: readiness.plan.candidates,
+            consume_image_command: Some(readiness.plan.consume_image_command),
+            detail: failure_detail,
+            remediation: Some(
+                "fix the import error, then rerun `make manual-lab-bootstrap-store` or `make manual-lab-bootstrap-store-exec`"
+                    .to_owned(),
+            ),
+            post_import_preflight: None,
+        }));
+    }
+
+    let post_import_preflight = preflight(ManualLabUpOptions { open_browser: false })?;
+    if !post_import_preflight.is_ready() {
+        let blocker = post_import_preflight.blocker.as_deref().unwrap_or("blocked");
+        let detail = post_import_preflight
+            .detail
+            .as_deref()
+            .unwrap_or("post-import preflight is still blocked");
+        return Ok(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
+            blocker: "post_import_preflight_still_blocked".to_owned(),
+            config_path: readiness.plan.config_path,
+            source_manifest_path: Some(readiness.plan.source_manifest_path),
+            candidates: readiness.plan.candidates,
+            consume_image_command: Some(readiness.plan.consume_image_command),
+            detail: format!(
+                "consume-image succeeded, but post-import preflight is still blocked by {blocker}: {detail}"
+            ),
+            remediation: post_import_preflight.remediation.clone(),
+            post_import_preflight: Some(post_import_preflight),
+        }));
+    }
+
+    Ok(ManualLabBootstrapReport::executed(
+        readiness.plan.config_path,
+        readiness.plan.source_manifest_path,
+        readiness.plan.candidates,
+        readiness.plan.consume_image_command,
+        post_import_preflight,
+    ))
 }
 
 pub fn status() -> anyhow::Result<Option<ManualLabStatusReport>> {
@@ -1388,11 +1733,45 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
     let evidence = match evaluate_tiny11_lab_gate(&gate_inputs) {
         Tiny11LabGateOutcome::Ready(ready) => ready.evidence,
         Tiny11LabGateOutcome::Blocked(blocked) => {
+            let mut detail = blocked.detail;
+            let mut remediation = blocked.remediation;
+
+            if matches!(
+                blocked.blocker,
+                Tiny11LabGateBlocker::MissingStoreRoot | Tiny11LabGateBlocker::InvalidProvenance
+            ) {
+                let bootstrap_report = match evaluate_manual_lab_bootstrap(&ManualLabBootstrapOptions::default())? {
+                    ManualLabBootstrapOutcome::Ready(ready) => ready.report,
+                    ManualLabBootstrapOutcome::Blocked(report) => report,
+                };
+                if let Some(summary) = manual_lab_bootstrap_candidate_summary(&bootstrap_report.candidates) {
+                    detail.push('\n');
+                    detail.push_str(&summary);
+                }
+                remediation = Some(match bootstrap_report.blocker.as_deref() {
+                    Some("multiple_admissible_candidates_require_explicit_source_manifest") => {
+                        "run `make manual-lab-bootstrap-store` to inspect admissible source manifests, then rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` and `make manual-lab-preflight`".to_owned()
+                    }
+                    Some("no_admissible_candidates") => {
+                        "run `make manual-lab-bootstrap-store` to inspect rejected candidates, or rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` with an explicit bundle manifest, then rerun `make manual-lab-preflight`".to_owned()
+                    }
+                    Some("control_plane_config_invalid") | Some("control_plane_config_store_mismatch") => {
+                        "fix the manual-lab control-plane bootstrap config, then rerun `make manual-lab-bootstrap-store` and `make manual-lab-preflight`".to_owned()
+                    }
+                    _ if bootstrap_report.is_success() => {
+                        "run `make manual-lab-bootstrap-store-exec` to populate the canonical Tiny11 interop store, then rerun `make manual-lab-preflight`".to_owned()
+                    }
+                    _ => remediation.unwrap_or_else(|| {
+                        "run `make manual-lab-bootstrap-store` to inspect local source-bundle manifests, then rerun `make manual-lab-preflight`".to_owned()
+                    }),
+                });
+            }
+
             return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
                 &paths,
                 blocked.blocker,
-                blocked.detail,
-                blocked.remediation,
+                detail,
+                remediation,
             )));
         }
     };
@@ -1542,9 +1921,391 @@ fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateI
                 paths.xfreerdp_path.clone(),
             ),
         ],
-        consume_image_config_path: Some(PathBuf::from("honeypot/docker/config/control-plane/config.toml")),
+        consume_image_config_path: Some(default_manual_lab_control_plane_config_path()),
         source_manifest_path: None,
     }
+}
+
+fn default_manual_lab_control_plane_config_path() -> PathBuf {
+    manual_lab_manifest_path(MANUAL_LAB_CONTROL_PLANE_CONFIG_RELATIVE_PATH)
+}
+
+fn render_manual_lab_bootstrap_consume_command(config_path: &Path, source_manifest_path: &Path) -> String {
+    format!(
+        "{} consume-image --config {} --source-manifest {}",
+        HONEYPOT_CONTROL_PLANE_BIN_PATH.display(),
+        config_path.display(),
+        source_manifest_path.display()
+    )
+}
+
+fn discover_manual_lab_source_manifest_candidates_in_root(search_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    if !search_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut candidates = Vec::new();
+    for entry in fs::read_dir(search_root).with_context(|| format!("read {}", search_root.display()))? {
+        let entry = entry.with_context(|| format!("read {}", search_root.display()))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("run-") {
+            continue;
+        }
+        for relative_path in MANUAL_LAB_SOURCE_MANIFEST_DISCOVERY_PATHS {
+            let candidate = path.join(relative_path);
+            if candidate.is_file() {
+                candidates.push(
+                    candidate
+                        .canonicalize()
+                        .with_context(|| format!("canonicalize {}", candidate.display()))?,
+                );
+            }
+        }
+    }
+
+    candidates.sort();
+    candidates.dedup();
+    Ok(candidates)
+}
+
+fn evaluate_manual_lab_source_manifest_candidate(candidate_path: &Path) -> ManualLabBootstrapCandidate {
+    match evaluate_manual_lab_source_manifest_candidate_impl(candidate_path) {
+        Ok(path) => ManualLabBootstrapCandidate {
+            path,
+            admissible: true,
+            detail: "bundle manifest and referenced artifacts are present".to_owned(),
+        },
+        Err(error) => ManualLabBootstrapCandidate {
+            path: candidate_path.to_path_buf(),
+            admissible: false,
+            detail: format!("{error:#}"),
+        },
+    }
+}
+
+fn evaluate_manual_lab_source_manifest_candidate_impl(candidate_path: &Path) -> anyhow::Result<PathBuf> {
+    let candidate_path = candidate_path
+        .canonicalize()
+        .with_context(|| format!("canonicalize source manifest {}", candidate_path.display()))?;
+    ensure!(candidate_path.is_file(), "source manifest is not a file");
+
+    let manifest_bytes =
+        fs::read(&candidate_path).with_context(|| format!("read source manifest {}", candidate_path.display()))?;
+    let manifest: ManualLabSourceManifestDocument = serde_json::from_slice(&manifest_bytes)
+        .with_context(|| format!("parse source manifest {}", candidate_path.display()))?;
+
+    ensure!(!manifest.pool_name.trim().is_empty(), "pool_name must not be empty");
+    ensure!(!manifest.vm_name.trim().is_empty(), "vm_name must not be empty");
+    ensure!(
+        !manifest.attestation_ref.trim().is_empty(),
+        "attestation_ref must not be empty"
+    );
+    ensure!(
+        manifest.base_image_path.is_relative(),
+        "base_image_path must stay relative to the source bundle root"
+    );
+    ensure!(
+        !manifest.source_iso.acquisition_channel.trim().is_empty(),
+        "source_iso.acquisition_channel must not be empty"
+    );
+    ensure!(
+        !manifest.source_iso.acquisition_date.trim().is_empty(),
+        "source_iso.acquisition_date must not be empty"
+    );
+    ensure!(
+        !manifest.source_iso.filename.trim().is_empty(),
+        "source_iso.filename must not be empty"
+    );
+    ensure!(
+        manifest.source_iso.size_bytes > 0,
+        "source_iso.size_bytes must be greater than zero"
+    );
+    ensure!(
+        manifest.source_iso.edition.trim() == "Windows 11 Pro x64",
+        "source_iso.edition must be Windows 11 Pro x64"
+    );
+    ensure!(
+        !manifest.source_iso.language.trim().is_empty(),
+        "source_iso.language must not be empty"
+    );
+    ensure!(
+        is_manual_lab_sha256(&manifest.source_iso.sha256),
+        "source_iso.sha256 must be a lowercase or uppercase 64-character hex digest"
+    );
+    ensure!(
+        !manifest.transformation.timestamp.trim().is_empty(),
+        "transformation.timestamp must not be empty"
+    );
+    ensure!(
+        !manifest.transformation.inputs.is_empty(),
+        "transformation.inputs must not be empty"
+    );
+    for (index, input) in manifest.transformation.inputs.iter().enumerate() {
+        ensure!(
+            !input.reference.trim().is_empty(),
+            "transformation.inputs[{index}].reference must not be empty"
+        );
+        ensure!(
+            is_manual_lab_sha256(&input.sha256),
+            "transformation.inputs[{index}].sha256 must be a lowercase or uppercase 64-character hex digest"
+        );
+    }
+    ensure!(
+        is_manual_lab_sha256(&manifest.base_image.sha256),
+        "base_image.sha256 must be a lowercase or uppercase 64-character hex digest"
+    );
+    ensure!(
+        !manifest.approval.approved_by.trim().is_empty(),
+        "approval.approved_by must not be empty"
+    );
+
+    let bundle_root = candidate_path
+        .parent()
+        .context("source manifest must have a parent directory")?;
+    let base_image_path = bundle_root.join(&manifest.base_image_path);
+    ensure!(
+        base_image_path.is_file(),
+        "base_image_path {} does not exist under the source bundle root",
+        base_image_path.display()
+    );
+
+    if let Some(boot_profile) = &manifest.boot_profile_v1 {
+        ensure!(
+            !boot_profile.disk_interface.trim().is_empty(),
+            "boot_profile_v1.disk_interface must not be empty"
+        );
+        ensure!(
+            !boot_profile.network_device_model.trim().is_empty(),
+            "boot_profile_v1.network_device_model must not be empty"
+        );
+        ensure!(
+            !boot_profile.rtc_base.trim().is_empty(),
+            "boot_profile_v1.rtc_base must not be empty"
+        );
+        ensure!(
+            !boot_profile.firmware_mode.trim().is_empty(),
+            "boot_profile_v1.firmware_mode must not be empty"
+        );
+        if let Some(firmware_code) = &boot_profile.firmware_code {
+            ensure!(
+                firmware_code.path.is_relative(),
+                "boot_profile_v1.firmware_code.path must stay relative to the source bundle root"
+            );
+            ensure!(
+                is_manual_lab_sha256(&firmware_code.sha256),
+                "boot_profile_v1.firmware_code.sha256 must be a lowercase or uppercase 64-character hex digest"
+            );
+            let firmware_code_path = bundle_root.join(&firmware_code.path);
+            ensure!(
+                firmware_code_path.is_file(),
+                "boot_profile_v1.firmware_code.path {} does not exist under the source bundle root",
+                firmware_code_path.display()
+            );
+        }
+        if let Some(vars_seed) = &boot_profile.vars_seed {
+            ensure!(
+                vars_seed.path.is_relative(),
+                "boot_profile_v1.vars_seed.path must stay relative to the source bundle root"
+            );
+            ensure!(
+                is_manual_lab_sha256(&vars_seed.sha256),
+                "boot_profile_v1.vars_seed.sha256 must be a lowercase or uppercase 64-character hex digest"
+            );
+            let vars_seed_path = bundle_root.join(&vars_seed.path);
+            ensure!(
+                vars_seed_path.is_file(),
+                "boot_profile_v1.vars_seed.path {} does not exist under the source bundle root",
+                vars_seed_path.display()
+            );
+        }
+    }
+
+    Ok(candidate_path)
+}
+
+fn is_manual_lab_sha256(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn resolve_manual_lab_bootstrap_candidates(
+    explicit_source_manifest: Option<&Path>,
+) -> anyhow::Result<Vec<ManualLabBootstrapCandidate>> {
+    if let Some(path) = explicit_source_manifest {
+        return Ok(vec![evaluate_manual_lab_source_manifest_candidate(path)]);
+    }
+
+    let search_root = repo_relative_path(MANUAL_LAB_TARGET_ROOT_RELATIVE_PATH);
+    let mut candidates = discover_manual_lab_source_manifest_candidates_in_root(&search_root)?
+        .into_iter()
+        .map(|path| evaluate_manual_lab_source_manifest_candidate(&path))
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(candidates)
+}
+
+fn manual_lab_bootstrap_candidate_summary(candidates: &[ManualLabBootstrapCandidate]) -> Option<String> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut lines = Vec::with_capacity(candidates.len() + 1);
+    lines.push("local source-manifest candidates:".to_owned());
+    for candidate in candidates {
+        let status = if candidate.admissible { "admissible" } else { "rejected" };
+        lines.push(format!(
+            "- [{status}] {} :: {}",
+            candidate.path.display(),
+            candidate.detail
+        ));
+    }
+    Some(lines.join("\n"))
+}
+
+fn evaluate_manual_lab_bootstrap(options: &ManualLabBootstrapOptions) -> anyhow::Result<ManualLabBootstrapOutcome> {
+    let paths = resolve_manual_lab_interop_paths();
+    let config_path = options
+        .config_path
+        .clone()
+        .unwrap_or_else(default_manual_lab_control_plane_config_path);
+    let config = match ControlPlaneConfig::load_from_path(&config_path) {
+        Ok(config) => config,
+        Err(error) => {
+            return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
+                ManualLabBootstrapBlocked {
+                    blocker: "control_plane_config_invalid".to_owned(),
+                    config_path,
+                    source_manifest_path: options.source_manifest_path.clone(),
+                    candidates: Vec::new(),
+                    consume_image_command: None,
+                    detail: format!("{error:#}"),
+                    remediation: Some(
+                        "rerun with `--config <path>` or `MANUAL_LAB_CONTROL_PLANE_CONFIG=<path>` so bootstrap-store can load a control-plane config"
+                            .to_owned(),
+                    ),
+                    post_import_preflight: None,
+                },
+            )));
+        }
+    };
+
+    let configured_manifest_dir = config.paths.manifest_dir();
+    if config.paths.image_store != paths.image_store || configured_manifest_dir != paths.manifest_dir {
+        return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
+            ManualLabBootstrapBlocked {
+                blocker: "control_plane_config_store_mismatch".to_owned(),
+                config_path,
+                source_manifest_path: options.source_manifest_path.clone(),
+                candidates: Vec::new(),
+                consume_image_command: None,
+                detail: format!(
+                    "bootstrap-store config points at image_store_root={} and manifest_dir={}, but manual-lab preflight expects {} and {}",
+                    config.paths.image_store.display(),
+                    configured_manifest_dir.display(),
+                    paths.image_store.display(),
+                    paths.manifest_dir.display()
+                ),
+                remediation: Some(
+                    "align the control-plane config with the manual-lab DGW_HONEYPOT_INTEROP_* paths, then rerun bootstrap-store"
+                        .to_owned(),
+                ),
+                post_import_preflight: None,
+            },
+        )));
+    }
+
+    let candidates = resolve_manual_lab_bootstrap_candidates(options.source_manifest_path.as_deref())?;
+    let admissible_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.admissible)
+        .map(|candidate| candidate.path.clone())
+        .collect::<Vec<_>>();
+
+    let source_manifest_path = if options.source_manifest_path.is_some() {
+        match admissible_candidates.as_slice() {
+            [candidate] => candidate.clone(),
+            _ => {
+                return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
+                    ManualLabBootstrapBlocked {
+                        blocker: "explicit_source_manifest_invalid".to_owned(),
+                        config_path,
+                        source_manifest_path: options.source_manifest_path.clone(),
+                        candidates,
+                        consume_image_command: None,
+                        detail: "the explicit --source-manifest path did not pass bootstrap admissibility checks"
+                            .to_owned(),
+                        remediation: Some(
+                            "fix or replace the explicit source manifest, then rerun bootstrap-store".to_owned(),
+                        ),
+                        post_import_preflight: None,
+                    },
+                )));
+            }
+        }
+    } else {
+        match admissible_candidates.as_slice() {
+            [] => {
+                return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
+                    ManualLabBootstrapBlocked {
+                        blocker: "no_admissible_candidates".to_owned(),
+                        config_path,
+                        source_manifest_path: None,
+                        candidates,
+                        consume_image_command: None,
+                        detail:
+                            "bootstrap-store did not find an admissible local source bundle manifest"
+                                .to_owned(),
+                        remediation: Some(
+                            "run `make manual-lab-bootstrap-store` to inspect candidates, or rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` with an explicit bundle manifest"
+                                .to_owned(),
+                        ),
+                        post_import_preflight: None,
+                    },
+                )));
+            }
+            [candidate] => candidate.clone(),
+            _ => {
+                return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
+                    ManualLabBootstrapBlocked {
+                        blocker: "multiple_admissible_candidates_require_explicit_source_manifest".to_owned(),
+                        config_path,
+                        source_manifest_path: None,
+                        candidates,
+                        consume_image_command: None,
+                        detail:
+                            "bootstrap-store found more than one admissible local source bundle manifest and will not guess"
+                                .to_owned(),
+                        remediation: Some(
+                            "rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` or `honeypot-manual-lab bootstrap-store --source-manifest <path> --execute`"
+                                .to_owned(),
+                        ),
+                        post_import_preflight: None,
+                    },
+                )));
+            }
+        }
+    };
+
+    let consume_image_command = render_manual_lab_bootstrap_consume_command(&config_path, &source_manifest_path);
+    Ok(ManualLabBootstrapOutcome::Ready(ManualLabBootstrapReady {
+        report: ManualLabBootstrapReport::ready(
+            config_path.clone(),
+            source_manifest_path.clone(),
+            candidates.clone(),
+            consume_image_command.clone(),
+        ),
+        plan: ManualLabBootstrapPlan {
+            config_path,
+            source_manifest_path,
+            candidates,
+            consume_image_command,
+        },
+    }))
 }
 
 fn tiny11_lab_gate_blocker_code(blocker: Tiny11LabGateBlocker) -> &'static str {
@@ -2144,13 +2905,18 @@ fn now_unix_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::time::Duration;
 
     use base64::Engine as _;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use tempfile::tempdir;
 
     use super::{
-        association_token, display_socket_path, manual_lab_manifest_path, manual_lab_service_ready_timeout,
+        association_token, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
+        evaluate_manual_lab_source_manifest_candidate, manual_lab_manifest_path, manual_lab_service_ready_timeout,
         parse_proc_stat_process_state,
     };
 
@@ -2269,5 +3035,91 @@ mod tests {
         let claims: serde_json::Value = serde_json::from_slice(&decoded).expect("parse association token payload");
 
         assert_eq!(claims.get("jet_rec"), Some(&json!("none")));
+    }
+
+    #[test]
+    fn manual_lab_bootstrap_discovery_returns_only_sanctioned_bundle_paths() {
+        let tempdir = tempdir().expect("create tempdir");
+        let target_root = tempdir.path().join("target");
+        fs::create_dir_all(target_root.join("run-1/artifacts/bundle")).expect("create bundle dir");
+        fs::create_dir_all(target_root.join("run-2/artifacts/live-proof/source-bundle"))
+            .expect("create live-proof bundle dir");
+        fs::create_dir_all(target_root.join("ignored/artifacts/bundle")).expect("create ignored dir");
+
+        let first = write_test_source_bundle(&target_root.join("run-1/artifacts/bundle"), "first");
+        let second = write_test_source_bundle(&target_root.join("run-2/artifacts/live-proof/source-bundle"), "second");
+        write_test_source_bundle(&target_root.join("ignored/artifacts/bundle"), "ignored");
+
+        let discovered =
+            discover_manual_lab_source_manifest_candidates_in_root(&target_root).expect("discover manifests");
+        assert_eq!(discovered, vec![first, second]);
+    }
+
+    #[test]
+    fn manual_lab_bootstrap_candidate_validation_rejects_missing_base_image() {
+        let tempdir = tempdir().expect("create tempdir");
+        let bundle_root = tempdir.path().join("bundle");
+        let manifest_path = write_test_source_bundle(&bundle_root, "missing-base");
+        fs::remove_file(bundle_root.join("tiny11-base.qcow2")).expect("remove base image");
+
+        let candidate = evaluate_manual_lab_source_manifest_candidate(&manifest_path);
+        assert!(!candidate.admissible, "{candidate:?}");
+        assert!(candidate.detail.contains("base_image_path"), "{candidate:?}");
+    }
+
+    fn write_test_source_bundle(bundle_root: &Path, suffix: &str) -> std::path::PathBuf {
+        fs::create_dir_all(bundle_root).expect("create bundle root");
+        let base_image_path = bundle_root.join("tiny11-base.qcow2");
+        let base_image_bytes = format!("tiny11-{suffix}-base-image").into_bytes();
+        fs::write(&base_image_path, &base_image_bytes).expect("write base image");
+        let base_image_sha256 = sha256_hex(&base_image_bytes);
+
+        let manifest_path = bundle_root.join("bundle-manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&json!({
+                "pool_name": "default",
+                "vm_name": format!("tiny11-{suffix}-candidate"),
+                "attestation_ref": format!("attestation://tiny11-{suffix}-candidate"),
+                "base_image_path": "tiny11-base.qcow2",
+                "source_iso": {
+                    "acquisition_channel": "local-test",
+                    "acquisition_date": "2026-03-28",
+                    "filename": "windows11-pro-x64-en-us.iso",
+                    "size_bytes": 1024,
+                    "edition": "Windows 11 Pro x64",
+                    "language": "en-US",
+                    "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+                },
+                "transformation": {
+                    "timestamp": "2026-03-28T12:00:00Z",
+                    "inputs": [
+                        {
+                            "reference": "tiny11-builder.ps1",
+                            "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                        }
+                    ]
+                },
+                "base_image": {
+                    "sha256": base_image_sha256
+                },
+                "approval": {
+                    "approved_by": "operator@example.test"
+                }
+            }))
+            .expect("serialize source manifest"),
+        )
+        .expect("write source manifest");
+
+        manifest_path.canonicalize().expect("canonicalize manifest")
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        let digest = Sha256::digest(data);
+        let mut output = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            output.push_str(&format!("{byte:02x}"));
+        }
+        output
     }
 }

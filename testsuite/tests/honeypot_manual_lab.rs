@@ -1,7 +1,12 @@
 use std::fs;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
+use testsuite::honeypot_control_plane::{
+    HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
+};
 use testsuite::honeypot_manual_lab::{
     ManualLabProxyConfigOptions, active_state_path, honeypot_manual_lab_assert_cmd, render_manual_lab_proxy_config,
     render_three_host_trusted_image_manifest,
@@ -99,6 +104,7 @@ fn manual_lab_cli_help_lists_up_status_and_down() {
 
     assert!(rendered.contains("up [--no-browser]"), "{rendered}");
     assert!(rendered.contains("preflight"), "{rendered}");
+    assert!(rendered.contains("bootstrap-store"), "{rendered}");
     assert!(rendered.contains("status"), "{rendered}");
     assert!(rendered.contains("down"), "{rendered}");
 }
@@ -141,7 +147,7 @@ fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
         rendered.contains("manual lab blocked by missing_store_root"),
         "{rendered}"
     );
-    assert!(rendered.contains("consume-image"), "{rendered}");
+    assert!(rendered.contains("manual-lab-bootstrap-store"), "{rendered}");
     assert!(
         !active_path.exists(),
         "preflight must not create active state at {}",
@@ -229,9 +235,188 @@ fn manual_lab_cli_preflight_json_reports_missing_store_root() {
     assert!(report.pointer("/remediation").is_some(), "{report}");
 }
 
+#[test]
+fn manual_lab_cli_bootstrap_store_is_dry_run_by_default() {
+    let tempdir = tempdir().expect("create tempdir");
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "dry-run");
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(rendered.contains("manual lab bootstrap ready"), "{rendered}");
+    assert!(rendered.contains("consume_image_command="), "{rendered}");
+    assert!(
+        !image_store.exists(),
+        "dry-run bootstrap-store must not create {}",
+        image_store.display()
+    );
+}
+
+#[test]
+fn manual_lab_cli_bootstrap_store_execute_imports_and_rechecks_preflight() {
+    let tempdir = tempdir().expect("create tempdir");
+    let gate_path = tempdir.path().join("lab-e2e-gate.json");
+    write_manual_lab_gate(&gate_path);
+
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "execute");
+
+    let kvm_path = tempdir.path().join("dev-kvm");
+    fs::write(&kvm_path, b"kvm").expect("write fake kvm device");
+    let xfreerdp_path = tempdir.path().join("xfreerdp");
+    fs::write(&xfreerdp_path, b"#!/bin/sh\nexit 0\n").expect("write fake xfreerdp");
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--execute")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_LAB_E2E", "1")
+        .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
+        .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
+        .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(rendered.contains("manual lab bootstrap executed"), "{rendered}");
+    assert!(rendered.contains("post_import_preflight_status=ready"), "{rendered}");
+    assert!(image_store.is_dir(), "{}", image_store.display());
+    assert!(manifest_dir.is_dir(), "{}", manifest_dir.display());
+    assert!(
+        fs::read_dir(&manifest_dir)
+            .expect("read imported manifest dir")
+            .any(|entry| entry
+                .expect("manifest dir entry")
+                .path()
+                .extension()
+                .is_some_and(|ext| ext == "json")),
+        "{} should contain an imported manifest",
+        manifest_dir.display()
+    );
+}
+
 fn blocker_lines(output: &str) -> Vec<&str> {
     output
         .lines()
         .filter(|line| line.contains("blocked by") || line.starts_with("remediation:"))
         .collect()
+}
+
+fn write_manual_lab_gate(path: &Path) {
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(&json!({
+            "contract_passed": true,
+            "host_smoke_passed": true,
+        }))
+        .expect("serialize gate"),
+    )
+    .expect("write gate");
+}
+
+fn write_manual_lab_bootstrap_config(path: &Path, image_store: &Path, manifest_dir: &Path) -> PathBuf {
+    let root = path.parent().expect("config path should have parent");
+    let config = HoneypotControlPlaneTestConfig::builder()
+        .bind_addr("127.0.0.1:18080")
+        .data_dir(root.join("data"))
+        .image_store(image_store)
+        .manifest_dir(manifest_dir)
+        .lease_store(root.join("leases"))
+        .quarantine_store(root.join("quarantine"))
+        .qmp_dir(root.join("qmp"))
+        .secret_dir(root.join("secrets"))
+        .kvm_path(root.join("dev-kvm"))
+        .qemu_binary_path(fake_qemu_bin_path())
+        .build();
+    write_honeypot_control_plane_config(path, &config).expect("write control-plane config");
+    path.to_path_buf()
+}
+
+fn create_manual_lab_source_bundle(root: &Path, suffix: &str) -> PathBuf {
+    let bundle_root = root.join(format!("source-bundle-{suffix}"));
+    fs::create_dir_all(&bundle_root).expect("create bundle root");
+
+    let base_image_path = bundle_root.join("tiny11-base.qcow2");
+    let base_image_bytes = format!("tiny11-{suffix}-base-image").into_bytes();
+    fs::write(&base_image_path, &base_image_bytes).expect("write base image");
+    let base_image_sha256 = sha256_hex(&base_image_bytes);
+
+    let manifest_path = bundle_root.join("bundle-manifest.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&json!({
+            "pool_name": "default",
+            "vm_name": format!("tiny11-{suffix}-candidate"),
+            "attestation_ref": format!("attestation://tiny11-{suffix}-candidate"),
+            "guest_rdp_port": 3389,
+            "base_image_path": "tiny11-base.qcow2",
+            "source_iso": {
+                "acquisition_channel": "local-test",
+                "acquisition_date": "2026-03-28",
+                "filename": "windows11-pro-x64-en-us.iso",
+                "size_bytes": 1024,
+                "edition": "Windows 11 Pro x64",
+                "language": "en-US",
+                "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+            },
+            "transformation": {
+                "timestamp": "2026-03-28T12:00:00Z",
+                "inputs": [
+                    {
+                        "reference": "tiny11-builder.ps1",
+                        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+                    }
+                ]
+            },
+            "base_image": {
+                "sha256": base_image_sha256
+            },
+            "approval": {
+                "approved_by": "operator@example.test"
+            }
+        }))
+        .expect("serialize source manifest"),
+    )
+    .expect("write source manifest");
+
+    manifest_path
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    let mut output = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        output.push_str(&format!("{byte:02x}"));
+    }
+    output
 }

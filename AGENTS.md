@@ -792,6 +792,23 @@ Pass when: the repo root `Makefile` exposes `manual-lab-preflight`, `manual-lab-
 - [x] Add a sanctioned Tiny11 interop-store bootstrap checklist for manual operators.
 Pass when: the docs codify the exact `honeypot-control-plane consume-image` bootstrap inputs, the expected post-import store layout, and the explicit `preflight` signals that prove the manual deck is ready to launch.
 
+### Milestone 6d: Manual Deck Bootstrap Resolution
+
+- [x] Keep `honeypot-manual-lab preflight` non-mutating while surfacing bootstrap diagnostics.
+Pass when: `preflight` still performs no host mutation, but `missing_store_root` and `invalid_provenance` reports name the sanctioned `bootstrap-store` lane, include local source-manifest candidate diagnostics, and keep the blocker fail-closed.
+
+- [x] Add a Rust-native `honeypot-manual-lab bootstrap-store` command for manual operators.
+Pass when: the command supports dry-run by default, `--execute` for mutation, `--source-manifest <path>` for explicit operator choice, `--config <path>` for config drift, and reuses the control-plane consume-image authority instead of inventing a parallel import path.
+
+- [x] Add ambiguity-safe source-manifest discovery for local manual-lab remediation.
+Pass when: discovery searches only sanctioned local bundle-manifest lanes, rejects malformed or incomplete bundles, proceeds automatically only when exactly one admissible candidate exists, and refuses to guess when multiple admissible candidates exist.
+
+- [x] Add thin Makefile wrappers for the bootstrap-store flow.
+Pass when: the repo root `Makefile` exposes `manual-lab-bootstrap-store` as dry-run and `manual-lab-bootstrap-store-exec` as the explicit mutating path, with optional `MANUAL_LAB_SOURCE_MANIFEST` and `MANUAL_LAB_CONTROL_PLANE_CONFIG` overrides while keeping all selection logic in Rust.
+
+- [x] Add post-import proof and docs for the bootstrap-store operator lane.
+Pass when: `bootstrap-store --execute` reruns read-only preflight after import, docs require `preflight -> bootstrap-store -> bootstrap-store-exec -> preflight -> up`, and tests cover zero or one or multiple candidate behavior, explicit-manifest failure clarity, and non-mutating dry-run behavior.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

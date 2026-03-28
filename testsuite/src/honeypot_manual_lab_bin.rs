@@ -25,13 +25,16 @@ fn main() {
 }
 
 #[cfg(unix)]
-use anyhow::{bail, ensure};
+use anyhow::{Context as _, bail, ensure};
 #[cfg(unix)]
-use testsuite::honeypot_manual_lab::{self, ManualLabPreflightReport, ManualLabTeardownReport, ManualLabUpOptions};
+use testsuite::honeypot_manual_lab::{
+    self, ManualLabBootstrapOptions, ManualLabBootstrapReport, ManualLabPreflightReport, ManualLabTeardownReport,
+    ManualLabUpOptions,
+};
 
 #[cfg(unix)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ManualLabPreflightFormat {
+enum ManualLabOutputFormat {
     Text,
     Json,
 }
@@ -83,12 +86,12 @@ fn real_main() -> anyhow::Result<i32> {
         }
         "preflight" => {
             let mut open_browser = true;
-            let mut format = ManualLabPreflightFormat::Text;
+            let mut format = ManualLabOutputFormat::Text;
             for arg in args {
                 match arg.as_str() {
                     "--no-browser" => open_browser = false,
-                    "--format=json" => format = ManualLabPreflightFormat::Json,
-                    "--format=text" => format = ManualLabPreflightFormat::Text,
+                    "--format=json" => format = ManualLabOutputFormat::Json,
+                    "--format=text" => format = ManualLabOutputFormat::Text,
                     other => bail!("unknown argument for preflight: {other}\n\n{}", usage()),
                 }
             }
@@ -96,6 +99,30 @@ fn real_main() -> anyhow::Result<i32> {
             let report = honeypot_manual_lab::preflight(ManualLabUpOptions { open_browser })?;
             print_preflight_report(&report, format)?;
             Ok(if report.is_ready() { 0 } else { 2 })
+        }
+        "bootstrap-store" => {
+            let mut options = ManualLabBootstrapOptions::default();
+            let mut format = ManualLabOutputFormat::Text;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--execute" => options.execute = true,
+                    "--format=json" => format = ManualLabOutputFormat::Json,
+                    "--format=text" => format = ManualLabOutputFormat::Text,
+                    "--source-manifest" => {
+                        let value = args.next().context("missing value for --source-manifest")?;
+                        options.source_manifest_path = Some(value.into());
+                    }
+                    "--config" => {
+                        let value = args.next().context("missing value for --config")?;
+                        options.config_path = Some(value.into());
+                    }
+                    other => bail!("unknown argument for bootstrap-store: {other}\n\n{}", usage()),
+                }
+            }
+
+            let report = honeypot_manual_lab::bootstrap_store(options)?;
+            print_bootstrap_report(&report, format)?;
+            Ok(if report.is_success() { 0 } else { 2 })
         }
         "status" => {
             ensure!(args.next().is_none(), "status does not accept arguments\n\n{}", usage());
@@ -165,10 +192,19 @@ fn real_main() -> anyhow::Result<i32> {
 }
 
 #[cfg(unix)]
-fn print_preflight_report(report: &ManualLabPreflightReport, format: ManualLabPreflightFormat) -> anyhow::Result<()> {
+fn print_preflight_report(report: &ManualLabPreflightReport, format: ManualLabOutputFormat) -> anyhow::Result<()> {
     match format {
-        ManualLabPreflightFormat::Text => println!("{}", report.render_text()),
-        ManualLabPreflightFormat::Json => println!("{}", report.render_json()?),
+        ManualLabOutputFormat::Text => println!("{}", report.render_text()),
+        ManualLabOutputFormat::Json => println!("{}", report.render_json()?),
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn print_bootstrap_report(report: &ManualLabBootstrapReport, format: ManualLabOutputFormat) -> anyhow::Result<()> {
+    match format {
+        ManualLabOutputFormat::Text => println!("{}", report.render_text()),
+        ManualLabOutputFormat::Json => println!("{}", report.render_json()?),
     }
     Ok(())
 }
@@ -201,17 +237,20 @@ fn usage() -> &'static str {
     "Usage:
   cargo run -p testsuite --bin honeypot-manual-lab -- up [--no-browser]
   cargo run -p testsuite --bin honeypot-manual-lab -- preflight [--no-browser] [--format=json|text]
+  cargo run -p testsuite --bin honeypot-manual-lab -- bootstrap-store [--source-manifest <path>] [--config <path>] [--execute] [--format=json|text]
   cargo run -p testsuite --bin honeypot-manual-lab -- status
   cargo run -p testsuite --bin honeypot-manual-lab -- down
 
 Commands:
   up         Launch control-plane, proxy, frontend, and three Tiny11-backed live sessions.
   preflight  Check manual-lab prerequisites without starting services.
+  bootstrap-store  Resolve and optionally import a sanctioned Tiny11 source bundle into the canonical interop store.
   status     Print the active manual-lab run state and current health snapshots.
   down       Tear down the active manual-lab run and recycle known leases.
 
 Notes:
   up opens Chrome by default after the frontend reports three ready tiles.
   preflight checks the same gate path that up uses and exits non-zero when blocked.
+  bootstrap-store is dry-run by default; add --execute to run consume-image and then rerun preflight.
   Use --no-browser to leave the deck running without opening Chrome."
 }

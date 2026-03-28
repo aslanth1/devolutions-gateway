@@ -385,28 +385,39 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Make manual preflight and manual up share one gate authority.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6d: Manual Deck Bootstrap Resolution",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add a Rust-native `honeypot-manual-lab bootstrap-store` command for manual operators.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
+    assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
     assert_contains(
         runbook_path,
         &runbook,
-        "preflight`,\n  remediate any blocker,\n  rerun `make manual-lab-preflight`,\n  then launch with `make manual-lab-up`.",
+        "preflight`,\n  run `make manual-lab-bootstrap-store`,\n  if bootstrap reports multiple admissible manifests, rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>`,\n  otherwise rerun `make manual-lab-bootstrap-store-exec`,\n  rerun `make manual-lab-preflight`,\n  then launch with `make manual-lab-up`.",
     );
 
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);
-    assert_contains(testing_path, &testing, "preflight|up|status|down");
+    assert_contains(testing_path, &testing, "preflight|bootstrap-store|up|status|down");
     assert_contains(
         testing_path,
         &testing,
-        "The required manual sequence is `preflight -> remediate -> preflight -> up`.",
+        "The required manual sequence is `preflight -> bootstrap-store -> bootstrap-store --execute -> preflight -> up`.",
     );
     assert_contains(
         testing_path,
         &testing,
-        "`honeypot-control-plane consume-image --config honeypot/docker/config/control-plane/config.toml --source-manifest <bundle-manifest.json>`",
+        "If more than one admissible source manifest exists, `bootstrap-store` fails closed and requires `MANUAL_LAB_SOURCE_MANIFEST=<path>` or `--source-manifest <path>` rather than guessing.",
     );
 }
 
