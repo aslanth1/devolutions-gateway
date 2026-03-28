@@ -823,6 +823,20 @@ Pass when: `bootstrap-store` reruns the full admissibility checks against the re
 - [x] Add thin Make and docs support for the remembered source-manifest lane.
 Pass when: the repo root `Makefile` exposes `manual-lab-remember-source-manifest`, docs show `remember-source-manifest -> bootstrap-store-exec -> preflight -> up`, and they state that removing `target/manual-lab/selected-source-manifest.json` clears the local hint.
 
+### Milestone 6f: Manual Deck Rootless Host-State Profile
+
+- [x] Add an explicit local-state manual-lab profile for non-root hosts.
+Pass when: `MANUAL_LAB_PROFILE=local` switches the manual-lab Make wrappers and the aligned control-plane bootstrap config to a repo-local writable state root under `target/manual-lab/state/` without changing the canonical default profile.
+
+- [x] Keep canonical `/srv` paths authoritative by default.
+Pass when: the default manual-lab profile remains the checked-in canonical `/srv/honeypot/...` lane, and operators must opt into the local profile explicitly instead of auto-falling back.
+
+- [x] Add typed remediation for non-writable manual-lab store roots.
+Pass when: `bootstrap-store --execute` reports a distinct blocker for store-root permission failures and tells non-root operators to retry with `MANUAL_LAB_PROFILE=local` or fix host ownership intentionally.
+
+- [x] Add Make, docs, and tests for profile parity across `preflight`, `bootstrap-store`, and `up`.
+Pass when: the repo root `Makefile` threads `MANUAL_LAB_PROFILE=canonical|local` consistently, docs show the local-profile manual sequence, and tests prove the blocker or remediation and docs parity without weakening the single Rust authority.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

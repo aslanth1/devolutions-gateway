@@ -1,4 +1,6 @@
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::json;
@@ -154,7 +156,8 @@ fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
         rendered.contains("manual lab blocked by missing_store_root"),
         "{rendered}"
     );
-    assert!(rendered.contains("manual-lab-remember-source-manifest"), "{rendered}");
+    assert!(rendered.contains("manual-lab-bootstrap-store-exec"), "{rendered}");
+    assert!(rendered.contains("MANUAL_LAB_PROFILE=local"), "{rendered}");
     assert!(
         !active_path.exists(),
         "preflight must not create active state at {}",
@@ -345,6 +348,45 @@ fn manual_lab_cli_bootstrap_store_execute_imports_and_rechecks_preflight() {
         "{} should contain an imported manifest",
         manifest_dir.display()
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn manual_lab_cli_bootstrap_store_execute_reports_store_root_not_writable() {
+    let tempdir = tempdir().expect("create tempdir");
+    let locked_root = tempdir.path().join("locked-root");
+    fs::create_dir_all(&locked_root).expect("create locked root");
+    fs::set_permissions(&locked_root, fs::Permissions::from_mode(0o555)).expect("lock root permissions");
+
+    let image_store = locked_root.join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "permission-denied");
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--execute")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("manual lab bootstrap blocked by store_root_not_writable"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("MANUAL_LAB_PROFILE=local"), "{rendered}");
+
+    fs::set_permissions(&locked_root, fs::Permissions::from_mode(0o755)).expect("restore root permissions");
 }
 
 #[test]

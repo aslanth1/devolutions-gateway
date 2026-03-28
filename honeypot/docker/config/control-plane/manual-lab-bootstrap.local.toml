@@ -1,0 +1,39 @@
+[http]
+bind_addr = "127.0.0.1:18080"
+
+[auth]
+service_token_validation_disabled = true
+
+[backend_credentials]
+adapter = "file"
+file_path = "target/manual-lab/state/secrets/backend-credentials.json"
+
+[runtime]
+enable_guest_agent = true
+lifecycle_driver = "process"
+stop_timeout_secs = 5
+
+[runtime.limits]
+max_vcpu_count = 8
+max_memory_mib = 16384
+max_overlay_size_mib = 65536
+max_stop_timeout_secs = 15
+
+[runtime.qemu]
+binary_path = "/usr/bin/qemu-system-x86_64"
+machine_type = "q35"
+cpu_model = "host"
+vcpu_count = 4
+memory_mib = 8192
+network.netdev_id = "net0"
+
+[paths]
+data_dir = "target/manual-lab/state/control-plane"
+image_store = "target/manual-lab/state/images"
+manifest_dir = "target/manual-lab/state/images/manifests"
+lease_store = "target/manual-lab/state/leases"
+quarantine_store = "target/manual-lab/state/quarantine"
+qmp_dir = "target/manual-lab/state/qmp"
+qga_dir = "target/manual-lab/state/qga"
+secret_dir = "target/manual-lab/state/secrets"
+kvm_path = "/dev/kvm"

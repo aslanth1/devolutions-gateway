@@ -36,6 +36,7 @@ const MANUAL_LAB_HOST_COUNT: usize = 3;
 const MANUAL_LAB_ROOT_RELATIVE_PATH: &str = "target/manual-lab";
 const MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH: &str = "target/manual-lab/active.json";
 const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_RELATIVE_PATH: &str = "target/manual-lab/selected-source-manifest.json";
+const MANUAL_LAB_LOCAL_PROFILE_HINT: &str = "make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local";
 const MANUAL_LAB_TARGET_ROOT_RELATIVE_PATH: &str = "target";
 const MANUAL_LAB_CONTROL_PLANE_CONFIG_RELATIVE_PATH: &str =
     "honeypot/docker/config/control-plane/manual-lab-bootstrap.toml";
@@ -1117,18 +1118,29 @@ pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<Man
         } else {
             format!("consume-image exited with status {}", output.status)
         };
+        let (blocker, remediation) = if manual_lab_bootstrap_permission_denied(&failure_detail) {
+            (
+                "store_root_not_writable".to_owned(),
+                Some(manual_lab_store_root_permission_remediation()),
+            )
+        } else {
+            (
+                "consume_image_failed".to_owned(),
+                Some(
+                    "fix the import error, then rerun `make manual-lab-bootstrap-store` or `make manual-lab-bootstrap-store-exec`"
+                        .to_owned(),
+                ),
+            )
+        };
         return Ok(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
-            blocker: "consume_image_failed".to_owned(),
+            blocker,
             config_path: readiness.plan.config_path,
             source_manifest_path: Some(readiness.plan.source_manifest_path),
             source_manifest_digest: Some(readiness.plan.source_manifest_digest),
             candidates: readiness.plan.candidates,
             consume_image_command: Some(readiness.plan.consume_image_command),
             detail: failure_detail,
-            remediation: Some(
-                "fix the import error, then rerun `make manual-lab-bootstrap-store` or `make manual-lab-bootstrap-store-exec`"
-                    .to_owned(),
-            ),
+            remediation,
             post_import_preflight: None,
         }));
     }
@@ -1942,7 +1954,9 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
                         "rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>` or `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>`, then rerun `make manual-lab-preflight`".to_owned()
                     }
                     _ if bootstrap_report.is_success() => {
-                        "run `make manual-lab-bootstrap-store-exec` to populate the canonical Tiny11 interop store, then rerun `make manual-lab-preflight`".to_owned()
+                        format!(
+                            "run `make manual-lab-bootstrap-store-exec` to populate the selected Tiny11 interop store, then rerun `make manual-lab-preflight`; if the canonical /srv lane is not writable on this host, rerun `{MANUAL_LAB_LOCAL_PROFILE_HINT}` instead"
+                        )
                     }
                     _ => remediation.unwrap_or_else(|| {
                         "run `make manual-lab-bootstrap-store` to inspect local source-bundle manifests, then rerun `make manual-lab-preflight`".to_owned()
@@ -2063,6 +2077,16 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
         kvm_path,
         xfreerdp_path,
     }
+}
+
+fn manual_lab_store_root_permission_remediation() -> String {
+    format!(
+        "fix the configured store-root ownership, or rerun `{MANUAL_LAB_LOCAL_PROFILE_HINT}` and then `make manual-lab-preflight MANUAL_LAB_PROFILE=local` on a non-root host"
+    )
+}
+
+fn manual_lab_bootstrap_permission_denied(detail: &str) -> bool {
+    detail.contains("create image store") && detail.contains("Permission denied")
 }
 
 fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateInputs {

@@ -405,12 +405,28 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add an optional remembered source-manifest helper for repeated manual bootstrap runs.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6f: Manual Deck Rootless Host-State Profile",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add an explicit local-state manual-lab profile for non-root hosts.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
     assert_contains(runbook_path, &runbook, "make manual-lab-remember-source-manifest");
+    assert_contains(runbook_path, &runbook, "MANUAL_LAB_PROFILE=canonical|local");
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local",
+    );
     assert_contains(
         runbook_path,
         &runbook,
@@ -429,6 +445,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &testing,
         "preflight|remember-source-manifest|bootstrap-store|up|status|down",
     );
+    assert_contains(testing_path, &testing, "MANUAL_LAB_PROFILE=canonical|local");
     assert_contains(
         testing_path,
         &testing,
@@ -438,6 +455,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "If more than one admissible source manifest exists, `bootstrap-store` fails closed until the operator either remembers one with `MANUAL_LAB_SOURCE_MANIFEST=<path>` or passes `--source-manifest <path>` explicitly.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local",
     );
 }
 

@@ -112,6 +112,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight`, `remember-source-manifest`, `bootstrap-store`, `up`, `status`, and `down`.
 - The repo root `Makefile` also provides thin convenience wrappers `make manual-lab-preflight`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-status`, and `make manual-lab-down`.
 - Those wrappers still call the same Rust launcher and only pre-create a local lab-e2e gate file plus set `DGW_HONEYPOT_LAB_E2E=1` and `DGW_HONEYPOT_TIER_GATE` for `preflight`, `bootstrap-store`, and `up`.
+- `MANUAL_LAB_PROFILE=canonical|local` selects the sanctioned host-state lane for those Make wrappers.
+- `canonical` is the default and keeps the checked-in `/srv/honeypot/...` paths.
+- `local` is the explicit non-root operator lane and switches the wrappers to repo-local state under `target/manual-lab/state/`.
 - Use the preflight-first sequence for manual operator work:
   `make manual-lab-preflight`,
   run `make manual-lab-bootstrap-store`,
@@ -138,6 +141,14 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - Explicit `MANUAL_LAB_SOURCE_MANIFEST=<path>` or `--source-manifest <path>` still wins over any remembered hint.
 - remove `target/manual-lab/selected-source-manifest.json` to clear the local hint.
 - `MANUAL_LAB_CONTROL_PLANE_CONFIG=<path>` or `--config <path>` is available when the import config must differ from the repo default `honeypot/docker/config/control-plane/manual-lab-bootstrap.toml`.
+- If the canonical `/srv` lane is blocked by store-root permissions on a non-root host, switch to the explicit local profile:
+  `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
+  `make manual-lab-bootstrap-store MANUAL_LAB_PROFILE=local`,
+  `make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local`,
+  `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
+  then `make manual-lab-up MANUAL_LAB_PROFILE=local`.
+- The local profile is for operator self-test and uses repo-local writable state only.
+- It does not replace the canonical `/srv` lane for production-like host readiness proof.
 - If `preflight` or `up` reports `missing_store_root`, bootstrap the canonical store through `make manual-lab-bootstrap-store` first instead of editing a placeholder `consume-image` command by hand.
 - The expected post-import state is a trusted-image store under `/srv/honeypot/images`, a manifest set under `/srv/honeypot/images/manifests`, and a `preflight` result of `ready` before the operator launches `up`.
 - Treat a blocked `preflight` result as `blocked_prereq` only.

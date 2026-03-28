@@ -184,6 +184,9 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight|remember-source-manifest|bootstrap-store|up|status|down`.
 - The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
 - The Make targets only create a local lab-e2e gate file and set `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE` for `preflight`, `bootstrap-store`, and `up`; they do not replace the required `DGW_HONEYPOT_INTEROP_*` inputs.
+- `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
+- `canonical` is the default `/srv/honeypot/...` lane.
+- `local` is the explicit non-root lane and binds the same Rust authority to repo-local state under `target/manual-lab/state/`.
 - The required manual sequence is `preflight -> remember-source-manifest -> bootstrap-store --execute -> preflight -> up` when more than one admissible manifest exists.
 - This lane is Rust-native and lives in `testsuite::honeypot_manual_lab`; it does not permit Bash or Python wrappers for service startup, Tiny11 fan-out, or teardown.
 - The launcher reuses the canonical Tiny11 interop gate instead of inventing a second store verifier.
@@ -199,6 +202,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - Explicit `MANUAL_LAB_SOURCE_MANIFEST=<path>` still overrides the remembered hint.
 - Remove `target/manual-lab/selected-source-manifest.json` to clear the remembered hint.
 - `MANUAL_LAB_CONTROL_PLANE_CONFIG=<path>` or `--config <path>` is available when the consume-image config must be overridden.
+- On non-root hosts where the canonical `/srv` lane is not writable, use:
+  `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
+  `make manual-lab-bootstrap-store MANUAL_LAB_PROFILE=local`,
+  `make manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local`,
+  `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
+  and `make manual-lab-up MANUAL_LAB_PROFILE=local`.
+- The local profile exists for manual operator bring-up only and does not change the canonical default lane.
 - If the blocker is `missing_store_root`, the sanctioned remediation is `make manual-lab-bootstrap-store`, followed by `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>` when ambiguity exists, then `make manual-lab-bootstrap-store-exec` and another `preflight` run.
 - The expected ready state is a trusted-image store under `/srv/honeypot/images`, a manifest set under `/srv/honeypot/images/manifests`, and a `preflight` result of `ready`.
 - `up` clones one attested Tiny11 manifest lineage into three trusted-image identities with unique `vm_name` and guest RDP ports, starts host-process `control-plane`, `proxy`, and `frontend`, creates three real proxy-backed RDP sessions, requests stream tokens, and only succeeds after the frontend reports three ready tiles.
