@@ -809,6 +809,20 @@ Pass when: the repo root `Makefile` exposes `manual-lab-bootstrap-store` as dry-
 - [x] Add post-import proof and docs for the bootstrap-store operator lane.
 Pass when: `bootstrap-store --execute` reruns read-only preflight after import, docs require `preflight -> bootstrap-store -> bootstrap-store-exec -> preflight -> up`, and tests cover zero or one or multiple candidate behavior, explicit-manifest failure clarity, and non-mutating dry-run behavior.
 
+### Milestone 6e: Manual Deck Remembered Source Manifest
+
+- [x] Add an optional remembered source-manifest helper for repeated manual bootstrap runs.
+Pass when: `honeypot-manual-lab remember-source-manifest --source-manifest <path>` writes only a local git-ignored hint under `target/manual-lab/`, never mutates the interop store, and succeeds only for an admissible bundle manifest.
+
+- [x] Keep explicit bootstrap overrides authoritative over any remembered source-manifest hint.
+Pass when: `MANUAL_LAB_SOURCE_MANIFEST=<path>` or `--source-manifest <path>` always overrides the remembered hint, and `bootstrap-store` consults the hint only when no explicit source-manifest is provided.
+
+- [x] Revalidate the remembered source-manifest hint on every bootstrap run and fail closed on drift.
+Pass when: `bootstrap-store` reruns the full admissibility checks against the remembered hint, rejects missing or stale or digest-mismatched hints with a typed blocker, and never falls back to another candidate automatically.
+
+- [x] Add thin Make and docs support for the remembered source-manifest lane.
+Pass when: the repo root `Makefile` exposes `manual-lab-remember-source-manifest`, docs show `remember-source-manifest -> bootstrap-store-exec -> preflight -> up`, and they state that removing `target/manual-lab/selected-source-manifest.json` clears the local hint.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

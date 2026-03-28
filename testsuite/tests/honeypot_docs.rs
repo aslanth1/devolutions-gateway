@@ -395,29 +395,49 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add a Rust-native `honeypot-manual-lab bootstrap-store` command for manual operators.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6e: Manual Deck Remembered Source Manifest",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add an optional remembered source-manifest helper for repeated manual bootstrap runs.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
+    assert_contains(runbook_path, &runbook, "make manual-lab-remember-source-manifest");
     assert_contains(
         runbook_path,
         &runbook,
-        "preflight`,\n  run `make manual-lab-bootstrap-store`,\n  if bootstrap reports multiple admissible manifests, rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>`,\n  otherwise rerun `make manual-lab-bootstrap-store-exec`,\n  rerun `make manual-lab-preflight`,\n  then launch with `make manual-lab-up`.",
+        "preflight`,\n  run `make manual-lab-bootstrap-store`,\n  if bootstrap reports multiple admissible manifests, rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`,\n  then rerun `make manual-lab-bootstrap-store-exec`,\n  rerun `make manual-lab-preflight`,\n  then launch with `make manual-lab-up`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "remove `target/manual-lab/selected-source-manifest.json` to clear the local hint",
     );
 
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);
-    assert_contains(testing_path, &testing, "preflight|bootstrap-store|up|status|down");
     assert_contains(
         testing_path,
         &testing,
-        "The required manual sequence is `preflight -> bootstrap-store -> bootstrap-store --execute -> preflight -> up`.",
+        "preflight|remember-source-manifest|bootstrap-store|up|status|down",
     );
     assert_contains(
         testing_path,
         &testing,
-        "If more than one admissible source manifest exists, `bootstrap-store` fails closed and requires `MANUAL_LAB_SOURCE_MANIFEST=<path>` or `--source-manifest <path>` rather than guessing.",
+        "The required manual sequence is `preflight -> remember-source-manifest -> bootstrap-store --execute -> preflight -> up` when more than one admissible manifest exists.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "If more than one admissible source manifest exists, `bootstrap-store` fails closed until the operator either remembers one with `MANUAL_LAB_SOURCE_MANIFEST=<path>` or passes `--source-manifest <path>` explicitly.",
     );
 }
 

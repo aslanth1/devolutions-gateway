@@ -105,6 +105,7 @@ fn manual_lab_cli_help_lists_up_status_and_down() {
     assert!(rendered.contains("up [--no-browser]"), "{rendered}");
     assert!(rendered.contains("preflight"), "{rendered}");
     assert!(rendered.contains("bootstrap-store"), "{rendered}");
+    assert!(rendered.contains("remember-source-manifest"), "{rendered}");
     assert!(rendered.contains("status"), "{rendered}");
     assert!(rendered.contains("down"), "{rendered}");
 }
@@ -123,6 +124,11 @@ fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
     )
     .expect("write gate");
     let missing_store_root = tempdir.path().join("missing-store-root");
+    let config_path = write_manual_lab_bootstrap_config(
+        &tempdir.path().join("control-plane.toml"),
+        &missing_store_root,
+        &missing_store_root.join("manifests"),
+    );
 
     let active_path = active_state_path();
     assert!(
@@ -136,6 +142,7 @@ fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
         .env("DGW_HONEYPOT_LAB_E2E", "1")
         .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
         .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &missing_store_root)
+        .env("MANUAL_LAB_CONTROL_PLANE_CONFIG", &config_path)
         .assert()
         .code(2)
         .get_output()
@@ -147,7 +154,7 @@ fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
         rendered.contains("manual lab blocked by missing_store_root"),
         "{rendered}"
     );
-    assert!(rendered.contains("manual-lab-bootstrap-store"), "{rendered}");
+    assert!(rendered.contains("manual-lab-remember-source-manifest"), "{rendered}");
     assert!(
         !active_path.exists(),
         "preflight must not create active state at {}",
@@ -169,12 +176,18 @@ fn manual_lab_cli_preflight_and_up_share_missing_store_root_blocker() {
     )
     .expect("write gate");
     let missing_store_root = tempdir.path().join("missing-store-root");
+    let config_path = write_manual_lab_bootstrap_config(
+        &tempdir.path().join("control-plane.toml"),
+        &missing_store_root,
+        &missing_store_root.join("manifests"),
+    );
 
     let preflight_output = honeypot_manual_lab_assert_cmd()
         .arg("preflight")
         .env("DGW_HONEYPOT_LAB_E2E", "1")
         .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
         .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &missing_store_root)
+        .env("MANUAL_LAB_CONTROL_PLANE_CONFIG", &config_path)
         .assert()
         .code(2)
         .get_output()
@@ -187,6 +200,7 @@ fn manual_lab_cli_preflight_and_up_share_missing_store_root_blocker() {
         .env("DGW_HONEYPOT_LAB_E2E", "1")
         .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
         .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &missing_store_root)
+        .env("MANUAL_LAB_CONTROL_PLANE_CONFIG", &config_path)
         .assert()
         .code(1)
         .get_output()
@@ -213,12 +227,18 @@ fn manual_lab_cli_preflight_json_reports_missing_store_root() {
     )
     .expect("write gate");
     let missing_store_root = tempdir.path().join("missing-store-root");
+    let config_path = write_manual_lab_bootstrap_config(
+        &tempdir.path().join("control-plane.toml"),
+        &missing_store_root,
+        &missing_store_root.join("manifests"),
+    );
 
     let output = honeypot_manual_lab_assert_cmd()
         .args(["preflight", "--format=json"])
         .env("DGW_HONEYPOT_LAB_E2E", "1")
         .env("DGW_HONEYPOT_TIER_GATE", &gate_path)
         .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &missing_store_root)
+        .env("MANUAL_LAB_CONTROL_PLANE_CONFIG", &config_path)
         .assert()
         .code(2)
         .get_output()
@@ -260,6 +280,7 @@ fn manual_lab_cli_bootstrap_store_is_dry_run_by_default() {
     let rendered = String::from_utf8(output).expect("utf8 stdout");
 
     assert!(rendered.contains("manual lab bootstrap ready"), "{rendered}");
+    assert!(rendered.contains("source_manifest_digest="), "{rendered}");
     assert!(rendered.contains("consume_image_command="), "{rendered}");
     assert!(
         !image_store.exists(),
@@ -309,6 +330,7 @@ fn manual_lab_cli_bootstrap_store_execute_imports_and_rechecks_preflight() {
     let rendered = String::from_utf8(output).expect("utf8 stdout");
 
     assert!(rendered.contains("manual lab bootstrap executed"), "{rendered}");
+    assert!(rendered.contains("source_manifest_digest="), "{rendered}");
     assert!(rendered.contains("post_import_preflight_status=ready"), "{rendered}");
     assert!(image_store.is_dir(), "{}", image_store.display());
     assert!(manifest_dir.is_dir(), "{}", manifest_dir.display());
@@ -323,6 +345,188 @@ fn manual_lab_cli_bootstrap_store_execute_imports_and_rechecks_preflight() {
         "{} should contain an imported manifest",
         manifest_dir.display()
     );
+}
+
+#[test]
+fn manual_lab_cli_remember_source_manifest_writes_local_hint_for_admissible_manifest() {
+    let tempdir = tempdir().expect("create tempdir");
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "remember");
+    let selection_path = tempdir.path().join("selected-source-manifest.json");
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("remember-source-manifest")
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST", &selection_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(rendered.contains("manual lab source manifest remembered"), "{rendered}");
+    assert!(selection_path.is_file(), "{}", selection_path.display());
+
+    let record: serde_json::Value =
+        serde_json::from_slice(&fs::read(&selection_path).expect("read selection file")).expect("parse selection file");
+    assert_eq!(
+        record.pointer("/path"),
+        Some(&json!(
+            source_manifest
+                .canonicalize()
+                .expect("canonicalize source manifest")
+                .display()
+                .to_string()
+        ))
+    );
+    assert_eq!(
+        record.pointer("/digest"),
+        Some(&json!(sha256_hex(
+            &fs::read(&source_manifest).expect("read source manifest")
+        )))
+    );
+}
+
+#[test]
+fn manual_lab_cli_bootstrap_store_uses_remembered_source_manifest_when_explicit_source_is_absent() {
+    let tempdir = tempdir().expect("create tempdir");
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "remembered-bootstrap");
+    let selection_path = tempdir.path().join("selected-source-manifest.json");
+
+    honeypot_manual_lab_assert_cmd()
+        .arg("remember-source-manifest")
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST", &selection_path)
+        .assert()
+        .success();
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--config")
+        .arg(&config_path)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .env("DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST", &selection_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(rendered.contains("manual lab bootstrap ready"), "{rendered}");
+    assert!(
+        rendered.contains(&format!(
+            "source_manifest_path={}",
+            source_manifest
+                .canonicalize()
+                .expect("canonicalize source manifest")
+                .display()
+        )),
+        "{rendered}"
+    );
+    assert!(rendered.contains("source_manifest_digest="), "{rendered}");
+}
+
+#[test]
+fn manual_lab_cli_bootstrap_store_explicit_source_overrides_remembered_hint() {
+    let tempdir = tempdir().expect("create tempdir");
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let remembered_manifest = create_manual_lab_source_bundle(tempdir.path(), "remembered");
+    let explicit_manifest = create_manual_lab_source_bundle(tempdir.path(), "explicit");
+    let selection_path = tempdir.path().join("selected-source-manifest.json");
+
+    honeypot_manual_lab_assert_cmd()
+        .arg("remember-source-manifest")
+        .arg("--source-manifest")
+        .arg(&remembered_manifest)
+        .env("DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST", &selection_path)
+        .assert()
+        .success();
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&explicit_manifest)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .env("DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST", &selection_path)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains(&format!(
+            "source_manifest_path={}",
+            explicit_manifest
+                .canonicalize()
+                .expect("canonicalize explicit manifest")
+                .display()
+        )),
+        "{rendered}"
+    );
+    assert!(
+        !rendered.contains(
+            &remembered_manifest
+                .canonicalize()
+                .expect("canonicalize remembered manifest")
+                .display()
+                .to_string()
+        ),
+        "{rendered}"
+    );
+}
+
+#[test]
+fn manual_lab_cli_bootstrap_store_blocks_on_stale_remembered_source_manifest() {
+    let tempdir = tempdir().expect("create tempdir");
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "stale");
+    let selection_path = tempdir.path().join("selected-source-manifest.json");
+
+    honeypot_manual_lab_assert_cmd()
+        .arg("remember-source-manifest")
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST", &selection_path)
+        .assert()
+        .success();
+
+    fs::write(&source_manifest, b"{\"tampered\":true}").expect("tamper source manifest");
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--config")
+        .arg(&config_path)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .env("DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST", &selection_path)
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(rendered.contains("remembered_source_manifest_invalid"), "{rendered}");
+    assert!(rendered.contains("manual-lab-remember-source-manifest"), "{rendered}");
 }
 
 fn blocker_lines(output: &str) -> Vec<&str> {

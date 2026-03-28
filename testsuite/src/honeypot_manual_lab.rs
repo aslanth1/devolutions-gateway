@@ -19,6 +19,7 @@ use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse};
 use honeypot_control_plane::config::ControlPlaneConfig;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use crate::honeypot_control_plane::{
@@ -34,9 +35,11 @@ const MANUAL_LAB_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_HOST_COUNT: usize = 3;
 const MANUAL_LAB_ROOT_RELATIVE_PATH: &str = "target/manual-lab";
 const MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH: &str = "target/manual-lab/active.json";
+const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_RELATIVE_PATH: &str = "target/manual-lab/selected-source-manifest.json";
 const MANUAL_LAB_TARGET_ROOT_RELATIVE_PATH: &str = "target";
 const MANUAL_LAB_CONTROL_PLANE_CONFIG_RELATIVE_PATH: &str =
     "honeypot/docker/config/control-plane/manual-lab-bootstrap.toml";
+const MANUAL_LAB_CONTROL_PLANE_CONFIG_ENV: &str = "MANUAL_LAB_CONTROL_PLANE_CONFIG";
 const MANUAL_LAB_DRIVER_PROXY_USERNAME: &str = "operator";
 const MANUAL_LAB_DRIVER_PROXY_PASSWORD: &str = "attacker-password";
 const MANUAL_LAB_CONTROL_PLANE_SCOPE: &str = "gateway.honeypot.control-plane";
@@ -44,6 +47,7 @@ const MANUAL_LAB_WILDCARD_SCOPE: &str = "*";
 const MANUAL_LAB_CHROME_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_CHROME";
 const MANUAL_LAB_XVFB_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_XVFB";
 const MANUAL_LAB_XEPHYR_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_XEPHYR";
+const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST";
 const MANUAL_LAB_FRONTEND_CONFIG_ENV: &str = "HONEYPOT_FRONTEND_CONFIG_PATH";
 const HONEYPOT_INTEROP_IMAGE_STORE_ENV: &str = "DGW_HONEYPOT_INTEROP_IMAGE_STORE";
 const HONEYPOT_INTEROP_MANIFEST_DIR_ENV: &str = "DGW_HONEYPOT_INTEROP_MANIFEST_DIR";
@@ -137,6 +141,111 @@ pub struct ManualLabBootstrapOptions {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ManualLabRememberSourceManifestStatus {
+    Remembered,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualLabRememberSourceManifestReport {
+    pub status: ManualLabRememberSourceManifestStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
+    pub selection_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_manifest_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_manifest_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+}
+
+impl ManualLabRememberSourceManifestReport {
+    fn remembered(selection_path: PathBuf, source_manifest_path: PathBuf, source_manifest_digest: String) -> Self {
+        Self {
+            status: ManualLabRememberSourceManifestStatus::Remembered,
+            blocker: None,
+            selection_path,
+            source_manifest_path: Some(source_manifest_path),
+            source_manifest_digest: Some(source_manifest_digest),
+            detail: Some(
+                "remembered source manifest for repeated manual bootstrap runs".to_owned(),
+            ),
+            remediation: Some(
+                "rerun `make manual-lab-bootstrap-store` or `make manual-lab-bootstrap-store-exec`; remove the selection file if you need to clear the hint"
+                    .to_owned(),
+            ),
+        }
+    }
+
+    fn blocked(
+        blocker: impl Into<String>,
+        selection_path: PathBuf,
+        source_manifest_path: Option<PathBuf>,
+        detail: impl Into<String>,
+        remediation: Option<String>,
+    ) -> Self {
+        Self {
+            status: ManualLabRememberSourceManifestStatus::Blocked,
+            blocker: Some(blocker.into()),
+            selection_path,
+            source_manifest_path,
+            source_manifest_digest: None,
+            detail: Some(detail.into()),
+            remediation,
+        }
+    }
+
+    pub fn is_success(&self) -> bool {
+        self.status == ManualLabRememberSourceManifestStatus::Remembered
+    }
+
+    pub fn render_json(&self) -> anyhow::Result<String> {
+        serde_json::to_string_pretty(self).context("serialize remembered source manifest report")
+    }
+
+    pub fn render_text(&self) -> String {
+        let mut lines = Vec::new();
+        match self.status {
+            ManualLabRememberSourceManifestStatus::Remembered => {
+                lines.push("manual lab source manifest remembered".to_owned());
+            }
+            ManualLabRememberSourceManifestStatus::Blocked => {
+                let blocker = self.blocker.as_deref().unwrap_or("blocked");
+                let detail = self
+                    .detail
+                    .as_deref()
+                    .unwrap_or("remember-source-manifest could not continue");
+                lines.push(format!(
+                    "manual lab source manifest remember blocked by {blocker}: {detail}"
+                ));
+            }
+        }
+
+        lines.push(format!("selection_path={}", self.selection_path.display()));
+        if let Some(path) = &self.source_manifest_path {
+            lines.push(format!("source_manifest_path={}", path.display()));
+        }
+        if let Some(digest) = self.source_manifest_digest.as_deref() {
+            lines.push(format!("source_manifest_digest={digest}"));
+        }
+        if let Some(detail) = self.detail.as_deref()
+            && self.status == ManualLabRememberSourceManifestStatus::Remembered
+        {
+            lines.push(format!("detail={detail}"));
+        }
+        if let Some(remediation) = self.remediation.as_deref() {
+            lines.push(format!("remediation: {remediation}"));
+        }
+
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ManualLabBootstrapStatus {
     Ready,
     Executed,
@@ -158,6 +267,8 @@ pub struct ManualLabBootstrapReport {
     pub config_path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_manifest_path: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_manifest_digest: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub candidates: Vec<ManualLabBootstrapCandidate>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -174,6 +285,7 @@ impl ManualLabBootstrapReport {
     fn ready(
         config_path: PathBuf,
         source_manifest_path: PathBuf,
+        source_manifest_digest: String,
         candidates: Vec<ManualLabBootstrapCandidate>,
         consume_image_command: String,
     ) -> Self {
@@ -182,6 +294,7 @@ impl ManualLabBootstrapReport {
             blocker: None,
             config_path,
             source_manifest_path: Some(source_manifest_path),
+            source_manifest_digest: Some(source_manifest_digest),
             candidates,
             consume_image_command: Some(consume_image_command),
             detail: Some("bootstrap-store resolved one admissible source manifest and is ready to import it".to_owned()),
@@ -196,6 +309,7 @@ impl ManualLabBootstrapReport {
     fn executed(
         config_path: PathBuf,
         source_manifest_path: PathBuf,
+        source_manifest_digest: String,
         candidates: Vec<ManualLabBootstrapCandidate>,
         consume_image_command: String,
         post_import_preflight: ManualLabPreflightReport,
@@ -205,6 +319,7 @@ impl ManualLabBootstrapReport {
             blocker: None,
             config_path,
             source_manifest_path: Some(source_manifest_path),
+            source_manifest_digest: Some(source_manifest_digest),
             candidates,
             consume_image_command: Some(consume_image_command),
             detail: Some(
@@ -221,6 +336,7 @@ impl ManualLabBootstrapReport {
             blocker: Some(blocked.blocker),
             config_path: blocked.config_path,
             source_manifest_path: blocked.source_manifest_path,
+            source_manifest_digest: blocked.source_manifest_digest,
             candidates: blocked.candidates,
             consume_image_command: blocked.consume_image_command,
             detail: Some(blocked.detail),
@@ -257,6 +373,9 @@ impl ManualLabBootstrapReport {
         if let Some(path) = &self.source_manifest_path {
             lines.push(format!("source_manifest_path={}", path.display()));
         }
+        if let Some(digest) = self.source_manifest_digest.as_deref() {
+            lines.push(format!("source_manifest_digest={digest}"));
+        }
         if let Some(command) = self.consume_image_command.as_deref() {
             lines.push(format!("consume_image_command={command}"));
         }
@@ -292,6 +411,7 @@ struct ManualLabBootstrapBlocked {
     blocker: String,
     config_path: PathBuf,
     source_manifest_path: Option<PathBuf>,
+    source_manifest_digest: Option<String>,
     candidates: Vec<ManualLabBootstrapCandidate>,
     consume_image_command: Option<String>,
     detail: String,
@@ -389,6 +509,7 @@ enum ManualLabPreflightOutcome {
 struct ManualLabBootstrapPlan {
     config_path: PathBuf,
     source_manifest_path: PathBuf,
+    source_manifest_digest: String,
     candidates: Vec<ManualLabBootstrapCandidate>,
     consume_image_command: String,
 }
@@ -401,6 +522,12 @@ struct ManualLabBootstrapReady {
 enum ManualLabBootstrapOutcome {
     Ready(ManualLabBootstrapReady),
     Blocked(ManualLabBootstrapReport),
+}
+
+struct ManualLabBootstrapSourceManifestResolution {
+    source_manifest_path: PathBuf,
+    source_manifest_digest: String,
+    candidates: Vec<ManualLabBootstrapCandidate>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -606,6 +733,11 @@ pub fn active_state_path() -> PathBuf {
     repo_relative_path(MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH)
 }
 
+pub fn selected_source_manifest_path() -> PathBuf {
+    optional_env_path(MANUAL_LAB_SELECTED_SOURCE_MANIFEST_ENV)
+        .unwrap_or_else(|| repo_relative_path(MANUAL_LAB_SELECTED_SOURCE_MANIFEST_RELATIVE_PATH))
+}
+
 fn manual_lab_manifest_path(relative_path: &str) -> PathBuf {
     repo_relative_path(relative_path)
 }
@@ -614,6 +746,12 @@ pub fn honeypot_manual_lab_assert_cmd() -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::new(&*HONEYPOT_MANUAL_LAB_BIN_PATH);
     cmd.env("RUST_BACKTRACE", "0");
     cmd
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ManualLabSelectedSourceManifestRecord {
+    path: PathBuf,
+    digest: String,
 }
 
 pub fn render_three_host_trusted_image_manifest(
@@ -911,6 +1049,45 @@ pub fn preflight(options: ManualLabUpOptions) -> anyhow::Result<ManualLabPreflig
     })
 }
 
+pub fn remember_source_manifest(source_manifest_path: &Path) -> anyhow::Result<ManualLabRememberSourceManifestReport> {
+    let selection_path = selected_source_manifest_path();
+    let source_manifest_path = match evaluate_manual_lab_source_manifest_candidate_impl(source_manifest_path) {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(ManualLabRememberSourceManifestReport::blocked(
+                "source_manifest_invalid",
+                selection_path,
+                Some(source_manifest_path.to_path_buf()),
+                format!("{error:#}"),
+                Some(
+                    "pass an admissible bundle manifest from `make manual-lab-bootstrap-store`, then rerun remember-source-manifest"
+                        .to_owned(),
+                ),
+            ));
+        }
+    };
+    let source_manifest_digest = manual_lab_file_sha256_hex(&source_manifest_path)?;
+
+    if let Some(parent) = selection_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let record = ManualLabSelectedSourceManifestRecord {
+        path: source_manifest_path.clone(),
+        digest: source_manifest_digest.clone(),
+    };
+    fs::write(
+        &selection_path,
+        serde_json::to_vec_pretty(&record).context("serialize selected source manifest record")?,
+    )
+    .with_context(|| format!("write {}", selection_path.display()))?;
+
+    Ok(ManualLabRememberSourceManifestReport::remembered(
+        selection_path,
+        source_manifest_path,
+        source_manifest_digest,
+    ))
+}
+
 pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<ManualLabBootstrapReport> {
     let readiness = match evaluate_manual_lab_bootstrap(&options)? {
         ManualLabBootstrapOutcome::Ready(ready) => ready,
@@ -944,6 +1121,7 @@ pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<Man
             blocker: "consume_image_failed".to_owned(),
             config_path: readiness.plan.config_path,
             source_manifest_path: Some(readiness.plan.source_manifest_path),
+            source_manifest_digest: Some(readiness.plan.source_manifest_digest),
             candidates: readiness.plan.candidates,
             consume_image_command: Some(readiness.plan.consume_image_command),
             detail: failure_detail,
@@ -966,6 +1144,7 @@ pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<Man
             blocker: "post_import_preflight_still_blocked".to_owned(),
             config_path: readiness.plan.config_path,
             source_manifest_path: Some(readiness.plan.source_manifest_path),
+            source_manifest_digest: Some(readiness.plan.source_manifest_digest),
             candidates: readiness.plan.candidates,
             consume_image_command: Some(readiness.plan.consume_image_command),
             detail: format!(
@@ -979,6 +1158,7 @@ pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<Man
     Ok(ManualLabBootstrapReport::executed(
         readiness.plan.config_path,
         readiness.plan.source_manifest_path,
+        readiness.plan.source_manifest_digest,
         readiness.plan.candidates,
         readiness.plan.consume_image_command,
         post_import_preflight,
@@ -1750,13 +1930,16 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
                 }
                 remediation = Some(match bootstrap_report.blocker.as_deref() {
                     Some("multiple_admissible_candidates_require_explicit_source_manifest") => {
-                        "run `make manual-lab-bootstrap-store` to inspect admissible source manifests, then rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` and `make manual-lab-preflight`".to_owned()
+                        "run `make manual-lab-bootstrap-store` to inspect admissible source manifests, remember one with `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`, then rerun `make manual-lab-bootstrap-store-exec` and `make manual-lab-preflight`".to_owned()
                     }
                     Some("no_admissible_candidates") => {
-                        "run `make manual-lab-bootstrap-store` to inspect rejected candidates, or rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` with an explicit bundle manifest, then rerun `make manual-lab-preflight`".to_owned()
+                        "run `make manual-lab-bootstrap-store` to inspect rejected candidates, remember one with `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`, or rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>`, then rerun `make manual-lab-preflight`".to_owned()
                     }
                     Some("control_plane_config_invalid") | Some("control_plane_config_store_mismatch") => {
                         "fix the manual-lab control-plane bootstrap config, then rerun `make manual-lab-bootstrap-store` and `make manual-lab-preflight`".to_owned()
+                    }
+                    Some("remembered_source_manifest_invalid") => {
+                        "rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>` or `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>`, then rerun `make manual-lab-preflight`".to_owned()
                     }
                     _ if bootstrap_report.is_success() => {
                         "run `make manual-lab-bootstrap-store-exec` to populate the canonical Tiny11 interop store, then rerun `make manual-lab-preflight`".to_owned()
@@ -1927,7 +2110,8 @@ fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateI
 }
 
 fn default_manual_lab_control_plane_config_path() -> PathBuf {
-    manual_lab_manifest_path(MANUAL_LAB_CONTROL_PLANE_CONFIG_RELATIVE_PATH)
+    optional_env_path(MANUAL_LAB_CONTROL_PLANE_CONFIG_ENV)
+        .unwrap_or_else(|| manual_lab_manifest_path(MANUAL_LAB_CONTROL_PLANE_CONFIG_RELATIVE_PATH))
 }
 
 fn render_manual_lab_bootstrap_consume_command(config_path: &Path, source_manifest_path: &Path) -> String {
@@ -1937,6 +2121,23 @@ fn render_manual_lab_bootstrap_consume_command(config_path: &Path, source_manife
         config_path.display(),
         source_manifest_path.display()
     )
+}
+
+fn manual_lab_file_sha256_hex(path: &Path) -> anyhow::Result<String> {
+    let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn load_selected_source_manifest_record() -> anyhow::Result<Option<ManualLabSelectedSourceManifestRecord>> {
+    let selection_path = selected_source_manifest_path();
+    if !selection_path.exists() {
+        return Ok(None);
+    }
+
+    let bytes = fs::read(&selection_path).with_context(|| format!("read {}", selection_path.display()))?;
+    let record = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse selected source manifest record {}", selection_path.display()))?;
+    Ok(Some(record))
 }
 
 fn discover_manual_lab_source_manifest_candidates_in_root(search_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -2149,6 +2350,137 @@ fn resolve_manual_lab_bootstrap_candidates(
     Ok(candidates)
 }
 
+fn resolve_manual_lab_bootstrap_source_manifest(
+    options: &ManualLabBootstrapOptions,
+    config_path: PathBuf,
+) -> anyhow::Result<Result<ManualLabBootstrapSourceManifestResolution, ManualLabBootstrapReport>> {
+    if let Some(path) = options.source_manifest_path.as_deref() {
+        let candidates = resolve_manual_lab_bootstrap_candidates(Some(path))?;
+        let admissible_candidates = candidates
+            .iter()
+            .filter(|candidate| candidate.admissible)
+            .map(|candidate| candidate.path.clone())
+            .collect::<Vec<_>>();
+        return Ok(match admissible_candidates.as_slice() {
+            [candidate] => Ok(ManualLabBootstrapSourceManifestResolution {
+                source_manifest_path: candidate.clone(),
+                source_manifest_digest: manual_lab_file_sha256_hex(candidate)?,
+                candidates,
+            }),
+            _ => Err(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
+                blocker: "explicit_source_manifest_invalid".to_owned(),
+                config_path,
+                source_manifest_path: options.source_manifest_path.clone(),
+                source_manifest_digest: None,
+                candidates,
+                consume_image_command: None,
+                detail: "the explicit --source-manifest path did not pass bootstrap admissibility checks".to_owned(),
+                remediation: Some("fix or replace the explicit source manifest, then rerun bootstrap-store".to_owned()),
+                post_import_preflight: None,
+            })),
+        });
+    }
+
+    if let Some(remembered) = load_selected_source_manifest_record()? {
+        let remembered_candidate = evaluate_manual_lab_source_manifest_candidate(&remembered.path);
+        let mut candidates = resolve_manual_lab_bootstrap_candidates(None)?;
+        if candidates
+            .iter()
+            .all(|candidate| candidate.path != remembered_candidate.path)
+        {
+            candidates.push(remembered_candidate.clone());
+            candidates.sort_by(|left, right| left.path.cmp(&right.path));
+        }
+
+        if !remembered_candidate.admissible {
+            return Ok(Err(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
+                blocker: "remembered_source_manifest_invalid".to_owned(),
+                config_path,
+                source_manifest_path: Some(remembered.path),
+                source_manifest_digest: Some(remembered.digest),
+                candidates,
+                consume_image_command: None,
+                detail: "the remembered source manifest hint no longer passes bootstrap admissibility checks"
+                    .to_owned(),
+                remediation: Some(
+                    "rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>` or pass `MANUAL_LAB_SOURCE_MANIFEST=<path>` explicitly to bootstrap-store"
+                        .to_owned(),
+                ),
+                post_import_preflight: None,
+            })));
+        }
+
+        let actual_digest = manual_lab_file_sha256_hex(&remembered_candidate.path)?;
+        if actual_digest != remembered.digest {
+            return Ok(Err(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
+                blocker: "remembered_source_manifest_invalid".to_owned(),
+                config_path,
+                source_manifest_path: Some(remembered_candidate.path),
+                source_manifest_digest: Some(actual_digest),
+                candidates,
+                consume_image_command: None,
+                detail: "the remembered source manifest hint no longer matches the manifest digest that was selected"
+                    .to_owned(),
+                remediation: Some(
+                    "rerun `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>` or pass `MANUAL_LAB_SOURCE_MANIFEST=<path>` explicitly to bootstrap-store"
+                        .to_owned(),
+                ),
+                post_import_preflight: None,
+            })));
+        }
+
+        return Ok(Ok(ManualLabBootstrapSourceManifestResolution {
+            source_manifest_path: remembered_candidate.path,
+            source_manifest_digest: actual_digest,
+            candidates,
+        }));
+    }
+
+    let candidates = resolve_manual_lab_bootstrap_candidates(None)?;
+    let admissible_candidates = candidates
+        .iter()
+        .filter(|candidate| candidate.admissible)
+        .map(|candidate| candidate.path.clone())
+        .collect::<Vec<_>>();
+
+    Ok(match admissible_candidates.as_slice() {
+        [] => Err(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
+            blocker: "no_admissible_candidates".to_owned(),
+            config_path,
+            source_manifest_path: None,
+            source_manifest_digest: None,
+            candidates,
+            consume_image_command: None,
+            detail: "bootstrap-store did not find an admissible local source bundle manifest".to_owned(),
+            remediation: Some(
+                "run `make manual-lab-bootstrap-store` to inspect candidates, remember one with `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`, or rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` with an explicit bundle manifest"
+                    .to_owned(),
+            ),
+            post_import_preflight: None,
+        })),
+        [candidate] => Ok(ManualLabBootstrapSourceManifestResolution {
+            source_manifest_path: candidate.clone(),
+            source_manifest_digest: manual_lab_file_sha256_hex(candidate)?,
+            candidates,
+        }),
+        _ => Err(ManualLabBootstrapReport::blocked(ManualLabBootstrapBlocked {
+            blocker: "multiple_admissible_candidates_require_explicit_source_manifest".to_owned(),
+            config_path,
+            source_manifest_path: None,
+            source_manifest_digest: None,
+            candidates,
+            consume_image_command: None,
+            detail: "bootstrap-store found more than one admissible local source bundle manifest and will not guess"
+                .to_owned(),
+            remediation: Some(
+                "remember one with `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`, rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>`, or use `honeypot-manual-lab bootstrap-store --source-manifest <path> --execute`"
+                    .to_owned(),
+            ),
+            post_import_preflight: None,
+        })),
+    })
+}
+
 fn manual_lab_bootstrap_candidate_summary(candidates: &[ManualLabBootstrapCandidate]) -> Option<String> {
     if candidates.is_empty() {
         return None;
@@ -2181,6 +2513,7 @@ fn evaluate_manual_lab_bootstrap(options: &ManualLabBootstrapOptions) -> anyhow:
                     blocker: "control_plane_config_invalid".to_owned(),
                     config_path,
                     source_manifest_path: options.source_manifest_path.clone(),
+                    source_manifest_digest: None,
                     candidates: Vec::new(),
                     consume_image_command: None,
                     detail: format!("{error:#}"),
@@ -2201,6 +2534,7 @@ fn evaluate_manual_lab_bootstrap(options: &ManualLabBootstrapOptions) -> anyhow:
                 blocker: "control_plane_config_store_mismatch".to_owned(),
                 config_path,
                 source_manifest_path: options.source_manifest_path.clone(),
+                source_manifest_digest: None,
                 candidates: Vec::new(),
                 consume_image_command: None,
                 detail: format!(
@@ -2219,89 +2553,27 @@ fn evaluate_manual_lab_bootstrap(options: &ManualLabBootstrapOptions) -> anyhow:
         )));
     }
 
-    let candidates = resolve_manual_lab_bootstrap_candidates(options.source_manifest_path.as_deref())?;
-    let admissible_candidates = candidates
-        .iter()
-        .filter(|candidate| candidate.admissible)
-        .map(|candidate| candidate.path.clone())
-        .collect::<Vec<_>>();
-
-    let source_manifest_path = if options.source_manifest_path.is_some() {
-        match admissible_candidates.as_slice() {
-            [candidate] => candidate.clone(),
-            _ => {
-                return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
-                    ManualLabBootstrapBlocked {
-                        blocker: "explicit_source_manifest_invalid".to_owned(),
-                        config_path,
-                        source_manifest_path: options.source_manifest_path.clone(),
-                        candidates,
-                        consume_image_command: None,
-                        detail: "the explicit --source-manifest path did not pass bootstrap admissibility checks"
-                            .to_owned(),
-                        remediation: Some(
-                            "fix or replace the explicit source manifest, then rerun bootstrap-store".to_owned(),
-                        ),
-                        post_import_preflight: None,
-                    },
-                )));
-            }
-        }
-    } else {
-        match admissible_candidates.as_slice() {
-            [] => {
-                return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
-                    ManualLabBootstrapBlocked {
-                        blocker: "no_admissible_candidates".to_owned(),
-                        config_path,
-                        source_manifest_path: None,
-                        candidates,
-                        consume_image_command: None,
-                        detail:
-                            "bootstrap-store did not find an admissible local source bundle manifest"
-                                .to_owned(),
-                        remediation: Some(
-                            "run `make manual-lab-bootstrap-store` to inspect candidates, or rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` with an explicit bundle manifest"
-                                .to_owned(),
-                        ),
-                        post_import_preflight: None,
-                    },
-                )));
-            }
-            [candidate] => candidate.clone(),
-            _ => {
-                return Ok(ManualLabBootstrapOutcome::Blocked(ManualLabBootstrapReport::blocked(
-                    ManualLabBootstrapBlocked {
-                        blocker: "multiple_admissible_candidates_require_explicit_source_manifest".to_owned(),
-                        config_path,
-                        source_manifest_path: None,
-                        candidates,
-                        consume_image_command: None,
-                        detail:
-                            "bootstrap-store found more than one admissible local source bundle manifest and will not guess"
-                                .to_owned(),
-                        remediation: Some(
-                            "rerun `make manual-lab-bootstrap-store-exec MANUAL_LAB_SOURCE_MANIFEST=<path>` or `honeypot-manual-lab bootstrap-store --source-manifest <path> --execute`"
-                                .to_owned(),
-                        ),
-                        post_import_preflight: None,
-                    },
-                )));
-            }
-        }
+    let resolution = match resolve_manual_lab_bootstrap_source_manifest(options, config_path.clone())? {
+        Ok(result) => result,
+        Err(report) => return Ok(ManualLabBootstrapOutcome::Blocked(report)),
     };
+    let source_manifest_path = resolution.source_manifest_path;
+    let source_manifest_digest = resolution.source_manifest_digest;
+    let candidates = resolution.candidates;
 
     let consume_image_command = render_manual_lab_bootstrap_consume_command(&config_path, &source_manifest_path);
     Ok(ManualLabBootstrapOutcome::Ready(ManualLabBootstrapReady {
         report: ManualLabBootstrapReport::ready(
             config_path.clone(),
             source_manifest_path.clone(),
+            source_manifest_digest.clone(),
             candidates.clone(),
             consume_image_command.clone(),
         ),
         plan: ManualLabBootstrapPlan {
             config_path,
             source_manifest_path,
+            source_manifest_digest,
             candidates,
             consume_image_command,
         },

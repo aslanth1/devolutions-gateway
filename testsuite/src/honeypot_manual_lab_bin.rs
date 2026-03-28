@@ -28,8 +28,8 @@ fn main() {
 use anyhow::{Context as _, bail, ensure};
 #[cfg(unix)]
 use testsuite::honeypot_manual_lab::{
-    self, ManualLabBootstrapOptions, ManualLabBootstrapReport, ManualLabPreflightReport, ManualLabTeardownReport,
-    ManualLabUpOptions,
+    self, ManualLabBootstrapOptions, ManualLabBootstrapReport, ManualLabPreflightReport,
+    ManualLabRememberSourceManifestReport, ManualLabTeardownReport, ManualLabUpOptions,
 };
 
 #[cfg(unix)]
@@ -124,6 +124,26 @@ fn real_main() -> anyhow::Result<i32> {
             print_bootstrap_report(&report, format)?;
             Ok(if report.is_success() { 0 } else { 2 })
         }
+        "remember-source-manifest" => {
+            let mut format = ManualLabOutputFormat::Text;
+            let mut source_manifest_path = None;
+            while let Some(arg) = args.next() {
+                match arg.as_str() {
+                    "--format=json" => format = ManualLabOutputFormat::Json,
+                    "--format=text" => format = ManualLabOutputFormat::Text,
+                    "--source-manifest" => {
+                        let value = args.next().context("missing value for --source-manifest")?;
+                        source_manifest_path = Some(value);
+                    }
+                    other => bail!("unknown argument for remember-source-manifest: {other}\n\n{}", usage()),
+                }
+            }
+            let source_manifest_path =
+                source_manifest_path.context("remember-source-manifest requires --source-manifest <path>")?;
+            let report = honeypot_manual_lab::remember_source_manifest(source_manifest_path.as_ref())?;
+            print_remember_source_manifest_report(&report, format)?;
+            Ok(if report.is_success() { 0 } else { 2 })
+        }
         "status" => {
             ensure!(args.next().is_none(), "status does not accept arguments\n\n{}", usage());
             match honeypot_manual_lab::status()? {
@@ -210,6 +230,18 @@ fn print_bootstrap_report(report: &ManualLabBootstrapReport, format: ManualLabOu
 }
 
 #[cfg(unix)]
+fn print_remember_source_manifest_report(
+    report: &ManualLabRememberSourceManifestReport,
+    format: ManualLabOutputFormat,
+) -> anyhow::Result<()> {
+    match format {
+        ManualLabOutputFormat::Text => println!("{}", report.render_text()),
+        ManualLabOutputFormat::Json => println!("{}", report.render_json()?),
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
 fn print_teardown_report(report: &ManualLabTeardownReport) {
     match &report.state {
         Some(state) => {
@@ -238,6 +270,7 @@ fn usage() -> &'static str {
   cargo run -p testsuite --bin honeypot-manual-lab -- up [--no-browser]
   cargo run -p testsuite --bin honeypot-manual-lab -- preflight [--no-browser] [--format=json|text]
   cargo run -p testsuite --bin honeypot-manual-lab -- bootstrap-store [--source-manifest <path>] [--config <path>] [--execute] [--format=json|text]
+  cargo run -p testsuite --bin honeypot-manual-lab -- remember-source-manifest --source-manifest <path> [--format=json|text]
   cargo run -p testsuite --bin honeypot-manual-lab -- status
   cargo run -p testsuite --bin honeypot-manual-lab -- down
 
@@ -245,6 +278,7 @@ Commands:
   up         Launch control-plane, proxy, frontend, and three Tiny11-backed live sessions.
   preflight  Check manual-lab prerequisites without starting services.
   bootstrap-store  Resolve and optionally import a sanctioned Tiny11 source bundle into the canonical interop store.
+  remember-source-manifest  Remember one admissible source manifest for repeated manual bootstrap runs.
   status     Print the active manual-lab run state and current health snapshots.
   down       Tear down the active manual-lab run and recycle known leases.
 
@@ -252,5 +286,6 @@ Notes:
   up opens Chrome by default after the frontend reports three ready tiles.
   preflight checks the same gate path that up uses and exits non-zero when blocked.
   bootstrap-store is dry-run by default; add --execute to run consume-image and then rerun preflight.
+  remember-source-manifest stores a local git-ignored hint under target/manual-lab/ and never weakens explicit --source-manifest precedence.
   Use --no-browser to leave the deck running without opening Chrome."
 }
