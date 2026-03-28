@@ -401,6 +401,25 @@ pub fn validate_honeypot_release_inputs(
     validate_honeypot_compose_document(&compose_data, &lockfile)
 }
 
+pub fn validate_host_smoke_release_preflight(
+    lock_path: &Path,
+    manifest_path: &Path,
+    compose_path: &Path,
+) -> anyhow::Result<()> {
+    validate_honeypot_release_inputs(lock_path, manifest_path, compose_path)?;
+    let lockfile = load_honeypot_images_lock(lock_path)?;
+
+    for service in SERVICE_NAMES {
+        let entry = lockfile.service_entry(service);
+        ensure_promoted_revision(service, "current", &entry.current)
+            .with_context(|| format!("host-smoke preflight requires promoted current release input for {service}"))?;
+        ensure_promoted_revision(service, "previous", &entry.previous)
+            .with_context(|| format!("host-smoke preflight requires promoted previous release input for {service}"))?;
+    }
+
+    Ok(())
+}
+
 pub fn validate_honeypot_promotion_manifest_binding(
     lockfile: &HoneypotImagesLock,
     manifest: &HoneypotPromotionManifest,

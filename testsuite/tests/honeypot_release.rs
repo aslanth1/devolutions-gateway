@@ -25,7 +25,8 @@ use testsuite::honeypot_release::{
     validate_honeypot_frontend_runtime_contract, validate_honeypot_images_lock_document,
     validate_honeypot_promotion_manifest_document, validate_honeypot_proxy_compose_runtime_document,
     validate_honeypot_proxy_env_document, validate_honeypot_proxy_runtime_contract, validate_honeypot_release_inputs,
-    validate_mixed_version_contract_compatibility, validate_restored_service_contract_compatibility,
+    validate_host_smoke_release_preflight, validate_mixed_version_contract_compatibility,
+    validate_restored_service_contract_compatibility,
 };
 use testsuite::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
 use tokio::time::{Instant, sleep};
@@ -184,6 +185,46 @@ fn sample_promotion_manifest() -> String {
         ]
     })
     .to_string()
+}
+
+fn sample_images_lock_document() -> String {
+    r#"
+control-plane:
+  image: devolutions-gateway-honeypot/control-plane
+  registry: ghcr.io/fork-owner
+  current:
+    tag: v0.1.0
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+    source_ref: refs/tags/v0.1.0
+  previous:
+    tag: v0.0.9
+    digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    source_ref: refs/tags/v0.0.9
+proxy:
+  image: devolutions-gateway-honeypot/proxy
+  registry: ghcr.io/fork-owner
+  current:
+    tag: v0.1.0
+    digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+    source_ref: refs/tags/v0.1.0
+  previous:
+    tag: v0.0.9
+    digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    source_ref: refs/tags/v0.0.9
+frontend:
+  image: devolutions-gateway-honeypot/frontend
+  registry: ghcr.io/fork-owner
+  current:
+    tag: v0.1.0
+    digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+    source_ref: refs/tags/v0.1.0
+  previous:
+    tag: v0.0.9
+    digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+    source_ref: refs/tags/v0.0.9
+"#
+    .trim_start()
+    .to_owned()
 }
 
 fn honeypot_scope_token(scope: &str) -> String {
@@ -1410,6 +1451,42 @@ fn release_inputs_on_disk_match_the_honeypot_lockfile_contract() {
         &repo_relative_path(HONEYPOT_FRONTEND_CONFIG_PATH),
     )
     .expect("frontend runtime config injection should match the deployment contract");
+}
+
+#[test]
+fn host_smoke_release_preflight_accepts_promoted_release_inputs() {
+    let tempdir = tempfile::tempdir().expect("create temporary release-input fixture directory");
+    let lock_path = tempdir.path().join("images.lock");
+    let manifest_path = tempdir.path().join("promotion-manifest.json");
+    let compose_path = tempdir.path().join("compose.yaml");
+
+    std::fs::write(&lock_path, sample_images_lock_document()).expect("write images.lock fixture");
+    std::fs::write(&manifest_path, sample_promotion_manifest()).expect("write promotion manifest fixture");
+    std::fs::copy(repo_relative_path(HONEYPOT_COMPOSE_PATH), &compose_path).expect("copy compose fixture");
+
+    validate_host_smoke_release_preflight(&lock_path, &manifest_path, &compose_path)
+        .expect("preflight should accept promoted release-input fixtures");
+}
+
+#[test]
+fn host_smoke_release_preflight_rejects_placeholder_previous_slots() {
+    let tempdir = tempfile::tempdir().expect("create temporary release-input fixture directory");
+    let lock_path = tempdir.path().join("images.lock");
+    let manifest_path = tempdir.path().join("promotion-manifest.json");
+    let compose_path = tempdir.path().join("compose.yaml");
+    let lock_document = sample_images_lock_document().replacen("tag: v0.0.9", "tag: v0.0.0-placeholder-prev", 1);
+
+    std::fs::write(&lock_path, lock_document).expect("write images.lock fixture");
+    std::fs::write(&manifest_path, sample_promotion_manifest()).expect("write promotion manifest fixture");
+    std::fs::copy(repo_relative_path(HONEYPOT_COMPOSE_PATH), &compose_path).expect("copy compose fixture");
+
+    let error = validate_host_smoke_release_preflight(&lock_path, &manifest_path, &compose_path)
+        .expect_err("preflight should reject placeholder previous slots");
+
+    assert!(
+        format!("{error:#}").contains("previous.tag still uses placeholder value v0.0.0-placeholder-prev"),
+        "{error:#}"
+    );
 }
 
 #[test]

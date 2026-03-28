@@ -936,6 +936,17 @@ Pass when: `test-host-smoke` only sets `DGW_HONEYPOT_HOST_SMOKE=1`, while `test-
 - [x] Add docs and contract tests for the tiered QEMU test Make lanes.
 Pass when: the runbook and testing docs explain `make test-host-smoke`, `make test-lab-e2e`, `MANUAL_LAB_PROFILE=local` for non-root hosts, and `LAB_E2E_PRECHECK=0`, while tests pin the Make target graph and the updated docs text.
 
+### Milestone 6p: Host-Smoke Release-Input Preflight
+
+- [x] Add a Rust-owned release-input preflight for the prepared-host `host-smoke` lane.
+Pass when: one fast Rust command validates `honeypot/docker/images.lock`, `honeypot/docker/promotion-manifest.json`, and `honeypot/docker/compose.yaml`, then rejects placeholder `current` or `previous` image slots before Docker or QEMU work begins.
+
+- [x] Keep the host-smoke precheck read-only by default and explicitly bypassable.
+Pass when: `make test-host-smoke` runs the new preflight by default without mutating local or canonical artifacts, and `HOST_SMOKE_PRECHECK=0` preserves the older raw `host-smoke` launch order for exceptional debugging.
+
+- [x] Add docs and contract tests for the host-smoke precheck lane.
+Pass when: the runbook and testing docs explain `make test-host-smoke-precheck`, the default `test-host-smoke` preflight behavior, and the `HOST_SMOKE_PRECHECK=0` opt-out, while tests pin both the Make target graph and the updated docs text.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

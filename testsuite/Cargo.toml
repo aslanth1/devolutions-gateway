@@ -27,6 +27,10 @@ path = "src/honeypot_manual_headed_writer_bin.rs"
 name = "honeypot-manual-lab"
 path = "src/honeypot_manual_lab_bin.rs"
 
+[[bin]]
+name = "honeypot-host-smoke-precheck"
+path = "src/honeypot_host_smoke_precheck_bin.rs"
+
 [dependencies]
 anyhow = "1.0"
 assert_cmd = "2.1"

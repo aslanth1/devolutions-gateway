@@ -220,13 +220,55 @@ fn make_test_host_smoke_stays_non_mutating_by_default() {
     );
     let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
 
+    let precheck_idx = rendered
+        .find("test-host-smoke-precheck")
+        .expect("default host-smoke wrapper should route through the release-input precheck");
+    let cargo_idx = rendered
+        .find("cargo test -p testsuite --test integration_tests")
+        .expect("host-smoke wrapper should still launch the integration test harness");
+
     assert!(
         rendered.contains("DGW_HONEYPOT_HOST_SMOKE=1"),
         "host-smoke wrapper should export the host-smoke gate:\n{rendered}"
     );
     assert!(
+        precheck_idx < cargo_idx,
+        "release-input precheck should appear before the host-smoke cargo invocation:\n{rendered}"
+    );
+    assert!(
         !rendered.contains("manual-lab-ensure-artifacts"),
         "host-smoke wrapper must stay non-mutating by default:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_test_host_smoke_can_disable_the_default_precheck() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("test-host-smoke")
+        .env("HOST_SMOKE_PRECHECK", "0")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n test-host-smoke with precheck disabled");
+    assert!(
+        output.status.success(),
+        "make -n test-host-smoke with precheck disabled failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("honeypot host-smoke precheck disabled; skipping release-input preflight"),
+        "precheck-disabled host-smoke should print the skip message:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("honeypot-host-smoke-precheck"),
+        "precheck-disabled host-smoke should not expand the nested precheck invocation:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("DGW_HONEYPOT_HOST_SMOKE=1"),
+        "precheck-disabled host-smoke should still launch the host-smoke harness:\n{rendered}"
     );
 }
 

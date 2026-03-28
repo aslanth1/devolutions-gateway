@@ -502,10 +502,21 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add first-class Make targets for the prepared-host honeypot test tiers.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6p: Host-Smoke Release-Input Preflight",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add a Rust-owned release-input preflight for the prepared-host `host-smoke` lane.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make test-host-smoke");
+    assert_contains(runbook_path, &runbook, "make test-host-smoke-precheck");
     assert_contains(runbook_path, &runbook, "make test-lab-e2e");
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
@@ -628,6 +639,21 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
+        "It runs `make test-host-smoke-precheck` by default",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "That preflight rejects placeholder `current` or `previous` image slots before Docker or QEMU work begins",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Set `HOST_SMOKE_PRECHECK=0` when you intentionally need the older raw `host-smoke` launch order without the automatic release-input preflight.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "Set `LAB_E2E_PRECHECK=0` when you intentionally need the older raw `lab-e2e` launch order without the automatic artifact ensure step.",
     );
     assert_contains(
@@ -639,6 +665,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);
     assert_contains(testing_path, &testing, "make test-host-smoke");
+    assert_contains(testing_path, &testing, "make test-host-smoke-precheck");
     assert_contains(testing_path, &testing, "make test-lab-e2e");
     assert_contains(
         testing_path,
@@ -760,7 +787,22 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
+        "`make test-host-smoke-precheck` is a fast read-only Rust gate over `honeypot/docker/images.lock`, `honeypot/docker/promotion-manifest.json`, and `honeypot/docker/compose.yaml`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "That precheck rejects placeholder `current` or `previous` image slots before Docker or QEMU work begins, so prepared-host runs fail fast when checked-in release inputs are still repo placeholders rather than promoted images.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
         "`make test-lab-e2e` honors the same `MANUAL_LAB_PROFILE=canonical|local` interop-store selection used by the manual deck wrappers.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Set `HOST_SMOKE_PRECHECK=0` when you intentionally need the older raw `host-smoke` launch order without the automatic release-input preflight.",
     );
     assert_contains(
         testing_path,

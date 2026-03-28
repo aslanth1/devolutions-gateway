@@ -56,10 +56,13 @@ cargo test -p testsuite --test integration_tests
   `make test-host-smoke`,
   and `make test-lab-e2e`.
 - `make test-host-smoke` is the non-mutating prepared-host shortcut.
-- It only sets `DGW_HONEYPOT_HOST_SMOKE=1` before launching the existing `cargo test -p testsuite --test integration_tests` path.
+- It runs `make test-host-smoke-precheck` by default, then sets `DGW_HONEYPOT_HOST_SMOKE=1` before launching the existing `cargo test -p testsuite --test integration_tests` path.
+- `make test-host-smoke-precheck` is a fast read-only Rust preflight over `honeypot/docker/images.lock`, `honeypot/docker/promotion-manifest.json`, and `honeypot/docker/compose.yaml`.
+- That preflight rejects placeholder `current` or `previous` image slots before Docker or QEMU work begins, so prepared-host runs fail fast when the checked-in release inputs have not been promoted yet.
 - `make test-lab-e2e` is the artifact-aware QEMU-host shortcut.
 - It writes `target/honeypot/lab-e2e-gate.json`, runs `make manual-lab-ensure-artifacts` by default, and then launches the existing `cargo test -p testsuite --test integration_tests` path with `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE`.
 - On a non-root workstation, use `MANUAL_LAB_PROFILE=local make test-lab-e2e` so the artifact precheck stays on the repo-local interop store instead of canonical `/srv`.
+- Set `HOST_SMOKE_PRECHECK=0` when you intentionally need the older raw `host-smoke` launch order without the automatic release-input preflight.
 - Set `LAB_E2E_PRECHECK=0` when you intentionally need the older raw `lab-e2e` launch order without the automatic artifact ensure step.
 - Use `HOST_SMOKE_TEST_ARGS='<filter or extra cargo args>'` or `LAB_E2E_TEST_ARGS='<filter or extra cargo args>'` to pass through test filters or trailing harness flags such as `-- --nocapture`.
 

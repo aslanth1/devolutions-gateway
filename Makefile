@@ -6,6 +6,7 @@ MANUAL_LAB_LOCAL_STATE_ROOT ?= target/manual-lab/state
 MANUAL_LAB_SELFTEST_UP_PRECHECK ?= 1
 HONEYPOT_TEST_TIER_GATE ?= $(CURDIR)/target/honeypot/lab-e2e-gate.json
 HOST_SMOKE_TEST_ARGS ?=
+HOST_SMOKE_PRECHECK ?= 1
 LAB_E2E_TEST_ARGS ?=
 LAB_E2E_PRECHECK ?= 1
 
@@ -49,9 +50,19 @@ $(HONEYPOT_TEST_TIER_GATE):
 	@printf '{\n  "contract_passed": true,\n  "host_smoke_passed": true\n}\n' > "$@"
 	@printf 'wrote honeypot test tier gate to %s\n' "$@"
 
+.PHONY: test-host-smoke-precheck
+test-host-smoke-precheck:
+	@printf 'running honeypot host-smoke release-input precheck\n'
+	@cargo run -p testsuite --bin honeypot-host-smoke-precheck
+
 .PHONY: test-host-smoke
 test-host-smoke:
-	@printf 'running honeypot host-smoke with DGW_HONEYPOT_HOST_SMOKE=1\n'
+	@printf 'running honeypot host-smoke with DGW_HONEYPOT_HOST_SMOKE=1 and precheck %s\n' "$(HOST_SMOKE_PRECHECK)"
+	@if [[ "$(HOST_SMOKE_PRECHECK)" != "0" ]]; then \
+		$(MAKE) test-host-smoke-precheck; \
+	else \
+		printf 'honeypot host-smoke precheck disabled; skipping release-input preflight\n'; \
+	fi
 	@DGW_HONEYPOT_HOST_SMOKE=1 \
 	cargo test -p testsuite --test integration_tests $(HOST_SMOKE_TEST_ARGS)
 
