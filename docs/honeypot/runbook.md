@@ -52,6 +52,16 @@ cargo test -p testsuite --test integration_tests
 - Relevant Tiny11-backed `lab-e2e` lanes now execute one canonical availability and readiness gate before lease work begins.
 - That gate resolves the interop store from `DGW_HONEYPOT_INTEROP_IMAGE_STORE` when set or from `/srv/honeypot/images` otherwise, reuses manifest-backed provenance validation, rejects stale `.importing` markers, and refuses to proceed when the required RDP credentials, QEMU path, KVM path, or `xfreerdp` path are absent.
 - If the canonical store is absent or fails provenance checks, repopulate it only through `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>`.
+- The repo root `Makefile` now provides the sanctioned tier shortcuts:
+  `make test-host-smoke`,
+  and `make test-lab-e2e`.
+- `make test-host-smoke` is the non-mutating prepared-host shortcut.
+- It only sets `DGW_HONEYPOT_HOST_SMOKE=1` before launching the existing `cargo test -p testsuite --test integration_tests` path.
+- `make test-lab-e2e` is the artifact-aware QEMU-host shortcut.
+- It writes `target/honeypot/lab-e2e-gate.json`, runs `make manual-lab-ensure-artifacts` by default, and then launches the existing `cargo test -p testsuite --test integration_tests` path with `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE`.
+- On a non-root workstation, use `MANUAL_LAB_PROFILE=local make test-lab-e2e` so the artifact precheck stays on the repo-local interop store instead of canonical `/srv`.
+- Set `LAB_E2E_PRECHECK=0` when you intentionally need the older raw `lab-e2e` launch order without the automatic artifact ensure step.
+- Use `HOST_SMOKE_TEST_ARGS='<filter or extra cargo args>'` or `LAB_E2E_TEST_ARGS='<filter or extra cargo args>'` to pass through test filters or trailing harness flags such as `-- --nocapture`.
 
 ## Local Bring-Up
 
@@ -114,6 +124,12 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - For manual operator self-test on a non-root host, prefer `make manual-lab-selftest` for the normal browser-backed path or `make manual-lab-selftest-no-browser` when you want the deck live without opening Chrome.
 - The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only visibility helper for the effective profile, config path, store root, manifest dir, and masked guest-auth state.
+- The related prepared-host tier shortcuts are `make test-host-smoke` and `make test-lab-e2e`.
+- `make test-host-smoke` keeps the existing `host-smoke` tier non-mutating by default.
+- `make test-lab-e2e` reuses `make manual-lab-ensure-artifacts` as its default fast precheck before setting `DGW_HONEYPOT_LAB_E2E=1` and the test tier gate.
+- On non-root hosts, prefer `MANUAL_LAB_PROFILE=local make test-lab-e2e` so the lab-e2e precheck stays on repo-local state instead of canonical `/srv`.
+- Set `LAB_E2E_PRECHECK=0` when a scripted caller intentionally wants the raw `lab-e2e` launch order without the automatic artifact ensure step.
+- Use `HOST_SMOKE_TEST_ARGS` or `LAB_E2E_TEST_ARGS` to pass through a test filter or trailing harness flags.
 - Those wrappers still call the same Rust launcher and only pre-create a local lab-e2e gate file plus set `DGW_HONEYPOT_LAB_E2E=1` and `DGW_HONEYPOT_TIER_GATE` for `preflight`, `ensure-artifacts`, `bootstrap-store`, and `up`.
 - For `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
 - Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses a different guest account.

@@ -46,6 +46,18 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The Rust gate implementation lives in `testsuite::honeypot_tiers`.
 - Future `lab-e2e` tests must call `require_honeypot_tier(HoneypotTestTier::LabE2e)` before any lab setup work starts.
 
+## Makefile Tier Shortcuts
+
+- The repo root `Makefile` provides `make test-host-smoke` and `make test-lab-e2e` as the sanctioned shortcuts for the prepared-host tiers.
+- `make test-host-smoke` is intentionally non-mutating by default.
+- It sets `DGW_HONEYPOT_HOST_SMOKE=1` and then launches the existing `cargo test -p testsuite --test integration_tests` path.
+- `make test-lab-e2e` is the artifact-aware QEMU-host shortcut.
+- It writes a local gate file at `target/honeypot/lab-e2e-gate.json`, runs `make manual-lab-ensure-artifacts` by default, and then launches the existing `cargo test -p testsuite --test integration_tests` path with `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE`.
+- `make test-lab-e2e` honors the same `MANUAL_LAB_PROFILE=canonical|local` interop-store selection used by the manual deck wrappers.
+- On non-root hosts, prefer `MANUAL_LAB_PROFILE=local make test-lab-e2e` so the artifact precheck stays on repo-local state instead of canonical `/srv`.
+- Set `LAB_E2E_PRECHECK=0` when you intentionally need the older raw `lab-e2e` launch order without the automatic artifact ensure step.
+- Use `HOST_SMOKE_TEST_ARGS='<filter or extra cargo args>'` or `LAB_E2E_TEST_ARGS='<filter or extra cargo args>'` to pass through test filters or trailing harness flags such as `-- --nocapture`.
+
 ## Test Placement Rules
 
 - Keep honeypot coverage inside `testsuite/tests/` and the existing `integration_tests` harness unless a later milestone records a justified split.

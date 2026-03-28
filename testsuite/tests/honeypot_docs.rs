@@ -496,9 +496,17 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Route granular local self-test launch aliases through the artifact fast-path by default.",
     );
+    assert_contains(agents_path, &agents, "### Milestone 6o: QEMU Tier Test Make Lanes");
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add first-class Make targets for the prepared-host honeypot test tiers.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
+    assert_contains(runbook_path, &runbook, "make test-host-smoke");
+    assert_contains(runbook_path, &runbook, "make test-lab-e2e");
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
@@ -612,9 +620,26 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &runbook,
         "If you want to inspect the lane first without mutating anything, run `make manual-lab-show-profile`.",
     );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "On a non-root workstation, use `MANUAL_LAB_PROFILE=local make test-lab-e2e` so the artifact precheck stays on the repo-local interop store instead of canonical `/srv`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Set `LAB_E2E_PRECHECK=0` when you intentionally need the older raw `lab-e2e` launch order without the automatic artifact ensure step.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Use `HOST_SMOKE_TEST_ARGS='<filter or extra cargo args>'` or `LAB_E2E_TEST_ARGS='<filter or extra cargo args>'` to pass through test filters or trailing harness flags such as `-- --nocapture`.",
+    );
 
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);
+    assert_contains(testing_path, &testing, "make test-host-smoke");
+    assert_contains(testing_path, &testing, "make test-lab-e2e");
     assert_contains(
         testing_path,
         &testing,
@@ -726,6 +751,31 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "Missing, corrupt, or stale digest stamps fall back to a full hash before the image is trusted.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`make test-host-smoke` is intentionally non-mutating by default.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`make test-lab-e2e` honors the same `MANUAL_LAB_PROFILE=canonical|local` interop-store selection used by the manual deck wrappers.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "On non-root hosts, prefer `MANUAL_LAB_PROFILE=local make test-lab-e2e` so the artifact precheck stays on repo-local state instead of canonical `/srv`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Set `LAB_E2E_PRECHECK=0` when you intentionally need the older raw `lab-e2e` launch order without the automatic artifact ensure step.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Use `HOST_SMOKE_TEST_ARGS='<filter or extra cargo args>'` or `LAB_E2E_TEST_ARGS='<filter or extra cargo args>'` to pass through test filters or trailing harness flags such as `-- --nocapture`.",
     );
     assert_contains(
         testing_path,

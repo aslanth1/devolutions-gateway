@@ -204,6 +204,100 @@ fn make_manual_lab_selftest_up_no_browser_routes_through_ensure_artifacts_by_def
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn make_test_host_smoke_stays_non_mutating_by_default() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("test-host-smoke")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n test-host-smoke");
+    assert!(
+        output.status.success(),
+        "make -n test-host-smoke failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("DGW_HONEYPOT_HOST_SMOKE=1"),
+        "host-smoke wrapper should export the host-smoke gate:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("manual-lab-ensure-artifacts"),
+        "host-smoke wrapper must stay non-mutating by default:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_test_lab_e2e_routes_through_ensure_artifacts_by_default() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("test-lab-e2e")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n test-lab-e2e");
+    assert!(
+        output.status.success(),
+        "make -n test-lab-e2e failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    let ensure_idx = rendered
+        .find("manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=canonical")
+        .expect("default test-lab-e2e should route through ensure-artifacts");
+    let cargo_idx = rendered
+        .find("cargo test -p testsuite --test integration_tests")
+        .expect("test-lab-e2e should still launch the integration test harness");
+
+    assert!(
+        ensure_idx < cargo_idx,
+        "ensure-artifacts should appear before the lab-e2e cargo invocation:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("DGW_HONEYPOT_LAB_E2E=1"),
+        "lab-e2e wrapper should export the lab-e2e gate:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("DGW_HONEYPOT_TIER_GATE="),
+        "lab-e2e wrapper should export the tier gate path:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_test_lab_e2e_can_disable_the_default_precheck() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("test-lab-e2e")
+        .env("LAB_E2E_PRECHECK", "0")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n test-lab-e2e with precheck disabled");
+    assert!(
+        output.status.success(),
+        "make -n test-lab-e2e with precheck disabled failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("honeypot lab-e2e precheck disabled; skipping ensure-artifacts"),
+        "precheck-disabled test-lab-e2e should print the skip message:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("cargo run -p testsuite --bin honeypot-manual-lab -- ensure-artifacts"),
+        "precheck-disabled test-lab-e2e should not expand the nested ensure-artifacts recipe:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("DGW_HONEYPOT_LAB_E2E=1"),
+        "precheck-disabled test-lab-e2e should still launch the lab-e2e harness:\n{rendered}"
+    );
+}
+
 #[test]
 fn manual_lab_cli_preflight_reports_missing_store_root_without_side_effects() {
     let tempdir = tempdir().expect("create tempdir");

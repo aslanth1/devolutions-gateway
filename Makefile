@@ -4,6 +4,10 @@ MANUAL_LAB_PROFILE ?= canonical
 MANUAL_LAB_TIER_GATE ?= $(CURDIR)/target/manual-lab/lab-e2e-gate.json
 MANUAL_LAB_LOCAL_STATE_ROOT ?= target/manual-lab/state
 MANUAL_LAB_SELFTEST_UP_PRECHECK ?= 1
+HONEYPOT_TEST_TIER_GATE ?= $(CURDIR)/target/honeypot/lab-e2e-gate.json
+HOST_SMOKE_TEST_ARGS ?=
+LAB_E2E_TEST_ARGS ?=
+LAB_E2E_PRECHECK ?= 1
 
 ifneq ($(filter $(MANUAL_LAB_PROFILE),canonical local),$(MANUAL_LAB_PROFILE))
 $(error MANUAL_LAB_PROFILE must be canonical or local)
@@ -25,6 +29,7 @@ MANUAL_LAB_INTEROP_RDP_PASSWORD ?= $(if $(DGW_HONEYPOT_INTEROP_RDP_PASSWORD),$(D
 MANUAL_LAB_INTEROP_ENV = $(if $(MANUAL_LAB_INTEROP_IMAGE_STORE),DGW_HONEYPOT_INTEROP_IMAGE_STORE="$(MANUAL_LAB_INTEROP_IMAGE_STORE)") $(if $(MANUAL_LAB_INTEROP_MANIFEST_DIR),DGW_HONEYPOT_INTEROP_MANIFEST_DIR="$(MANUAL_LAB_INTEROP_MANIFEST_DIR)")
 MANUAL_LAB_GATE_ENV = DGW_HONEYPOT_LAB_E2E=1 DGW_HONEYPOT_TIER_GATE="$(MANUAL_LAB_TIER_GATE)" MANUAL_LAB_CONTROL_PLANE_CONFIG="$(MANUAL_LAB_CONTROL_PLANE_CONFIG)" $(MANUAL_LAB_INTEROP_ENV)
 MANUAL_LAB_RUNTIME_ENV = $(MANUAL_LAB_GATE_ENV) DGW_HONEYPOT_INTEROP_RDP_USERNAME="$(MANUAL_LAB_INTEROP_RDP_USERNAME)" DGW_HONEYPOT_INTEROP_RDP_PASSWORD="$(MANUAL_LAB_INTEROP_RDP_PASSWORD)"
+HONEYPOT_LAB_E2E_ENV = DGW_HONEYPOT_LAB_E2E=1 DGW_HONEYPOT_TIER_GATE="$(HONEYPOT_TEST_TIER_GATE)" $(MANUAL_LAB_INTEROP_ENV) DGW_HONEYPOT_INTEROP_RDP_USERNAME="$(MANUAL_LAB_INTEROP_RDP_USERNAME)" DGW_HONEYPOT_INTEROP_RDP_PASSWORD="$(MANUAL_LAB_INTEROP_RDP_PASSWORD)"
 MANUAL_LAB_BOOTSTRAP_ARGS = --config "$(MANUAL_LAB_CONTROL_PLANE_CONFIG)" $(if $(MANUAL_LAB_SOURCE_MANIFEST),--source-manifest "$(MANUAL_LAB_SOURCE_MANIFEST)",)
 MANUAL_LAB_MASKED_RDP_PASSWORD = $(if $(MANUAL_LAB_INTEROP_RDP_PASSWORD),********,)
 
@@ -35,6 +40,31 @@ $(MANUAL_LAB_TIER_GATE):
 	@mkdir -p "$(dir $@)"
 	@printf '{\n  "contract_passed": true,\n  "host_smoke_passed": true\n}\n' > "$@"
 	@printf 'wrote manual-lab tier gate to %s\n' "$@"
+
+.PHONY: honeypot-tier-gate
+honeypot-tier-gate: $(HONEYPOT_TEST_TIER_GATE)
+
+$(HONEYPOT_TEST_TIER_GATE):
+	@mkdir -p "$(dir $@)"
+	@printf '{\n  "contract_passed": true,\n  "host_smoke_passed": true\n}\n' > "$@"
+	@printf 'wrote honeypot test tier gate to %s\n' "$@"
+
+.PHONY: test-host-smoke
+test-host-smoke:
+	@printf 'running honeypot host-smoke with DGW_HONEYPOT_HOST_SMOKE=1\n'
+	@DGW_HONEYPOT_HOST_SMOKE=1 \
+	cargo test -p testsuite --test integration_tests $(HOST_SMOKE_TEST_ARGS)
+
+.PHONY: test-lab-e2e
+test-lab-e2e: honeypot-tier-gate
+	@printf 'running honeypot lab-e2e with tier gate %s, profile %s, and precheck %s\n' "$(HONEYPOT_TEST_TIER_GATE)" "$(MANUAL_LAB_PROFILE)" "$(LAB_E2E_PRECHECK)"
+	@if [[ "$(LAB_E2E_PRECHECK)" != "0" ]]; then \
+		$(MAKE) manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=$(MANUAL_LAB_PROFILE); \
+	else \
+		printf 'honeypot lab-e2e precheck disabled; skipping ensure-artifacts\n'; \
+	fi
+	@$(HONEYPOT_LAB_E2E_ENV) \
+	cargo test -p testsuite --test integration_tests $(LAB_E2E_TEST_ARGS)
 
 .PHONY: manual-lab-preflight
 manual-lab-preflight: $(MANUAL_LAB_TIER_GATE)

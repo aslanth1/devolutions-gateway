@@ -925,6 +925,17 @@ Pass when: `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` skips the new precheck so scripte
 - [x] Add docs and contract tests for the granular self-test up precheck lane.
 Pass when: the runbook and testing docs describe the default precheck plus the opt-out knob, and tests pin both the `make -n` target graph and the updated docs text.
 
+### Milestone 6o: QEMU Tier Test Make Lanes
+
+- [x] Add first-class Make targets for the prepared-host honeypot test tiers.
+Pass when: the repo root `Makefile` exposes `test-host-smoke` and `test-lab-e2e` as the sanctioned Make entrypoints for the existing `host-smoke` and `lab-e2e` tiers instead of requiring operators to hand-export env vars first.
+
+- [x] Keep `host-smoke` non-mutating by default and route `lab-e2e` through the artifact fast-path.
+Pass when: `test-host-smoke` only sets `DGW_HONEYPOT_HOST_SMOKE=1`, while `test-lab-e2e` creates a local tier gate, runs `manual-lab-ensure-artifacts` by default, and then launches `cargo test` with `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE`.
+
+- [x] Add docs and contract tests for the tiered QEMU test Make lanes.
+Pass when: the runbook and testing docs explain `make test-host-smoke`, `make test-lab-e2e`, `MANUAL_LAB_PROFILE=local` for non-root hosts, and `LAB_E2E_PRECHECK=0`, while tests pin the Make target graph and the updated docs text.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
