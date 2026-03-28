@@ -958,6 +958,17 @@ Pass when: `make test-host-smoke` remains read-only by default, `make test-host-
 - [x] Add docs and contract tests for the host-smoke image-cache warm lane.
 Pass when: the runbook and testing docs explain `make test-host-smoke-ensure-images`, `make test-host-smoke-warm`, the known-good image cache reuse contract, and the fact that warming images does not bypass the checked-in release-input gate, while tests pin both the Make target graph and the updated docs text.
 
+### Milestone 6r: Containerized Manual-Deck Webplayer Build Lane
+
+- [x] Add an explicit containerized webplayer ensure lane for manual-lab operator flows.
+Pass when: the repo root `Makefile` exposes `manual-lab-ensure-webplayer` and `manual-lab-selftest-ensure-webplayer`, the lane reuses a dedicated non-runtime Docker builder image instead of host pnpm, honors explicit `DGATEWAY_WEBPLAYER_PATH` overrides, and writes the default bundle back to `webapp/dist/recording-player` for the existing Rust staging path.
+
+- [x] Route the self-test quick paths through the webplayer ensure lane by default while keeping an explicit opt-out.
+Pass when: `make manual-lab-selftest`, `make manual-lab-selftest-no-browser`, `make manual-lab-selftest-up`, and `make manual-lab-selftest-up-no-browser` call `make manual-lab-selftest-ensure-webplayer` before the existing artifact or launch flow, and `MANUAL_LAB_WEBPLAYER_PRECHECK=0` preserves the older raw local launch ordering.
+
+- [x] Add remediation, docs, and contract tests for the containerized webplayer lane.
+Pass when: the Rust missing-bundle remediation points at `make manual-lab-ensure-webplayer`, the runbook and testing docs explain the container-runtime requirement plus `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman`, and tests pin the updated command graph and text.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

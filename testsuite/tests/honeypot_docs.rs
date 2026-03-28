@@ -531,11 +531,13 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(runbook_path, &runbook, "make test-host-smoke-warm");
     assert_contains(runbook_path, &runbook, "make test-lab-e2e");
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
+    assert_contains(runbook_path, &runbook, "make manual-lab-ensure-webplayer");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
     assert_contains(runbook_path, &runbook, "make manual-lab-remember-source-manifest");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-no-browser");
+    assert_contains(runbook_path, &runbook, "make manual-lab-selftest-ensure-webplayer");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-ensure-artifacts");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-up");
@@ -574,7 +576,17 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` run `make manual-lab-selftest-ensure-artifacts` first",
+        "`make manual-lab-selftest` and `make manual-lab-selftest-no-browser` now run `make manual-lab-selftest-ensure-webplayer` first",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` run `make manual-lab-selftest-ensure-webplayer` first, then `make manual-lab-selftest-ensure-artifacts`, before launch.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Set `MANUAL_LAB_WEBPLAYER_PRECHECK=0` when a scripted caller intentionally needs the older raw local launch shape without the automatic containerized recording-player build.",
     );
     assert_contains(
         runbook_path,
@@ -637,6 +649,26 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &runbook,
         "That same blocker still keeps canonical `/srv` proof separate:",
     );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The host only needs the selected container runtime for that builder; it does not need host `pnpm`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
+    );
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(
         runbook_path,
@@ -697,6 +729,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         "preflight|ensure-artifacts|remember-source-manifest|bootstrap-store|up|status|down",
     );
     assert_contains(testing_path, &testing, "MANUAL_LAB_PROFILE=canonical|local");
+    assert_contains(testing_path, &testing, "make manual-lab-ensure-webplayer");
     assert_contains(testing_path, &testing, "make manual-lab-ensure-artifacts");
     assert_contains(
         testing_path,
@@ -723,6 +756,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &testing,
         "make manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local",
     );
+    assert_contains(testing_path, &testing, "make manual-lab-selftest-ensure-webplayer");
     assert_contains(
         testing_path,
         &testing,
@@ -741,7 +775,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.",
+        "The granular local aliases `make manual-lab-selftest-ensure-webplayer`, `make manual-lab-selftest-preflight`, `make manual-lab-selftest-preflight-no-browser`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.",
     );
     assert_contains(
         testing_path,
@@ -751,7 +785,17 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` also run `make manual-lab-selftest-ensure-artifacts` before launch",
+        "`make manual-lab-selftest` and `make manual-lab-selftest-no-browser` now run `make manual-lab-selftest-ensure-webplayer` first, then the existing local artifact lane, so one command can build the recording-player bundle and launch the deck.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` also run `make manual-lab-selftest-ensure-webplayer` first, then `make manual-lab-selftest-ensure-artifacts`, before launch so warmed local stores reuse known-good artifacts instead of repeating bootstrap work.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Set `MANUAL_LAB_WEBPLAYER_PRECHECK=0` when a scripted caller intentionally needs the older raw local launch path without the automatic containerized recording-player build.",
     );
     assert_contains(
         testing_path,
@@ -767,6 +811,26 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "`make manual-lab-selftest` and the `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "The host only needs the selected container runtime for that builder; it does not need host `pnpm`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
     );
     assert_contains(
         testing_path,

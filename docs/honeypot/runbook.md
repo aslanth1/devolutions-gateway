@@ -127,9 +127,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 
 - Use the Rust launcher when you want a real operator deck with three live Tiny11-backed sessions and a browser view you can click through.
 - The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight`, `ensure-artifacts`, `remember-source-manifest`, `bootstrap-store`, `up`, `status`, and `down`.
-- The repo root `Makefile` also provides thin convenience wrappers `make manual-lab-preflight`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-status`, and `make manual-lab-down`.
+- The repo root `Makefile` also provides thin convenience wrappers `make manual-lab-preflight`, `make manual-lab-ensure-webplayer`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-status`, and `make manual-lab-down`.
 - For manual operator self-test on a non-root host, prefer `make manual-lab-selftest` for the normal browser-backed path or `make manual-lab-selftest-no-browser` when you want the deck live without opening Chrome.
-- The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
+- The granular local aliases `make manual-lab-selftest-ensure-webplayer`, `make manual-lab-selftest-preflight`, `make manual-lab-selftest-preflight-no-browser`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only visibility helper for the effective profile, config path, store root, manifest dir, and masked guest-auth state.
 - The related prepared-host tier shortcuts are `make test-host-smoke` and `make test-lab-e2e`.
 - `make test-host-smoke` keeps the existing `host-smoke` tier non-mutating by default.
@@ -144,7 +144,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - `canonical` is the default and keeps the checked-in `/srv/honeypot/...` paths.
 - `local` is the explicit non-root operator lane and switches the wrappers to repo-local state under `target/manual-lab/state/`.
 - `make manual-lab-selftest` and the `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience, but they do not change the canonical `manual-lab-*` defaults.
-- By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` run `make manual-lab-selftest-ensure-artifacts` first so warmed local stores skip repeat import work before launch.
+- `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` now run `make manual-lab-selftest-ensure-webplayer` first, then the existing local artifact lane, so one command can build the recording-player bundle and launch the deck.
+- By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` run `make manual-lab-selftest-ensure-webplayer` first, then `make manual-lab-selftest-ensure-artifacts`, before launch.
+- Set `MANUAL_LAB_WEBPLAYER_PRECHECK=0` when a scripted caller intentionally needs the older raw local launch shape without the automatic containerized recording-player build.
 - Set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` when a scripted caller intentionally needs the older raw local `manual-lab-up*` launch shape and failure ordering.
 - `ensure-artifacts` is the fast explicit prewarm lane for QEMU-backed runs.
 - It first runs the same manual-lab readiness check with `preflight --no-browser`.
@@ -175,7 +177,12 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - The live manual deck also requires a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
 - By default the launcher expects `webapp/dist/recording-player/index.html` in this repo checkout.
 - Override that source bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the player build lives elsewhere.
-- If the player bundle is missing, run `cd webapp && pnpm install --frozen-lockfile && pnpm build:libs && pnpm build:player`, then rerun `make manual-lab-preflight`.
+- Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.
+- `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` already run that containerized builder automatically.
+- The host only needs the selected container runtime for that builder; it does not need host `pnpm`.
+- Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.
+- If `webapp/pnpm-lock.yaml` references private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
+- If the player bundle is still missing after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>`, then rerun `make manual-lab-preflight`.
 - `DGW_HONEYPOT_INTEROP_IMAGE_STORE` and `DGW_HONEYPOT_INTEROP_MANIFEST_DIR` are optional if the canonical sealed store under `/srv/honeypot/images` is already present and trusted.
 - `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS` remain optional overrides for unusual lab hosts.
 - `preflight` remains read-only.
@@ -203,6 +210,8 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
   `make manual-lab-selftest`,
   then `make manual-lab-selftest-status` and `make manual-lab-selftest-down`.
 - The granular local launch aliases now use the same warmup step by default:
+  `make manual-lab-selftest-ensure-webplayer`,
+  `make manual-lab-selftest-ensure-artifacts`,
   `make manual-lab-selftest-up`,
   `make manual-lab-selftest-up-no-browser`.
 - Those aliases still share one local writable state root, so disable the precheck or serialize runs if you intentionally script parallel local launch attempts.

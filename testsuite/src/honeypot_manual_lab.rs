@@ -38,6 +38,7 @@ const MANUAL_LAB_ROOT_RELATIVE_PATH: &str = "target/manual-lab";
 const MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH: &str = "target/manual-lab/active.json";
 const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_RELATIVE_PATH: &str = "target/manual-lab/selected-source-manifest.json";
 const MANUAL_LAB_ENSURE_ARTIFACTS_HINT: &str = "make manual-lab-ensure-artifacts";
+const MANUAL_LAB_ENSURE_WEBPLAYER_HINT: &str = "make manual-lab-ensure-webplayer";
 const MANUAL_LAB_SELFTEST_HINT: &str = "make manual-lab-selftest";
 const MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT: &str = "make manual-lab-show-profile";
 const MANUAL_LAB_TARGET_ROOT_RELATIVE_PATH: &str = "target";
@@ -2269,7 +2270,7 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
                 && detail.contains(GATEWAY_WEBPLAYER_PATH_ENV)
             {
                 remediation = Some(format!(
-                    "build the recording-player bundle with `cd webapp && pnpm install --frozen-lockfile && pnpm build:libs && pnpm build:player`, or set {GATEWAY_WEBPLAYER_PATH_ENV}=<recording-player-dir>, then rerun `make manual-lab-preflight`"
+                    "run `{MANUAL_LAB_ENSURE_WEBPLAYER_HINT}` to build the recording-player bundle in the containerized webplayer builder, or set {GATEWAY_WEBPLAYER_PATH_ENV}=<recording-player-dir>, then rerun `make manual-lab-preflight`"
                 ));
             }
 

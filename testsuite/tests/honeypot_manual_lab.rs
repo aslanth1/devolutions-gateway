@@ -128,7 +128,39 @@ fn manual_lab_cli_help_lists_up_status_and_down() {
 
 #[cfg(unix)]
 #[test]
-fn make_manual_lab_selftest_up_routes_through_ensure_artifacts_by_default() {
+fn make_manual_lab_selftest_routes_through_ensure_webplayer_and_artifacts_by_default() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-selftest")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-selftest");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-selftest failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    let webplayer_idx = rendered
+        .find("manual-lab-selftest-ensure-webplayer")
+        .expect("default selftest should route through ensure-webplayer");
+    let ensure_idx = rendered
+        .find("manual-lab-ensure-artifacts MANUAL_LAB_PROFILE=local")
+        .expect("default selftest should route through ensure-artifacts");
+    let up_idx = rendered
+        .find("manual-lab-up MANUAL_LAB_PROFILE=local")
+        .expect("selftest should still launch manual-lab-up");
+
+    assert!(
+        webplayer_idx < ensure_idx && ensure_idx < up_idx,
+        "ensure-webplayer should appear before ensure-artifacts and up:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_selftest_up_routes_through_ensure_webplayer_and_artifacts_by_default() {
     let output = Command::new("make")
         .arg("-n")
         .arg("manual-lab-selftest-up")
@@ -142,6 +174,9 @@ fn make_manual_lab_selftest_up_routes_through_ensure_artifacts_by_default() {
     );
     let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
 
+    let webplayer_idx = rendered
+        .find("manual-lab-selftest-ensure-webplayer")
+        .expect("default selftest-up should route through ensure-webplayer");
     let ensure_idx = rendered
         .find("manual-lab-selftest-ensure-artifacts")
         .expect("default selftest-up should route through ensure-artifacts");
@@ -150,8 +185,41 @@ fn make_manual_lab_selftest_up_routes_through_ensure_artifacts_by_default() {
         .expect("selftest-up should still launch manual-lab-up");
 
     assert!(
-        ensure_idx < up_idx,
-        "ensure-artifacts should appear before the local up command:\n{rendered}"
+        webplayer_idx < ensure_idx && ensure_idx < up_idx,
+        "ensure-webplayer should appear before ensure-artifacts and the local up command:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_selftest_up_can_disable_the_default_webplayer_precheck() {
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-selftest-up")
+        .env("MANUAL_LAB_WEBPLAYER_PRECHECK", "0")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-selftest-up with webplayer precheck disabled");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-selftest-up with webplayer precheck disabled failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains(
+            "manual-lab self-test webplayer precheck disabled; skipping containerized recording-player build"
+        ),
+        "webplayer-disabled selftest-up should print the skip message:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("make manual-lab-ensure-webplayer"),
+        "webplayer-disabled selftest-up should not expand the nested ensure-webplayer make invocation:\n{rendered}"
+    );
+    assert!(
+        rendered.contains("manual-lab-selftest-ensure-artifacts"),
+        "webplayer-disabled selftest-up should still expand the artifact ensure step:\n{rendered}"
     );
 }
 
@@ -202,6 +270,9 @@ fn make_manual_lab_selftest_up_no_browser_routes_through_ensure_artifacts_by_def
     );
     let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
 
+    let webplayer_idx = rendered
+        .find("manual-lab-selftest-ensure-webplayer")
+        .expect("default selftest-up-no-browser should route through ensure-webplayer");
     let ensure_idx = rendered
         .find("manual-lab-selftest-ensure-artifacts")
         .expect("default selftest-up-no-browser should route through ensure-artifacts");
@@ -210,8 +281,8 @@ fn make_manual_lab_selftest_up_no_browser_routes_through_ensure_artifacts_by_def
         .expect("selftest-up-no-browser should still launch manual-lab-up-no-browser");
 
     assert!(
-        ensure_idx < up_idx,
-        "ensure-artifacts should appear before the local up-no-browser command:\n{rendered}"
+        webplayer_idx < ensure_idx && ensure_idx < up_idx,
+        "ensure-webplayer should appear before ensure-artifacts and the local up-no-browser command:\n{rendered}"
     );
 }
 

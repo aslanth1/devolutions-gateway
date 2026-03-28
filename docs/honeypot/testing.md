@@ -201,9 +201,9 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 ## Manual Three-Host Observation Deck
 
 - The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight|ensure-artifacts|remember-source-manifest|bootstrap-store|up|status|down`.
-- The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
+- The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-ensure-webplayer`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
 - For manual self-test on a non-root operator host, the preferred convenience lane is `make manual-lab-selftest` or `make manual-lab-selftest-no-browser`.
-- The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
+- The granular local aliases `make manual-lab-selftest-ensure-webplayer`, `make manual-lab-selftest-preflight`, `make manual-lab-selftest-preflight-no-browser`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only helper that prints the effective profile, config path, store root, manifest dir, and masked guest-auth state.
 - The Make targets only create a local lab-e2e gate file and set `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE` for `preflight`, `ensure-artifacts`, `bootstrap-store`, and `up`; they do not replace the Rust readiness authority.
 - `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser` now also inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!`.
@@ -211,12 +211,19 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The same live deck also needs a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
 - By default the launcher checks for `webapp/dist/recording-player/index.html` and stages it into a temporary `player/` root before spawning the proxy.
 - Override the source player bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the build output lives outside the repo default.
-- If that bundle is missing, run `cd webapp && pnpm install --frozen-lockfile && pnpm build:libs && pnpm build:player`, then rerun `make manual-lab-preflight`.
+- Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.
+- `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` already run that containerized builder automatically.
+- The host only needs the selected container runtime for that builder; it does not need host `pnpm`.
+- Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.
+- If `webapp/pnpm-lock.yaml` references private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
+- If the bundle is still missing after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>`, then rerun `make manual-lab-preflight`.
 - `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
 - `canonical` is the default `/srv/honeypot/...` lane.
 - `local` is the explicit non-root lane and binds the same Rust authority to repo-local state under `target/manual-lab/state/`.
 - `make manual-lab-selftest` and the `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.
-- By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` also run `make manual-lab-selftest-ensure-artifacts` before launch so warmed local stores reuse known-good artifacts instead of repeating bootstrap work.
+- `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` now run `make manual-lab-selftest-ensure-webplayer` first, then the existing local artifact lane, so one command can build the recording-player bundle and launch the deck.
+- By default, `make manual-lab-selftest-up` and `make manual-lab-selftest-up-no-browser` also run `make manual-lab-selftest-ensure-webplayer` first, then `make manual-lab-selftest-ensure-artifacts`, before launch so warmed local stores reuse known-good artifacts instead of repeating bootstrap work.
+- Set `MANUAL_LAB_WEBPLAYER_PRECHECK=0` when a scripted caller intentionally needs the older raw local launch path without the automatic containerized recording-player build.
 - Set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` when a scripted caller intentionally needs the older raw local `manual-lab-up*` launch path and failure ordering.
 - `ensure-artifacts` is the explicit fast-path for QEMU-backed operator flows.
 - It reuses `preflight --no-browser` first and only provisions through the sanctioned `consume-image` path when store readiness is the blocker.
@@ -231,6 +238,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The required manual sequence is `ensure-artifacts -> preflight -> up` when the source manifest is unique or already remembered.
 - When more than one admissible manifest exists, the required sequence is `remember-source-manifest -> ensure-artifacts -> preflight -> up`.
 - The granular self-test launch aliases now follow the same warmup contract by default:
+  `manual-lab-selftest-ensure-webplayer ->`,
   `manual-lab-selftest-ensure-artifacts -> manual-lab-selftest-up*`.
 - Those self-test launch aliases share one local writable state root, so parallel scripted callers should either serialize runs or set `MANUAL_LAB_SELFTEST_UP_PRECHECK=0` and handle readiness explicitly.
 - This lane is Rust-native and lives in `testsuite::honeypot_manual_lab`; it does not permit Bash or Python wrappers for service startup, Tiny11 fan-out, or teardown.
