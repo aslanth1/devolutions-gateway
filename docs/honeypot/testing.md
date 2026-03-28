@@ -183,7 +183,8 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 
 - The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight|remember-source-manifest|bootstrap-store|up|status|down`.
 - The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
-- For manual self-test on a non-root operator host, the preferred convenience lane is `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down`.
+- For manual self-test on a non-root operator host, the preferred convenience lane is `make manual-lab-selftest` or `make manual-lab-selftest-no-browser`.
+- The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only helper that prints the effective profile, config path, store root, manifest dir, and masked guest-auth state.
 - The Make targets only create a local lab-e2e gate file and set `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE` for `preflight`, `bootstrap-store`, and `up`; they do not replace the Rust readiness authority.
 - `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser` now also inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
@@ -191,7 +192,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
 - `canonical` is the default `/srv/honeypot/...` lane.
 - `local` is the explicit non-root lane and binds the same Rust authority to repo-local state under `target/manual-lab/state/`.
-- The `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.
+- `make manual-lab-selftest` and the `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.
 - The required manual sequence is `preflight -> remember-source-manifest -> bootstrap-store --execute -> preflight -> up` when more than one admissible manifest exists.
 - This lane is Rust-native and lives in `testsuite::honeypot_manual_lab`; it does not permit Bash or Python wrappers for service startup, Tiny11 fan-out, or teardown.
 - The launcher reuses the canonical Tiny11 interop gate instead of inventing a second store verifier.
@@ -214,17 +215,13 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
   `make manual-lab-preflight MANUAL_LAB_PROFILE=local`,
   and `make manual-lab-up MANUAL_LAB_PROFILE=local`.
 - When canonical `make manual-lab-up` or `make manual-lab-preflight` fails with `missing_store_root` on a non-root host, the Rust remediation now points to:
-  `make manual-lab-show-profile`,
-  `make manual-lab-selftest-bootstrap-store-exec`,
-  `make manual-lab-selftest-preflight`,
-  and `make manual-lab-selftest-up`.
+  `make manual-lab-selftest`.
 - That same remediation still preserves the canonical `/srv` proof lane separately:
   `make manual-lab-bootstrap-store-exec`,
   then `make manual-lab-preflight`.
+- `make manual-lab-show-profile` remains the read-only lane inspector when you want to inspect the active profile before mutation.
 - The shorter non-root manual self-test path is:
-  `make manual-lab-show-profile`,
-  `make manual-lab-selftest-preflight`,
-  `make manual-lab-selftest-up`,
+  `make manual-lab-selftest`,
   then `make manual-lab-selftest-status` and `make manual-lab-selftest-down`.
 - The local profile exists for manual operator bring-up only and does not change the canonical default lane.
 - Self-test alias success must not be treated as canonical `/srv` readiness proof.

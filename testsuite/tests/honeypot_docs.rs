@@ -446,12 +446,24 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Update Rust blocker remediation to prefer the self-test quick path on non-root hosts.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6j: Manual Deck One-Command Self-Test Entry",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add a one-command local self-test entrypoint for manual operators.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
     assert_contains(runbook_path, &runbook, "make manual-lab-remember-source-manifest");
+    assert_contains(runbook_path, &runbook, "make manual-lab-selftest");
+    assert_contains(runbook_path, &runbook, "make manual-lab-selftest-no-browser");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-selftest-up");
     assert_contains(runbook_path, &runbook, "make manual-lab-show-profile");
@@ -484,7 +496,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "The `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience",
+        "`make manual-lab-selftest` and the `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience",
     );
     assert_contains(runbook_path, &runbook, "manual self-test quick path on this host is:");
     assert_contains(
@@ -496,6 +508,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         runbook_path,
         &runbook,
         "That same blocker still keeps canonical `/srv` proof separate:",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "If you want to inspect the lane first without mutating anything, run `make manual-lab-show-profile`.",
     );
 
     let testing_path = "docs/honeypot/testing.md";
@@ -534,7 +551,12 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "preferred convenience lane is `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down`",
+        "preferred convenience lane is `make manual-lab-selftest` or `make manual-lab-selftest-no-browser`",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.",
     );
     assert_contains(
         testing_path,
@@ -544,7 +566,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "The `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.",
+        "`make manual-lab-selftest` and the `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.",
     );
     assert_contains(
         testing_path,
@@ -560,6 +582,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "That same remediation still preserves the canonical `/srv` proof lane separately:",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`make manual-lab-show-profile` remains the read-only lane inspector when you want to inspect the active profile before mutation.",
     );
 }
 

@@ -862,13 +862,24 @@ Pass when: the runbook and testing docs name the self-test aliases as the manual
 ### Milestone 6i: Manual Deck Wrong-Lane Remediation Bridge
 
 - [x] Update Rust blocker remediation to prefer the self-test quick path on non-root hosts.
-Pass when: the `missing_store_root` and store-root permission remediation emitted by `testsuite::honeypot_manual_lab` points operators first to `make manual-lab-show-profile`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-preflight`, and `make manual-lab-selftest-up`, while still keeping canonical `/srv` proof guidance distinct.
+Pass when: the `missing_store_root` and store-root permission remediation emitted by `testsuite::honeypot_manual_lab` points operators first into the explicit local self-test lane while still keeping canonical `/srv` proof guidance distinct.
 
 - [x] Keep canonical proof guidance explicit inside the same remediation contract.
 Pass when: the blocker text still explains that `make manual-lab-bootstrap-store-exec` plus `make manual-lab-preflight` is the canonical `/srv` proof lane and does not imply any automatic fallback.
 
 - [x] Add docs and tests for the remediation bridge.
 Pass when: the runbook and testing docs explain that canonical `missing_store_root` guidance now points to the self-test lane first on non-root hosts, and tests cover the new remediation strings so command names do not drift.
+
+### Milestone 6j: Manual Deck One-Command Self-Test Entry
+
+- [x] Add a one-command local self-test entrypoint for manual operators.
+Pass when: the repo root `Makefile` exposes `manual-lab-selftest` and `manual-lab-selftest-no-browser`, and each chains the existing local self-test bootstrap plus launch flow without changing the canonical `manual-lab-*` defaults.
+
+- [x] Prefer the one-command self-test entrypoint in non-root operator guidance.
+Pass when: `make manual-lab-show-profile`, the Rust `missing_store_root` remediation, and the store-root permission remediation all point operators first to `make manual-lab-selftest`, while still preserving `make manual-lab-show-profile` as a read-only inspector and keeping canonical `/srv` proof guidance explicit.
+
+- [x] Add docs and parity tests for the one-command self-test entrypoint.
+Pass when: the runbook and testing docs name `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` as the preferred non-root onboarding path, explain that the granular `manual-lab-selftest-*` verbs still exist for debugging, and docs or contract tests fail if the new command surface drifts.
 
 ## Verification Matrix
 

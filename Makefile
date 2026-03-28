@@ -89,7 +89,7 @@ manual-lab-show-profile:
 	@printf 'manifest dir: %s\n' "$(if $(MANUAL_LAB_INTEROP_MANIFEST_DIR),$(MANUAL_LAB_INTEROP_MANIFEST_DIR),/srv/honeypot/images/manifests)"
 	@printf 'rdp username: %s\n' "$(MANUAL_LAB_INTEROP_RDP_USERNAME)"
 	@printf 'rdp password: %s\n' "$(MANUAL_LAB_MASKED_RDP_PASSWORD)"
-	@printf 'manual self-test quick path: make manual-lab-selftest-preflight && make manual-lab-selftest-up\n'
+	@printf 'manual self-test quick path: make manual-lab-selftest\n'
 
 .PHONY: manual-lab-selftest-preflight
 manual-lab-selftest-preflight:
@@ -119,6 +119,18 @@ manual-lab-selftest-up:
 .PHONY: manual-lab-selftest-up-no-browser
 manual-lab-selftest-up-no-browser:
 	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
+	@$(MAKE) manual-lab-up-no-browser MANUAL_LAB_PROFILE=local
+
+.PHONY: manual-lab-selftest
+manual-lab-selftest:
+	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
+	@$(MAKE) manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local
+	@$(MAKE) manual-lab-up MANUAL_LAB_PROFILE=local
+
+.PHONY: manual-lab-selftest-no-browser
+manual-lab-selftest-no-browser:
+	@printf 'manual-lab self-test uses local profile only; this is not canonical /srv readiness proof\n'
+	@$(MAKE) manual-lab-bootstrap-store-exec MANUAL_LAB_PROFILE=local
 	@$(MAKE) manual-lab-up-no-browser MANUAL_LAB_PROFILE=local
 
 .PHONY: manual-lab-selftest-status
