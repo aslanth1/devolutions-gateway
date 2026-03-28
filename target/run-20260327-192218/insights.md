@@ -1,0 +1,8 @@
+- What worked: one single-process row-`706` run produced a clean authoritative envelope without cross-run fragment drift.
+- What worked: sealed `boot_profile_v1` plus startup-loaded trusted-image caching preserved the imported Tiny11 auth path and removed request-path qcow2 hashing.
+- What worked: a standalone temp-script startup harness gave repeatable boot-to-ready measurements once stale overlapping shells were removed.
+- What failed: fragmented or overlapping shell harnesses were not trustworthy enough for startup-budget evidence.
+- What failed: treating a broad filtered cargo run as the unit of proof adds unrelated release and docker noise after the real row-`706` envelope is already complete.
+- What to avoid next time: do not reopen row-`706` with multiple partial invocations when one live run can produce the whole envelope.
+- What to avoid next time: do not reintroduce per-request multi-gigabyte qcow2 hashing just to avoid a measured boot-time catalog load.
+- Promising next directions: if startup latency becomes operationally unacceptable for larger stores, add a narrower preload or refresh contract that preserves the same fail-closed provenance checks.

@@ -423,7 +423,7 @@ Pass when: a control-plane-launched imported Tiny11 lease using the sealed boot 
 - [x] Bound trusted-image validation latency so authenticated health and acquire can reach QEMU launch for large imported Tiny11 images.
 Pass when: authenticated `/api/v1/health` and `/api/v1/vm/acquire` stop synchronously rehashing multi-gigabyte imported qcow2 artifacts on every request, and a sealed-profile imported Tiny11 store can reach VM launch within the documented lab-e2e readiness window.
 
-- [ ] Decide whether startup-time full attestation of large imported trusted images should remain on the control-plane boot path.
+- [x] Decide whether startup-time full attestation of large imported trusted images should remain on the control-plane boot path.
 Pass when: the repo either accepts the measured startup-time full-hash cost for large imported Tiny11 stores as part of the documented readiness budget, or it adds a narrower preload or refresh contract that preserves fail-closed behavior without reintroducing request-path qcow2 hashing.
 
 - [x] Add image integrity checks before lease.
@@ -762,7 +762,7 @@ Pass when: raw `.qcow2`, overlay, memory-dump, and equivalent heavy or sensitive
 - [x] `honeypot/docker/images.lock` has a documented schema for `control-plane`, `proxy`, and `frontend`, and release or test paths reject floating tags.
 - [x] Mixed-version `current` or `previous` service combinations are documented and validated before rollback is considered safe.
 - [x] The test plan is split into `contract`, `host-smoke`, and `lab-e2e` tiers.
-- [ ] The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.
+- [x] The control plane can produce and recycle at least one Tiny11-derived Windows 11 VM with RDP enabled and host-side cleanup verified.
 - [x] The proxy can replace attacker credentials with backend credentials without leaking secrets to logs.
 - [x] The frontend can bootstrap, create, update, fullscreen, and remove tiles from live session events.
 - [x] The stream path is bound to session identity and survives disconnect and recycle correctly.
