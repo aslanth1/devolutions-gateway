@@ -121,6 +121,10 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - `canonical` is the default and keeps the checked-in `/srv/honeypot/...` paths.
 - `local` is the explicit non-root operator lane and switches the wrappers to repo-local state under `target/manual-lab/state/`.
 - `make manual-lab-selftest` and the `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience, but they do not change the canonical `manual-lab-*` defaults.
+- Repeated local self-test bootstrap is idempotent.
+- If the requested trusted image is already present and valid in the selected store, `bootstrap-store --execute` returns `already_present` before attempting to create a matching import lock.
+- Dead-pid import locks are reclaimed automatically.
+- A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock; wait for that process or stop the reported pid if it is unexpected, then rerun `make manual-lab-selftest`.
 - Use the preflight-first sequence for manual operator work:
   `make manual-lab-preflight`,
   run `make manual-lab-bootstrap-store`,

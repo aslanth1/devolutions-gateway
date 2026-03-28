@@ -399,6 +399,44 @@ fn manual_lab_cli_bootstrap_store_execute_reports_store_root_not_writable() {
 }
 
 #[test]
+fn manual_lab_cli_bootstrap_store_execute_reports_import_lock_held() {
+    let tempdir = tempdir().expect("create tempdir");
+    let image_store = tempdir.path().join("image-store");
+    let manifest_dir = image_store.join("manifests");
+    let config_path =
+        write_manual_lab_bootstrap_config(&tempdir.path().join("control-plane.toml"), &image_store, &manifest_dir);
+    let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "live-lock");
+    let lock_path = manual_lab_import_lock_path(&manifest_dir, &source_manifest);
+
+    fs::create_dir_all(&manifest_dir).expect("create manifest dir");
+    fs::write(&lock_path, format!("pid={}\n", std::process::id())).expect("write import lock");
+
+    let output = honeypot_manual_lab_assert_cmd()
+        .arg("bootstrap-store")
+        .arg("--execute")
+        .arg("--config")
+        .arg(&config_path)
+        .arg("--source-manifest")
+        .arg(&source_manifest)
+        .env("DGW_HONEYPOT_INTEROP_IMAGE_STORE", &image_store)
+        .env("DGW_HONEYPOT_INTEROP_MANIFEST_DIR", &manifest_dir)
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let rendered = String::from_utf8(output).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("manual lab bootstrap blocked by import_lock_held"),
+        "{rendered}"
+    );
+    assert!(rendered.contains("held by live pid"), "{rendered}");
+    assert!(rendered.contains("manual-lab-selftest"), "{rendered}");
+    assert!(rendered.contains("manual-lab-show-profile"), "{rendered}");
+}
+
+#[test]
 fn manual_lab_cli_remember_source_manifest_writes_local_hint_for_admissible_manifest() {
     let tempdir = tempdir().expect("create tempdir");
     let source_manifest = create_manual_lab_source_bundle(tempdir.path(), "remember");
@@ -665,6 +703,21 @@ fn create_manual_lab_source_bundle(root: &Path, suffix: &str) -> PathBuf {
     .expect("write source manifest");
 
     manifest_path
+}
+
+fn manual_lab_import_lock_path(manifest_dir: &Path, source_manifest_path: &Path) -> PathBuf {
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(source_manifest_path).expect("read source manifest"))
+            .expect("parse source manifest");
+    let vm_name = manifest
+        .pointer("/vm_name")
+        .and_then(|value| value.as_str())
+        .expect("vm_name should exist");
+    let base_image_sha256 = manifest
+        .pointer("/base_image/sha256")
+        .and_then(|value| value.as_str())
+        .expect("base_image.sha256 should exist");
+    manifest_dir.join(format!(".{}-{}.json.lock", vm_name, &base_image_sha256[..12]))
 }
 
 fn sha256_hex(data: &[u8]) -> String {

@@ -1124,6 +1124,11 @@ pub fn bootstrap_store(options: ManualLabBootstrapOptions) -> anyhow::Result<Man
                 "store_root_not_writable".to_owned(),
                 Some(manual_lab_store_root_permission_remediation()),
             )
+        } else if manual_lab_bootstrap_import_lock_held(&failure_detail) {
+            (
+                "import_lock_held".to_owned(),
+                Some(manual_lab_import_lock_remediation()),
+            )
         } else {
             (
                 "consume_image_failed".to_owned(),
@@ -2086,8 +2091,18 @@ fn manual_lab_store_root_permission_remediation() -> String {
     )
 }
 
+fn manual_lab_import_lock_remediation() -> String {
+    format!(
+        "wait for the in-flight `honeypot-control-plane consume-image` process to finish, or stop the reported pid if it is unexpected, then rerun `{MANUAL_LAB_SELFTEST_HINT}`; `{MANUAL_LAB_SELFTEST_SHOW_PROFILE_HINT}` is the read-only lane inspector, and canonical /srv proof remains `make manual-lab-bootstrap-store-exec` plus `make manual-lab-preflight`"
+    )
+}
+
 fn manual_lab_bootstrap_permission_denied(detail: &str) -> bool {
     detail.contains("create image store") && detail.contains("Permission denied")
+}
+
+fn manual_lab_bootstrap_import_lock_held(detail: &str) -> bool {
+    detail.contains("import lock ") && detail.contains("held by live pid")
 }
 
 fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateInputs {

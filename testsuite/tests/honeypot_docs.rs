@@ -456,6 +456,16 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         &agents,
         "Add a one-command local self-test entrypoint for manual operators.",
     );
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6k: Manual Deck Bootstrap Lock Lifecycle",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Make repeated local self-test bootstrap idempotent without manual lock cleanup.",
+    );
 
     let runbook_path = "docs/honeypot/runbook.md";
     let runbook = read_repo_text(runbook_path);
@@ -497,6 +507,26 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         runbook_path,
         &runbook,
         "`make manual-lab-selftest` and the `manual-lab-selftest-*` aliases always select that explicit `local` lane for convenience",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Repeated local self-test bootstrap is idempotent.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "`bootstrap-store --execute` returns `already_present` before attempting to create a matching import lock.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Dead-pid import locks are reclaimed automatically.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock;",
     );
     assert_contains(runbook_path, &runbook, "manual self-test quick path on this host is:");
     assert_contains(
@@ -567,6 +597,26 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "`make manual-lab-selftest` and the `manual-lab-selftest-*` aliases are thin wrappers that always select `MANUAL_LAB_PROFILE=local`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Repeated local self-test bootstrap is idempotent.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`bootstrap-store --execute` returns `already_present` before attempting to create a matching import lock.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "Dead-pid import locks are reclaimed automatically.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "A live `import_lock_held` blocker means a real `honeypot-control-plane consume-image` process still owns the matching lock;",
     );
     assert_contains(
         testing_path,

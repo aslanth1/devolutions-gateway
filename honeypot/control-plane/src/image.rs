@@ -224,6 +224,22 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
         ..manifest
     };
 
+    validate_existing_trusted_identity(
+        paths,
+        &imported_manifest,
+        &final_base_image_path,
+        &final_manifest_path,
+        &expected_base_image_sha256,
+    )?;
+    if let Some(existing_import) = existing_imported_trusted_image(
+        &imported_manifest,
+        &final_base_image_path,
+        &final_manifest_path,
+        &expected_base_image_sha256,
+    )? {
+        return Ok(existing_import);
+    }
+
     let _import_lock = ImportLock::acquire(&manifest_dir, &final_manifest_path)?;
     validate_existing_trusted_identity(
         paths,
@@ -232,39 +248,13 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
         &final_manifest_path,
         &expected_base_image_sha256,
     )?;
-
-    let final_image_exists = final_base_image_path.exists();
-    let final_manifest_exists = final_manifest_path.exists();
-    if final_image_exists || final_manifest_exists {
-        anyhow::ensure!(
-            final_image_exists && final_manifest_exists,
-            "existing imported artifact is incomplete for vm_name {}",
-            imported_manifest.vm_name,
-        );
-        let existing_manifest = read_trusted_image_manifest(&final_manifest_path)?;
-        anyhow::ensure!(
-            existing_manifest == imported_manifest,
-            "existing imported manifest {} does not match the requested trusted artifact",
-            final_manifest_path.display(),
-        );
-        let actual_digest = sha256_file(&final_base_image_path)?;
-        anyhow::ensure!(
-            actual_digest == expected_base_image_sha256,
-            "existing imported base image digest mismatch for {}: expected {}, got {}",
-            final_base_image_path.display(),
-            expected_base_image_sha256,
-            actual_digest,
-        );
-
-        return Ok(ConsumedTrustedImage {
-            import_state: ConsumeTrustedImageState::AlreadyPresent,
-            pool_name: imported_manifest.pool_name,
-            vm_name: imported_manifest.vm_name,
-            attestation_ref: imported_manifest.attestation_ref,
-            manifest_path: final_manifest_path,
-            base_image_path: final_base_image_path,
-            base_image_sha256: expected_base_image_sha256,
-        });
+    if let Some(existing_import) = existing_imported_trusted_image(
+        &imported_manifest,
+        &final_base_image_path,
+        &final_manifest_path,
+        &expected_base_image_sha256,
+    )? {
+        return Ok(existing_import);
     }
 
     let temp_image_path = final_base_image_path.with_extension("qcow2.importing");
@@ -325,6 +315,49 @@ pub fn consume_trusted_image(paths: &PathConfig, source_manifest_path: &Path) ->
         base_image_path: final_base_image_path,
         base_image_sha256: expected_base_image_sha256,
     })
+}
+
+fn existing_imported_trusted_image(
+    manifest: &TrustedImageManifestDocument,
+    final_base_image_path: &Path,
+    final_manifest_path: &Path,
+    expected_base_image_sha256: &str,
+) -> anyhow::Result<Option<ConsumedTrustedImage>> {
+    let final_image_exists = final_base_image_path.exists();
+    let final_manifest_exists = final_manifest_path.exists();
+    if !final_image_exists && !final_manifest_exists {
+        return Ok(None);
+    }
+
+    anyhow::ensure!(
+        final_image_exists && final_manifest_exists,
+        "existing imported artifact is incomplete for vm_name {}",
+        manifest.vm_name,
+    );
+    let existing_manifest = read_trusted_image_manifest(final_manifest_path)?;
+    anyhow::ensure!(
+        existing_manifest == *manifest,
+        "existing imported manifest {} does not match the requested trusted artifact",
+        final_manifest_path.display(),
+    );
+    let actual_digest = sha256_file(final_base_image_path)?;
+    anyhow::ensure!(
+        actual_digest == expected_base_image_sha256,
+        "existing imported base image digest mismatch for {}: expected {}, got {}",
+        final_base_image_path.display(),
+        expected_base_image_sha256,
+        actual_digest,
+    );
+
+    Ok(Some(ConsumedTrustedImage {
+        import_state: ConsumeTrustedImageState::AlreadyPresent,
+        pool_name: manifest.pool_name.clone(),
+        vm_name: manifest.vm_name.clone(),
+        attestation_ref: manifest.attestation_ref.clone(),
+        manifest_path: final_manifest_path.to_path_buf(),
+        base_image_path: final_base_image_path.to_path_buf(),
+        base_image_sha256: expected_base_image_sha256.to_owned(),
+    }))
 }
 
 pub(crate) fn trusted_images(paths: &PathConfig) -> anyhow::Result<Vec<TrustedImage>> {
@@ -1046,27 +1079,107 @@ struct ImportLock {
 
 impl ImportLock {
     fn acquire(manifest_dir: &Path, final_manifest_path: &Path) -> anyhow::Result<Self> {
-        let file_name = final_manifest_path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .context("resolve imported manifest file name")?;
-        let path = manifest_dir.join(format!(".{file_name}.lock"));
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-            .with_context(|| format!("create import lock {}", path.display()))?;
-        writeln!(file, "pid={}", std::process::id())
-            .with_context(|| format!("write import lock {}", path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("sync import lock {}", path.display()))?;
-        Ok(Self { path })
+        let path = import_lock_path(manifest_dir, final_manifest_path)?;
+        loop {
+            match fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(mut file) => {
+                    writeln!(file, "pid={}", std::process::id())
+                        .with_context(|| format!("write import lock {}", path.display()))?;
+                    file.sync_all()
+                        .with_context(|| format!("sync import lock {}", path.display()))?;
+                    return Ok(Self { path });
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    #[cfg(unix)]
+                    match inspect_import_lock(&path)? {
+                        None => continue,
+                        Some(ImportLockInspection::DeadPid(pid)) => match fs::remove_file(&path) {
+                            Ok(()) => continue,
+                            Err(remove_error) if remove_error.kind() == std::io::ErrorKind::NotFound => {
+                                continue;
+                            }
+                            Err(remove_error) => {
+                                return Err(remove_error).with_context(|| {
+                                    format!("remove stale import lock {} from dead pid {pid}", path.display(),)
+                                });
+                            }
+                        },
+                        Some(ImportLockInspection::LivePid(pid)) => {
+                            anyhow::bail!("import lock {} is held by live pid {pid}", path.display());
+                        }
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        return Err(error).with_context(|| format!("create import lock {}", path.display()));
+                    }
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| format!("create import lock {}", path.display()));
+                }
+            }
+        }
     }
 }
 
 impl Drop for ImportLock {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn import_lock_path(manifest_dir: &Path, final_manifest_path: &Path) -> anyhow::Result<PathBuf> {
+    let file_name = final_manifest_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .context("resolve imported manifest file name")?;
+    Ok(manifest_dir.join(format!(".{file_name}.lock")))
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ImportLockInspection {
+    LivePid(i32),
+    DeadPid(i32),
+}
+
+#[cfg(unix)]
+fn inspect_import_lock(path: &Path) -> anyhow::Result<Option<ImportLockInspection>> {
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).with_context(|| format!("read import lock {}", path.display())),
+    };
+    let pid_line = contents
+        .lines()
+        .find(|line| line.starts_with("pid="))
+        .context("existing import lock must contain pid=<pid>")?;
+    let pid = pid_line["pid=".len()..]
+        .trim()
+        .parse::<i32>()
+        .context("parse existing import lock pid")?;
+    anyhow::ensure!(pid > 0, "existing import lock pid must be positive");
+
+    if import_lock_process_exists(pid)? {
+        Ok(Some(ImportLockInspection::LivePid(pid)))
+    } else {
+        Ok(Some(ImportLockInspection::DeadPid(pid)))
+    }
+}
+
+#[cfg(unix)]
+fn import_lock_process_exists(pid: i32) -> anyhow::Result<bool> {
+    // SAFETY: `kill` with signal 0 only probes liveness for the parsed PID and does not alter process state.
+    let result = unsafe { libc::kill(pid, 0) };
+    if result == 0 {
+        return Ok(true);
+    }
+
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error).with_context(|| format!("probe import-lock pid {pid} liveness")),
     }
 }
 
@@ -1142,9 +1255,12 @@ mod tests {
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
 
+    #[cfg(unix)]
+    use super::import_lock_process_exists;
     use super::{
         ConsumeTrustedImageState, TrustedImage, TrustedImageCatalog, cached_sha256_file, consume_trusted_image,
-        trusted_images, validate_trusted_image_identity_in_catalog,
+        import_lock_path, normalize_sha256, read_trusted_image_manifest, sanitize_file_component, trusted_images,
+        validate_trusted_image_identity_in_catalog,
     };
     use crate::config::{PathConfig, QemuDiskInterface, QemuFirmwareMode, QemuNetworkDeviceModel, QemuRtcBase};
 
@@ -1465,6 +1581,71 @@ mod tests {
     }
 
     #[test]
+    fn consume_trusted_image_skips_a_matching_lock_when_the_bundle_is_already_present() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(tempdir.path(), "honeypot-import-locked", "default", "image-locked");
+
+        let first = consume_trusted_image(&paths, &bundle.manifest_path).expect("first import should succeed");
+        write_import_lock_for_pid(&paths, &first.manifest_path, current_test_pid());
+
+        let second = consume_trusted_image(&paths, &bundle.manifest_path).expect("second import should bypass lock");
+
+        assert_eq!(second.import_state, ConsumeTrustedImageState::AlreadyPresent);
+        assert_eq!(second.manifest_path, first.manifest_path);
+        assert!(
+            import_lock_path(&paths.manifest_dir(), &first.manifest_path)
+                .expect("resolve import lock path")
+                .is_file()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn consume_trusted_image_reclaims_a_stale_dead_pid_lock() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(
+            tempdir.path(),
+            "honeypot-import-stale-lock",
+            "default",
+            "image-stale-lock",
+        );
+        let final_manifest_path = expected_imported_manifest_path(&paths, &bundle.manifest_path);
+        let dead_pid = dead_test_pid();
+        write_import_lock_for_pid(&paths, &final_manifest_path, dead_pid);
+
+        let imported =
+            consume_trusted_image(&paths, &bundle.manifest_path).expect("import should reclaim stale dead-pid lock");
+
+        assert_eq!(imported.import_state, ConsumeTrustedImageState::Imported);
+        assert!(
+            !import_lock_path(&paths.manifest_dir(), &final_manifest_path)
+                .expect("resolve import lock path")
+                .exists()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn consume_trusted_image_reports_live_pid_lock_for_a_new_import() {
+        let tempdir = tempfile::tempdir().expect("create tempdir");
+        let paths = test_paths(tempdir.path());
+        let bundle = create_source_bundle(
+            tempdir.path(),
+            "honeypot-import-live-lock",
+            "default",
+            "image-live-lock",
+        );
+        let final_manifest_path = expected_imported_manifest_path(&paths, &bundle.manifest_path);
+        write_import_lock_for_pid(&paths, &final_manifest_path, current_test_pid());
+
+        let error = consume_trusted_image(&paths, &bundle.manifest_path).expect_err("live-pid lock should fail closed");
+
+        assert!(format!("{error:#}").contains("held by live pid"), "{error:#}");
+    }
+
+    #[test]
     fn consume_trusted_image_rejects_bundle_path_escape() {
         let tempdir = tempfile::tempdir().expect("create tempdir");
         let paths = test_paths(tempdir.path());
@@ -1610,6 +1791,36 @@ mod tests {
             suffix,
             format!("base-image-{suffix}").as_bytes(),
         )
+    }
+
+    fn expected_imported_manifest_path(paths: &PathConfig, source_manifest_path: &Path) -> PathBuf {
+        let manifest = read_trusted_image_manifest(source_manifest_path).expect("read source manifest");
+        let expected_base_image_sha256 =
+            normalize_sha256("base_image.sha256", &manifest.base_image.sha256).expect("normalize base image sha256");
+        paths.manifest_dir().join(format!(
+            "{}-{}.json",
+            sanitize_file_component(&manifest.vm_name),
+            &expected_base_image_sha256[..12]
+        ))
+    }
+
+    fn write_import_lock_for_pid(paths: &PathConfig, final_manifest_path: &Path, pid: i32) {
+        fs::create_dir_all(paths.manifest_dir()).expect("create manifest dir");
+        let lock_path = import_lock_path(&paths.manifest_dir(), final_manifest_path).expect("resolve import lock path");
+        fs::write(&lock_path, format!("pid={pid}\n")).expect("write import lock");
+    }
+
+    #[cfg(unix)]
+    fn dead_test_pid() -> i32 {
+        let mut candidate = current_test_pid() + 1024;
+        while import_lock_process_exists(candidate).expect("probe candidate pid liveness") {
+            candidate += 1;
+        }
+        candidate
+    }
+
+    fn current_test_pid() -> i32 {
+        i32::try_from(std::process::id()).expect("current process id should fit in i32")
     }
 
     fn create_source_bundle_with_boot_profile(

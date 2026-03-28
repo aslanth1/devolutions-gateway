@@ -881,6 +881,17 @@ Pass when: `make manual-lab-show-profile`, the Rust `missing_store_root` remedia
 - [x] Add docs and parity tests for the one-command self-test entrypoint.
 Pass when: the runbook and testing docs name `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` as the preferred non-root onboarding path, explain that the granular `manual-lab-selftest-*` verbs still exist for debugging, and docs or contract tests fail if the new command surface drifts.
 
+### Milestone 6k: Manual Deck Bootstrap Lock Lifecycle
+
+- [x] Make repeated local self-test bootstrap idempotent without manual lock cleanup.
+Pass when: if the requested trusted image is already present and valid in the selected store, `honeypot-control-plane consume-image` returns `already_present` before attempting to create a matching import lock, so rerunning `make manual-lab-selftest` or `make manual-lab-selftest-no-browser` does not fail on a leftover matching lock file.
+
+- [x] Reclaim stale dead-pid import locks inside the Rust control-plane import path.
+Pass when: `consume-image` automatically removes a matching import lock whose recorded pid is no longer alive, retries once, and still fails closed if the lock file is malformed or the pid is genuinely live.
+
+- [x] Surface live import contention as a typed manual-lab blocker with docs and tests.
+Pass when: manual-lab bootstrap reports `import_lock_held` instead of generic `consume_image_failed` when a live matching `consume-image` process owns the import lock, the remediation tells operators to wait for or stop that process before rerunning `make manual-lab-selftest`, and unit or docs tests pin the idempotent, stale-lock, and live-lock behavior.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
