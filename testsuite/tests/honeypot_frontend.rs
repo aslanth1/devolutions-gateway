@@ -2149,7 +2149,7 @@ async fn start_mock_proxy(
     Arc<Mutex<Vec<String>>>,
     Arc<Mutex<u32>>,
 ) {
-    start_mock_proxy_on_addr(state, SocketAddr::from((Ipv4Addr::LOCALHOST, allocate_test_port()))).await
+    start_mock_proxy_on_addr(state, SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await
 }
 
 async fn start_mock_proxy_on_addr(

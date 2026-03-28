@@ -5,8 +5,6 @@ use std::time::Duration;
 use anyhow::Context as _;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt as _, AsyncWriteExt, BufReader};
 
-use crate::ports::allocate_test_port;
-
 // TODO(DGW-315): Add support for sending unsolicited messages.
 
 const ERROR_CODE_INVALID_REQUEST: i32 = -32600;
@@ -531,7 +529,7 @@ pub struct HttpError {
 impl HttpTransport {
     /// Create a new HTTP transport.
     pub async fn bind() -> anyhow::Result<Self> {
-        let listener = tokio::net::TcpListener::bind(("127.0.0.1", allocate_test_port())).await?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         Ok(Self {
             listener,
             error_responses: Vec::new(),

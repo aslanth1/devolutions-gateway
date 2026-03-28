@@ -2,8 +2,6 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use mcp_proxy::{Config, McpProxy};
-use testsuite::ports::allocate_test_port;
-
 const DUMMY_REQUEST: &str = r#"{"jsonrpc": "2.0", "id": 1, "method": "x"}"#;
 const MCP_PROXY_SHORTISH_TIMEOUT: Duration = Duration::from_millis(200);
 
@@ -16,9 +14,7 @@ async fn spawn_http_server(
     use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
     use tokio::net::TcpListener;
 
-    let listener = TcpListener::bind(("127.0.0.1", allocate_test_port()))
-        .await
-        .expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().unwrap();
 
     tokio::spawn(async move {

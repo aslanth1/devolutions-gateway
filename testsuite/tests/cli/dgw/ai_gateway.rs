@@ -8,16 +8,13 @@ use std::time::Duration;
 use anyhow::Context as _;
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{AiGatewayConfig, DgwConfig, DgwConfigHandle, VerbosityProfile};
-use testsuite::ports::allocate_test_port;
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::TcpListener;
 use tokio::process::Child;
 
 /// Spawn a mock OpenAI-compatible HTTP server.
 async fn spawn_mock_openai_server(response_body: &str) -> SocketAddr {
-    let listener = TcpListener::bind(("127.0.0.1", allocate_test_port()))
-        .await
-        .expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().unwrap();
     let response_body = response_body.to_owned();
 
@@ -79,9 +76,7 @@ async fn spawn_mock_openai_server(response_body: &str) -> SocketAddr {
 
 /// Spawn a mock HTTP server that returns a specific status code.
 async fn spawn_mock_status_server(status_code: u16, status_text: &str) -> SocketAddr {
-    let listener = TcpListener::bind(("127.0.0.1", allocate_test_port()))
-        .await
-        .expect("bind");
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().unwrap();
     let status_text = status_text.to_owned();
 

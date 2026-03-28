@@ -2027,8 +2027,7 @@ mod tests {
         use std::io::{Read as _, Write as _};
         use std::net::TcpListener;
 
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, crate::ports::allocate_test_port()))
-            .expect("bind localhost listener");
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind localhost listener");
         let port = listener.local_addr().expect("read local addr").port();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("accept manual-lab test connection");

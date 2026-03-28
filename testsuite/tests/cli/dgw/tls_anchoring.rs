@@ -4,7 +4,6 @@ use anyhow::Context as _;
 use rstest::rstest;
 use testsuite::cli::{dgw_tokio_cmd, wait_for_tcp_port};
 use testsuite::dgw_config::{DgwConfig, DgwConfigHandle};
-use testsuite::ports::allocate_test_port;
 use tokio::process::Child;
 
 #[rstest]
@@ -142,9 +141,7 @@ async fn start_dummy_tls_server() -> anyhow::Result<u16> {
     let acceptor = TlsAcceptor::from(Arc::new(tls_config));
 
     // Bind to an ephemeral port.
-    let listener = TcpListener::bind(("127.0.0.1", allocate_test_port()))
-        .await
-        .context("bind")?;
+    let listener = TcpListener::bind("127.0.0.1:0").await.context("bind")?;
     let port = listener.local_addr().context("local_addr")?.port();
 
     // We spawn-and-forget the task; the async runtime is dropped at the end of

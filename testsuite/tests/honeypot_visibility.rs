@@ -33,7 +33,6 @@ use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse, Stream
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use testsuite::ports::allocate_test_port;
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
@@ -87,7 +86,7 @@ impl FakeControlPlaneServer {
     }
 
     async fn spawn_with_acquire_error(acquire_error: Option<FakeControlPlaneError>) -> anyhow::Result<Self> {
-        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, allocate_test_port()))
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
             .await
             .context("bind fake control-plane listener")?;
         let addr = listener.local_addr().context("read fake control-plane address")?;
