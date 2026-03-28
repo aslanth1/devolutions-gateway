@@ -109,7 +109,14 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 ## Three-Host Manual Observation Deck
 
 - Use the Rust launcher when you want a real operator deck with three live Tiny11-backed sessions and a browser view you can click through.
-- The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- up`, `status`, and `down`.
+- The sanctioned command surface is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight`, `up`, `status`, and `down`.
+- The repo root `Makefile` also provides thin convenience wrappers `make manual-lab-preflight`, `make manual-lab-up`, `make manual-lab-status`, and `make manual-lab-down`.
+- Those wrappers still call the same Rust launcher and only pre-create a local lab-e2e gate file plus set `DGW_HONEYPOT_LAB_E2E=1` and `DGW_HONEYPOT_TIER_GATE` for `preflight` and `up`.
+- Use the preflight-first sequence for manual operator work:
+  `make manual-lab-preflight`,
+  remediate any blocker,
+  rerun `make manual-lab-preflight`,
+  then launch with `make manual-lab-up`.
 - `up` is `lab-e2e` gated and refuses to start unless `DGW_HONEYPOT_LAB_E2E=1` is set and `DGW_HONEYPOT_TIER_GATE` points at a gate file whose `contract_passed` and `host_smoke_passed` fields are both `true`.
 - The live manual deck also requires the same canonical Tiny11 interop inputs as the external-client proof path:
   `DGW_HONEYPOT_INTEROP_RDP_USERNAME`,
@@ -121,6 +128,11 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
   and `DGW_HONEYPOT_INTEROP_XFREERDP_PATH`.
 - `DGW_HONEYPOT_INTEROP_IMAGE_STORE` and `DGW_HONEYPOT_INTEROP_MANIFEST_DIR` are optional if the canonical sealed store under `/srv/honeypot/images` is already present and trusted.
 - `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS` remain optional overrides for unusual lab hosts.
+- If `preflight` or `up` reports `missing_store_root`, bootstrap the canonical store with the sanctioned control-plane flow before retrying:
+  `honeypot-control-plane consume-image --config honeypot/docker/config/control-plane/config.toml --source-manifest <bundle-manifest.json>`.
+- The expected post-import state is a trusted-image store under `/srv/honeypot/images`, a manifest set under `/srv/honeypot/images/manifests`, and a `preflight` result of `ready` before the operator launches `up`.
+- Treat a blocked `preflight` result as `blocked_prereq` only.
+- It is a prerequisite signal, not runtime proof and not Milestone 6b completion evidence by itself.
 - `up` opens Chrome by default after the frontend reports three ready tiles.
 - Set `DGW_HONEYPOT_MANUAL_LAB_CHROME` if Chrome is not on `PATH`.
 - Pass `--no-browser` when you want the deck live without opening a window.

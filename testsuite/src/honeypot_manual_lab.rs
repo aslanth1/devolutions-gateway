@@ -27,7 +27,7 @@ use crate::honeypot_control_plane::{
 };
 use crate::honeypot_frontend::{HoneypotFrontendTestConfig, write_honeypot_frontend_config};
 use crate::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path};
-use crate::honeypot_tiers::{HoneypotTestTier, require_honeypot_tier};
+use crate::honeypot_tiers::{HONEYPOT_LAB_E2E_ENV, HONEYPOT_TIER_GATE_ENV, HoneypotTestTier, require_honeypot_tier};
 
 const MANUAL_LAB_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_HOST_COUNT: usize = 3;
@@ -118,6 +118,93 @@ impl Default for ManualLabUpOptions {
     fn default() -> Self {
         Self { open_browser: true }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabPreflightStatus {
+    Ready,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualLabPreflightReport {
+    pub status: ManualLabPreflightStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocker: Option<String>,
+    pub image_store_root: PathBuf,
+    pub manifest_dir: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+}
+
+impl ManualLabPreflightReport {
+    fn ready(paths: &ManualLabInteropPaths) -> Self {
+        Self {
+            status: ManualLabPreflightStatus::Ready,
+            blocker: None,
+            image_store_root: paths.image_store.clone(),
+            manifest_dir: paths.manifest_dir.clone(),
+            detail: None,
+            remediation: None,
+        }
+    }
+
+    fn blocked(
+        paths: &ManualLabInteropPaths,
+        blocker: Tiny11LabGateBlocker,
+        detail: impl Into<String>,
+        remediation: Option<String>,
+    ) -> Self {
+        Self {
+            status: ManualLabPreflightStatus::Blocked,
+            blocker: Some(tiny11_lab_gate_blocker_code(blocker).to_owned()),
+            image_store_root: paths.image_store.clone(),
+            manifest_dir: paths.manifest_dir.clone(),
+            detail: Some(detail.into()),
+            remediation,
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        self.status == ManualLabPreflightStatus::Ready
+    }
+
+    pub fn render_json(&self) -> anyhow::Result<String> {
+        serde_json::to_string_pretty(self).context("serialize manual lab preflight report")
+    }
+
+    pub fn render_text(&self) -> String {
+        match (
+            self.blocker.as_deref(),
+            self.detail.as_deref(),
+            self.remediation.as_deref(),
+        ) {
+            (None, _, _) => format!(
+                "manual lab preflight ready\nimage_store_root={}\nmanifest_dir={}",
+                self.image_store_root.display(),
+                self.manifest_dir.display()
+            ),
+            (Some(blocker), Some(detail), Some(remediation)) => {
+                format!("manual lab blocked by {blocker}: {detail}\nremediation: {remediation}")
+            }
+            (Some(blocker), Some(detail), None) => format!("manual lab blocked by {blocker}: {detail}"),
+            _ => "manual lab blocked".to_owned(),
+        }
+    }
+}
+
+struct ManualLabPreflightReady {
+    report: ManualLabPreflightReport,
+    interop: ManualLabInteropConfig,
+    chrome_binary: Option<PathBuf>,
+}
+
+enum ManualLabPreflightOutcome {
+    Ready(Box<ManualLabPreflightReady>),
+    Blocked(ManualLabPreflightReport),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -365,28 +452,12 @@ pub fn render_manual_lab_proxy_config(
 }
 
 pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
-    require_honeypot_tier(HoneypotTestTier::LabE2e)
-        .with_context(|| "manual lab requires the explicit lab-e2e gate before it can launch live Tiny11 hosts")?;
-
-    let active_path = active_state_path();
-    ensure!(
-        !active_path.exists(),
-        "manual lab is already active at {}; run `cargo run -p testsuite --bin honeypot-manual-lab -- status` or `down` first",
-        active_path.display()
-    );
-
-    let interop = load_manual_lab_interop_config()?;
-    let chrome_binary = if options.open_browser {
-        Some(resolve_chrome_binary()?)
-    } else {
-        None
+    let readiness = match evaluate_manual_lab_preflight(options)? {
+        ManualLabPreflightOutcome::Ready(ready) => *ready,
+        ManualLabPreflightOutcome::Blocked(report) => bail!("{}", report.render_text()),
     };
-    if options.open_browser {
-        ensure!(
-            interactive_browser_display_is_available(),
-            "manual lab browser launch requires DISPLAY or WAYLAND_DISPLAY to be set",
-        );
-    }
+    let interop = readiness.interop;
+    let chrome_binary = readiness.chrome_binary;
 
     let run_id = format!("manual-lab-{}", Uuid::new_v4().simple());
     let layout = create_runtime_layout(&run_id)?;
@@ -560,6 +631,13 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
             }
         }
     }
+}
+
+pub fn preflight(options: ManualLabUpOptions) -> anyhow::Result<ManualLabPreflightReport> {
+    Ok(match evaluate_manual_lab_preflight(options)? {
+        ManualLabPreflightOutcome::Ready(ready) => ready.report,
+        ManualLabPreflightOutcome::Blocked(report) => report,
+    })
 }
 
 pub fn status() -> anyhow::Result<Option<ManualLabStatusReport>> {
@@ -1277,23 +1355,106 @@ fn load_active_state() -> anyhow::Result<Option<ManualLabState>> {
     Ok(Some(state))
 }
 
-fn load_manual_lab_interop_config() -> anyhow::Result<ManualLabInteropConfig> {
+fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<ManualLabPreflightOutcome> {
     let paths = resolve_manual_lab_interop_paths();
-    let evidence = match evaluate_tiny11_lab_gate(&build_manual_lab_gate_inputs(&paths)) {
+
+    if let Err(error) = require_honeypot_tier(HoneypotTestTier::LabE2e)
+        .with_context(|| "manual lab requires the explicit lab-e2e gate before it can launch live Tiny11 hosts")
+    {
+        return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
+            &paths,
+            Tiny11LabGateBlocker::MissingRuntimeInputs,
+            format!("{error:#}"),
+            Some(format!(
+                "set {HONEYPOT_LAB_E2E_ENV}=1 and {HONEYPOT_TIER_GATE_ENV}=<lab-e2e-gate.json> with contract_passed=true and host_smoke_passed=true"
+            )),
+        )));
+    }
+
+    let active_path = active_state_path();
+    if active_path.exists() {
+        return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
+            &paths,
+            Tiny11LabGateBlocker::UncleanState,
+            format!(
+                "manual lab is already active at {}; run `cargo run -p testsuite --bin honeypot-manual-lab -- status` or `down` first",
+                active_path.display()
+            ),
+            Some("run `cargo run -p testsuite --bin honeypot-manual-lab -- down` to clear the active run".to_owned()),
+        )));
+    }
+
+    let gate_inputs = build_manual_lab_gate_inputs(&paths);
+    let evidence = match evaluate_tiny11_lab_gate(&gate_inputs) {
         Tiny11LabGateOutcome::Ready(ready) => ready.evidence,
         Tiny11LabGateOutcome::Blocked(blocked) => {
-            bail!(
-                "{}",
-                tiny11_lab_gate_error_message(blocked.blocker, &blocked.detail, blocked.remediation.as_deref())
-            );
+            return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
+                &paths,
+                blocked.blocker,
+                blocked.detail,
+                blocked.remediation,
+            )));
         }
     };
 
+    if options.open_browser && !interactive_browser_display_is_available() {
+        return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
+            &paths,
+            Tiny11LabGateBlocker::MissingRuntimeInputs,
+            "manual lab browser launch requires DISPLAY or WAYLAND_DISPLAY to be set",
+            Some("set DISPLAY or WAYLAND_DISPLAY, or rerun with --no-browser".to_owned()),
+        )));
+    }
+
+    let chrome_binary = if options.open_browser {
+        match resolve_chrome_binary() {
+            Ok(path) => Some(path),
+            Err(error) => {
+                return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
+                    &paths,
+                    Tiny11LabGateBlocker::MissingRuntimeInputs,
+                    format!("{error:#}"),
+                    Some(format!(
+                        "set {MANUAL_LAB_CHROME_ENV} to a Chrome-family binary path or rerun with --no-browser"
+                    )),
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
+    let interop = match manual_lab_interop_config_from_evidence(&paths, evidence) {
+        Ok(interop) => interop,
+        Err(error) => {
+            return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
+                &paths,
+                Tiny11LabGateBlocker::MissingRuntimeInputs,
+                format!("{error:#}"),
+                Some(
+                    "set the required DGW_HONEYPOT_INTEROP_* inputs and rerun `honeypot-manual-lab preflight`"
+                        .to_owned(),
+                ),
+            )));
+        }
+    };
+
+    Ok(ManualLabPreflightOutcome::Ready(Box::new(ManualLabPreflightReady {
+        report: ManualLabPreflightReport::ready(&paths),
+        interop,
+        chrome_binary,
+    })))
+}
+
+fn manual_lab_interop_config_from_evidence(
+    paths: &ManualLabInteropPaths,
+    evidence: HoneypotInteropStoreEvidence,
+) -> anyhow::Result<ManualLabInteropConfig> {
     Ok(ManualLabInteropConfig {
         image_store: paths.image_store.clone(),
-        qemu_binary_path: paths.qemu_binary_path,
-        kvm_path: paths.kvm_path,
-        xfreerdp_path: paths.xfreerdp_path,
+        qemu_binary_path: paths.qemu_binary_path.clone(),
+        kvm_path: paths.kvm_path.clone(),
+        xfreerdp_path: paths.xfreerdp_path.clone(),
         ready_timeout_secs: optional_env_string(HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV)
             .map(|value| value.parse::<u16>())
             .transpose()
@@ -1386,17 +1547,12 @@ fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateI
     }
 }
 
-fn tiny11_lab_gate_error_message(blocker: Tiny11LabGateBlocker, detail: &str, remediation: Option<&str>) -> String {
-    let blocker = match blocker {
+fn tiny11_lab_gate_blocker_code(blocker: Tiny11LabGateBlocker) -> &'static str {
+    match blocker {
         Tiny11LabGateBlocker::MissingStoreRoot => "missing_store_root",
         Tiny11LabGateBlocker::InvalidProvenance => "invalid_provenance",
         Tiny11LabGateBlocker::UncleanState => "unclean_state",
         Tiny11LabGateBlocker::MissingRuntimeInputs => "missing_runtime_inputs",
-    };
-
-    match remediation {
-        Some(remediation) => format!("Tiny11 lab gate blocked by {blocker}: {detail}\nremediation: {remediation}"),
-        None => format!("Tiny11 lab gate blocked by {blocker}: {detail}"),
     }
 }
 

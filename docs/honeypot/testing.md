@@ -181,10 +181,19 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 
 ## Manual Three-Host Observation Deck
 
-- The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- up|status|down`.
+- The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight|up|status|down`.
+- The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
+- The Make targets only create a local lab-e2e gate file and set `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE` for `preflight` and `up`; they do not replace the required `DGW_HONEYPOT_INTEROP_*` inputs.
+- The required manual sequence is `preflight -> remediate -> preflight -> up`.
 - This lane is Rust-native and lives in `testsuite::honeypot_manual_lab`; it does not permit Bash or Python wrappers for service startup, Tiny11 fan-out, or teardown.
 - The launcher reuses the canonical Tiny11 interop gate instead of inventing a second store verifier.
 - It therefore requires the same `DGW_HONEYPOT_LAB_E2E`, `DGW_HONEYPOT_TIER_GATE`, and `DGW_HONEYPOT_INTEROP_*` runtime contract as the external-client live proof path.
+- `preflight` and `up` now share one readiness evaluator.
+- They must agree on blocker class, image-store root, manifest dir, and remediation anchor for the same blocked fixture.
+- `preflight` is advisory and side-effect free.
+- `up` reruns the same readiness check immediately before launch and still fails closed if the host drifts after preflight.
+- If the blocker is `missing_store_root`, the sanctioned remediation is `honeypot-control-plane consume-image --config honeypot/docker/config/control-plane/config.toml --source-manifest <bundle-manifest.json>`, followed by another `preflight` run.
+- The expected ready state is a trusted-image store under `/srv/honeypot/images`, a manifest set under `/srv/honeypot/images/manifests`, and a `preflight` result of `ready`.
 - `up` clones one attested Tiny11 manifest lineage into three trusted-image identities with unique `vm_name` and guest RDP ports, starts host-process `control-plane`, `proxy`, and `frontend`, creates three real proxy-backed RDP sessions, requests stream tokens, and only succeeds after the frontend reports three ready tiles.
 - `status` reads the active state file at `target/manual-lab/active.json` and reports the bound run root, dashboard URL, process ids, health snapshots, and the known `session_id`, `vm_lease_id`, and `stream_id` values for each slot.
 - `down` uses that same active state to best-effort terminate helper clients, terminate live proxy sessions, release plus recycle known leases, stop the three services, and remove the active state file.

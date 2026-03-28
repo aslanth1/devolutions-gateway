@@ -15,19 +15,29 @@ fn main() {
 
 #[cfg(unix)]
 fn main() {
-    if let Err(error) = real_main() {
-        eprintln!("{error:#}");
-        std::process::exit(1);
+    match real_main() {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::exit(1);
+        }
     }
 }
 
 #[cfg(unix)]
 use anyhow::{bail, ensure};
 #[cfg(unix)]
-use testsuite::honeypot_manual_lab::{self, ManualLabTeardownReport, ManualLabUpOptions};
+use testsuite::honeypot_manual_lab::{self, ManualLabPreflightReport, ManualLabTeardownReport, ManualLabUpOptions};
 
 #[cfg(unix)]
-fn real_main() -> anyhow::Result<()> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualLabPreflightFormat {
+    Text,
+    Json,
+}
+
+#[cfg(unix)]
+fn real_main() -> anyhow::Result<i32> {
     let mut args = std::env::args().skip(1);
     let command = args.next().unwrap_or_else(|| "help".to_owned());
 
@@ -69,7 +79,23 @@ fn real_main() -> anyhow::Result<()> {
             if let Some(pid) = state.xvfb_pid {
                 println!("xvfb_pid={pid}");
             }
-            Ok(())
+            Ok(0)
+        }
+        "preflight" => {
+            let mut open_browser = true;
+            let mut format = ManualLabPreflightFormat::Text;
+            for arg in args {
+                match arg.as_str() {
+                    "--no-browser" => open_browser = false,
+                    "--format=json" => format = ManualLabPreflightFormat::Json,
+                    "--format=text" => format = ManualLabPreflightFormat::Text,
+                    other => bail!("unknown argument for preflight: {other}\n\n{}", usage()),
+                }
+            }
+
+            let report = honeypot_manual_lab::preflight(ManualLabUpOptions { open_browser })?;
+            print_preflight_report(&report, format)?;
+            Ok(if report.is_ready() { 0 } else { 2 })
         }
         "status" => {
             ensure!(args.next().is_none(), "status does not accept arguments\n\n{}", usage());
@@ -116,11 +142,11 @@ fn real_main() -> anyhow::Result<()> {
                                 .map_or_else(|| "<none>".to_owned(), |pid| pid.to_string())
                         );
                     }
-                    Ok(())
+                    Ok(0)
                 }
                 None => {
                     println!("manual lab is not active");
-                    Ok(())
+                    Ok(0)
                 }
             }
         }
@@ -128,14 +154,23 @@ fn real_main() -> anyhow::Result<()> {
             ensure!(args.next().is_none(), "down does not accept arguments\n\n{}", usage());
             let report = honeypot_manual_lab::down()?;
             print_teardown_report(&report);
-            Ok(())
+            Ok(0)
         }
         "help" | "-h" | "--help" => {
             println!("{}", usage());
-            Ok(())
+            Ok(0)
         }
         other => bail!("unknown subcommand {other}\n\n{}", usage()),
     }
+}
+
+#[cfg(unix)]
+fn print_preflight_report(report: &ManualLabPreflightReport, format: ManualLabPreflightFormat) -> anyhow::Result<()> {
+    match format {
+        ManualLabPreflightFormat::Text => println!("{}", report.render_text()),
+        ManualLabPreflightFormat::Json => println!("{}", report.render_json()?),
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -165,15 +200,18 @@ fn print_teardown_report(report: &ManualLabTeardownReport) {
 fn usage() -> &'static str {
     "Usage:
   cargo run -p testsuite --bin honeypot-manual-lab -- up [--no-browser]
+  cargo run -p testsuite --bin honeypot-manual-lab -- preflight [--no-browser] [--format=json|text]
   cargo run -p testsuite --bin honeypot-manual-lab -- status
   cargo run -p testsuite --bin honeypot-manual-lab -- down
 
 Commands:
-  up        Launch control-plane, proxy, frontend, and three Tiny11-backed live sessions.
-  status    Print the active manual-lab run state and current health snapshots.
-  down      Tear down the active manual-lab run and recycle known leases.
+  up         Launch control-plane, proxy, frontend, and three Tiny11-backed live sessions.
+  preflight  Check manual-lab prerequisites without starting services.
+  status     Print the active manual-lab run state and current health snapshots.
+  down       Tear down the active manual-lab run and recycle known leases.
 
 Notes:
   up opens Chrome by default after the frontend reports three ready tiles.
+  preflight checks the same gate path that up uses and exits non-zero when blocked.
   Use --no-browser to leave the deck running without opening Chrome."
 }

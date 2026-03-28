@@ -367,6 +367,50 @@ fn honeypot_docs_keep_manual_headed_lab_contract_fail_closed() {
 }
 
 #[test]
+fn honeypot_docs_define_manual_lab_preflight_first_flow() {
+    let agents_path = "AGENTS.md";
+    let agents = read_repo_text(agents_path);
+    assert_contains(
+        agents_path,
+        &agents,
+        "### Milestone 6c: Manual Deck Preflight And Interop-Store Readiness",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Add a Rust-native `honeypot-manual-lab preflight` command.",
+    );
+    assert_contains(
+        agents_path,
+        &agents,
+        "Make manual preflight and manual up share one gate authority.",
+    );
+
+    let runbook_path = "docs/honeypot/runbook.md";
+    let runbook = read_repo_text(runbook_path);
+    assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "preflight`,\n  remediate any blocker,\n  rerun `make manual-lab-preflight`,\n  then launch with `make manual-lab-up`.",
+    );
+
+    let testing_path = "docs/honeypot/testing.md";
+    let testing = read_repo_text(testing_path);
+    assert_contains(testing_path, &testing, "preflight|up|status|down");
+    assert_contains(
+        testing_path,
+        &testing,
+        "The required manual sequence is `preflight -> remediate -> preflight -> up`.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "`honeypot-control-plane consume-image --config honeypot/docker/config/control-plane/config.toml --source-manifest <bundle-manifest.json>`",
+    );
+}
+
+#[test]
 fn honeypot_docs_keep_windows_provisioning_key_allowlist_narrow() {
     let key_doc_path = "WINDOWS11-LICENSE.md";
     let key_doc = read_repo_text(key_doc_path);

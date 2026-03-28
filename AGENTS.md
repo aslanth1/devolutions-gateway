@@ -772,6 +772,26 @@ Pass when: the runbook and testing docs explain the required `DGW_HONEYPOT_INTER
 - [x] Add a live operator proof run for the three-host manual deck.
 Pass when: on a host with isolated helper-display support such as `Xvfb`, one sanctioned `honeypot-manual-lab up` run creates three distinct Tiny11-backed live sessions, the frontend reaches three ready tiles, and `honeypot-manual-lab down` drains the active lease count back to zero without orphaned helper processes.
 
+### Milestone 6c: Manual Deck Preflight And Interop-Store Readiness
+
+- [x] Add a Rust-native `honeypot-manual-lab preflight` command.
+Pass when: it evaluates manual-deck prerequisites without starting services, and it reports `ready` or one canonical blocker before the operator attempts `up`.
+
+- [x] Make manual preflight and manual up share one gate authority.
+Pass when: `preflight` and `up` both call the same Rust readiness evaluator over the tier gate, Tiny11 gate, active-state check, and browser-launch prerequisites, and `up` reruns that evaluator immediately before side effects.
+
+- [x] Add a structured manual-deck gate report contract.
+Pass when: the preflight output can render both text and JSON with stable top-level keys for `status`, `blocker`, `image_store_root`, `manifest_dir`, `detail`, and `remediation`, while keeping human detail text flexible.
+
+- [x] Add parity tests proving `preflight` and `up` share one authority.
+Pass when: fixture-driven tests prove `preflight` and `up` emit the same blocker class and remediation anchor for the same blocked inputs, and `preflight` leaves no active-state file behind.
+
+- [x] Add thin operator wrappers and docs for the preflight-first manual flow.
+Pass when: the repo root `Makefile` exposes `manual-lab-preflight`, `manual-lab-up` runs preflight before launch, and the runbook plus testing docs require `preflight -> remediate -> preflight -> up` instead of trial-and-error `up`.
+
+- [x] Add a sanctioned Tiny11 interop-store bootstrap checklist for manual operators.
+Pass when: the docs codify the exact `honeypot-control-plane consume-image` bootstrap inputs, the expected post-import store layout, and the explicit `preflight` signals that prove the manual deck is ready to launch.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
