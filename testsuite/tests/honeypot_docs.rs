@@ -559,7 +559,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`",
+        "the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!`",
     );
     assert_contains(
         runbook_path,
@@ -726,7 +726,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`",
+        "inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!`",
     );
     assert_contains(
         testing_path,

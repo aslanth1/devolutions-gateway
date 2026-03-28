@@ -840,13 +840,13 @@ Pass when: the repo root `Makefile` threads `MANUAL_LAB_PROFILE=canonical|local`
 ### Milestone 6g: Manual Deck Makefile Runtime Env Defaults
 
 - [x] Add Make-managed guest-auth env defaults for readiness and launch verbs.
-Pass when: the repo root `Makefile` injects default `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password` for `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, while `status` and `down` keep their current no-extra-env behavior.
+Pass when: the repo root `Makefile` injects default `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!` for `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, while `status` and `down` keep their current no-extra-env behavior.
 
 - [x] Keep explicit operator overrides authoritative over the Make-managed defaults.
 Pass when: `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` still override the default guest-auth pair without changing the Rust readiness authority.
 
 - [x] Add docs and tests for the Make-managed runtime env contract.
-Pass when: the runbook and testing docs name the `operator/password` wrapper defaults, explain the override knobs, state which verbs consume those defaults, and docs-parity tests cover the new contract.
+Pass when: the runbook and testing docs name the `jf/ChangeMe123!` wrapper defaults, explain the override knobs, state which verbs consume those defaults, and docs-parity tests cover the new contract.
 
 ### Milestone 6h: Manual Deck Self-Test Alias Lane
 

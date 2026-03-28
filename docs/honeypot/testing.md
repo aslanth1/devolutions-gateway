@@ -206,8 +206,12 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - The granular local aliases `make manual-lab-selftest-preflight`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only helper that prints the effective profile, config path, store root, manifest dir, and masked guest-auth state.
 - The Make targets only create a local lab-e2e gate file and set `DGW_HONEYPOT_LAB_E2E=1` plus `DGW_HONEYPOT_TIER_GATE` for `preflight`, `ensure-artifacts`, `bootstrap-store`, and `up`; they do not replace the Rust readiness authority.
-- `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser` now also inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
+- `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser` now also inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!`.
 - Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses different guest credentials.
+- The same live deck also needs a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
+- By default the launcher checks for `webapp/dist/recording-player/index.html` and stages it into a temporary `player/` root before spawning the proxy.
+- Override the source player bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the build output lives outside the repo default.
+- If that bundle is missing, run `cd webapp && pnpm install --frozen-lockfile && pnpm build:libs && pnpm build:player`, then rerun `make manual-lab-preflight`.
 - `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
 - `canonical` is the default `/srv/honeypot/...` lane.
 - `local` is the explicit non-root lane and binds the same Rust authority to repo-local state under `target/manual-lab/state/`.

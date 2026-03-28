@@ -4422,11 +4422,8 @@ fn tiny11_lab_gate_inputs_for_fixture(fixture: &RuntimeFixture) -> Tiny11LabGate
             ),
         ],
         runtime_inputs: vec![
-            Tiny11LabRuntimeInput::non_empty_text(HONEYPOT_INTEROP_RDP_USERNAME_ENV, Some("operator".to_owned())),
-            Tiny11LabRuntimeInput::non_empty_text(
-                HONEYPOT_INTEROP_RDP_PASSWORD_ENV,
-                Some("operator-password".to_owned()),
-            ),
+            Tiny11LabRuntimeInput::non_empty_text(HONEYPOT_INTEROP_RDP_USERNAME_ENV, Some("jf".to_owned())),
+            Tiny11LabRuntimeInput::non_empty_text(HONEYPOT_INTEROP_RDP_PASSWORD_ENV, Some("ChangeMe123!".to_owned())),
             Tiny11LabRuntimeInput::existing_path("fixture qemu binary", fixture.qemu_binary_path.clone()),
             Tiny11LabRuntimeInput::existing_path("fixture kvm path", fixture.kvm_path.clone()),
             Tiny11LabRuntimeInput::existing_command("fixture xfreerdp path", fixture.qemu_binary_path.clone()),

@@ -138,7 +138,7 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - Set `LAB_E2E_PRECHECK=0` when a scripted caller intentionally wants the raw `lab-e2e` launch order without the automatic artifact ensure step.
 - Use `HOST_SMOKE_TEST_ARGS` or `LAB_E2E_TEST_ARGS` to pass through a test filter or trailing harness flags.
 - Those wrappers still call the same Rust launcher and only pre-create a local lab-e2e gate file plus set `DGW_HONEYPOT_LAB_E2E=1` and `DGW_HONEYPOT_TIER_GATE` for `preflight`, `ensure-artifacts`, `bootstrap-store`, and `up`.
-- For `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=operator` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=password`.
+- For `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser`, the Makefile also injects default guest-auth values `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!`.
 - Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses a different guest account.
 - `MANUAL_LAB_PROFILE=canonical|local` selects the sanctioned host-state lane for those Make wrappers.
 - `canonical` is the default and keeps the checked-in `/srv/honeypot/...` paths.
@@ -172,6 +172,10 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
   `DGW_HONEYPOT_INTEROP_QEMU_BINARY`,
   `DGW_HONEYPOT_INTEROP_KVM_PATH`,
   and `DGW_HONEYPOT_INTEROP_XFREERDP_PATH`.
+- The live manual deck also requires a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
+- By default the launcher expects `webapp/dist/recording-player/index.html` in this repo checkout.
+- Override that source bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the player build lives elsewhere.
+- If the player bundle is missing, run `cd webapp && pnpm install --frozen-lockfile && pnpm build:libs && pnpm build:player`, then rerun `make manual-lab-preflight`.
 - `DGW_HONEYPOT_INTEROP_IMAGE_STORE` and `DGW_HONEYPOT_INTEROP_MANIFEST_DIR` are optional if the canonical sealed store under `/srv/honeypot/images` is already present and trusted.
 - `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS` remain optional overrides for unusual lab hosts.
 - `preflight` remains read-only.

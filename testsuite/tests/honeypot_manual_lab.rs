@@ -17,6 +17,17 @@ use testsuite::honeypot_manual_lab::{
 };
 use testsuite::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path};
 
+fn create_fake_manual_lab_webplayer_bundle(root: &Path) -> PathBuf {
+    let player_root = root.join("recording-player");
+    fs::create_dir_all(&player_root).expect("create fake manual-lab webplayer root");
+    fs::write(
+        player_root.join("index.html"),
+        "<!doctype html><title>manual-lab player</title>",
+    )
+    .expect("write fake manual-lab webplayer index");
+    player_root
+}
+
 #[test]
 fn manual_lab_trusted_image_manifest_preserves_lineage_and_rebinds_identity() {
     let source_manifest = json!({
@@ -600,6 +611,7 @@ fn manual_lab_cli_bootstrap_store_execute_imports_and_rechecks_preflight() {
     fs::write(&kvm_path, b"kvm").expect("write fake kvm device");
     let xfreerdp_path = tempdir.path().join("xfreerdp");
     fs::write(&xfreerdp_path, b"#!/bin/sh\nexit 0\n").expect("write fake xfreerdp");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
 
     let output = honeypot_manual_lab_assert_cmd()
         .arg("bootstrap-store")
@@ -615,8 +627,9 @@ fn manual_lab_cli_bootstrap_store_execute_imports_and_rechecks_preflight() {
         .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
         .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
         .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
-        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
-        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "jf")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "ChangeMe123!")
         .assert()
         .success()
         .get_output()
@@ -660,6 +673,7 @@ fn manual_lab_cli_bootstrap_store_execute_reports_cached_validation_for_repeated
     fs::write(&kvm_path, b"kvm").expect("write fake kvm device");
     let xfreerdp_path = tempdir.path().join("xfreerdp");
     fs::write(&xfreerdp_path, b"#!/bin/sh\nexit 0\n").expect("write fake xfreerdp");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
 
     honeypot_manual_lab_assert_cmd()
         .arg("bootstrap-store")
@@ -675,8 +689,9 @@ fn manual_lab_cli_bootstrap_store_execute_reports_cached_validation_for_repeated
         .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
         .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
         .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
-        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
-        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "jf")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "ChangeMe123!")
         .assert()
         .success();
 
@@ -694,8 +709,9 @@ fn manual_lab_cli_bootstrap_store_execute_reports_cached_validation_for_repeated
         .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
         .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
         .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
-        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
-        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "jf")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "ChangeMe123!")
         .assert()
         .success()
         .get_output()
@@ -725,6 +741,7 @@ fn manual_lab_cli_ensure_artifacts_executes_import_when_store_readiness_is_missi
     fs::write(&kvm_path, b"kvm").expect("write fake kvm device");
     let xfreerdp_path = tempdir.path().join("xfreerdp");
     fs::write(&xfreerdp_path, b"#!/bin/sh\nexit 0\n").expect("write fake xfreerdp");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
 
     let output = honeypot_manual_lab_assert_cmd()
         .arg("ensure-artifacts")
@@ -739,8 +756,9 @@ fn manual_lab_cli_ensure_artifacts_executes_import_when_store_readiness_is_missi
         .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
         .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
         .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
-        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
-        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "jf")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "ChangeMe123!")
         .assert()
         .success()
         .get_output()
@@ -772,6 +790,7 @@ fn manual_lab_cli_ensure_artifacts_skips_bootstrap_when_preflight_is_already_rea
     fs::write(&kvm_path, b"kvm").expect("write fake kvm device");
     let xfreerdp_path = tempdir.path().join("xfreerdp");
     fs::write(&xfreerdp_path, b"#!/bin/sh\nexit 0\n").expect("write fake xfreerdp");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
 
     honeypot_manual_lab_assert_cmd()
         .arg("bootstrap-store")
@@ -787,8 +806,9 @@ fn manual_lab_cli_ensure_artifacts_skips_bootstrap_when_preflight_is_already_rea
         .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
         .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
         .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
-        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
-        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "jf")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "ChangeMe123!")
         .assert()
         .success();
 
@@ -803,8 +823,9 @@ fn manual_lab_cli_ensure_artifacts_skips_bootstrap_when_preflight_is_already_rea
         .env("DGW_HONEYPOT_INTEROP_QEMU_BINARY", fake_qemu_bin_path())
         .env("DGW_HONEYPOT_INTEROP_KVM_PATH", &kvm_path)
         .env("DGW_HONEYPOT_INTEROP_XFREERDP_PATH", &xfreerdp_path)
-        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "operator")
-        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "password")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .env("DGW_HONEYPOT_INTEROP_RDP_USERNAME", "jf")
+        .env("DGW_HONEYPOT_INTEROP_RDP_PASSWORD", "ChangeMe123!")
         .assert()
         .success()
         .get_output()

@@ -63,6 +63,8 @@ const HONEYPOT_INTEROP_RDP_DOMAIN_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_DOMAIN";
 const HONEYPOT_INTEROP_RDP_SECURITY_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_SECURITY";
 const HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV: &str = "DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS";
 const HONEYPOT_INTEROP_XFREERDP_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_PATH";
+const GATEWAY_WEBAPP_PATH_ENV: &str = "DGATEWAY_WEBAPP_PATH";
+const GATEWAY_WEBPLAYER_PATH_ENV: &str = "DGATEWAY_WEBPLAYER_PATH";
 const MANUAL_LAB_SOURCE_MANIFEST_DISCOVERY_PATHS: [&str; 2] = [
     "artifacts/bundle/bundle-manifest.json",
     "artifacts/live-proof/source-bundle/bundle-manifest.json",
@@ -852,6 +854,7 @@ pub struct ManualLabProxyConfigOptions {
 #[derive(Debug, Clone)]
 struct ManualLabInteropConfig {
     image_store: PathBuf,
+    web_player_root: PathBuf,
     qemu_binary_path: PathBuf,
     kvm_path: PathBuf,
     xfreerdp_path: PathBuf,
@@ -933,6 +936,7 @@ struct ManualLabRuntimeLayout {
     logs_dir: PathBuf,
     manifests_dir: PathBuf,
     control_plane_secret_dir: PathBuf,
+    proxy_webapp_root_dir: PathBuf,
     runtime_data_dir: PathBuf,
     lease_store_dir: PathBuf,
     quarantine_store_dir: PathBuf,
@@ -1150,6 +1154,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         write_manual_lab_control_plane_config(&layout, &interop, &state.ports)?;
         write_manual_lab_proxy_config_dir(&layout, &state.ports)?;
         write_manual_lab_frontend_config(&layout, &state.ports, &wildcard_token)?;
+        prepare_manual_lab_proxy_webapp_root(&layout, &interop)?;
 
         let control_plane = spawn_control_plane(&layout, &state.ports)?;
         state.control_plane = control_plane;
@@ -1616,6 +1621,7 @@ fn create_runtime_layout(run_id: &str) -> anyhow::Result<ManualLabRuntimeLayout>
     let control_plane_secret_dir = run_root.join("secrets/control-plane");
     let proxy_secret_dir = run_root.join("secrets/proxy");
     let frontend_secret_dir = run_root.join("secrets/frontend");
+    let proxy_webapp_root_dir = run_root.join("webapp");
     let runtime_data_dir = run_root.join("runtime/control-plane-data");
     let lease_store_dir = run_root.join("runtime/leases");
     let quarantine_store_dir = run_root.join("runtime/quarantine");
@@ -1640,6 +1646,7 @@ fn create_runtime_layout(run_id: &str) -> anyhow::Result<ManualLabRuntimeLayout>
         &control_plane_secret_dir,
         &proxy_secret_dir,
         &frontend_secret_dir,
+        &proxy_webapp_root_dir,
         &runtime_data_dir,
         &lease_store_dir,
         &quarantine_store_dir,
@@ -1660,6 +1667,7 @@ fn create_runtime_layout(run_id: &str) -> anyhow::Result<ManualLabRuntimeLayout>
         logs_dir,
         manifests_dir,
         control_plane_secret_dir: control_plane_secret_dir.clone(),
+        proxy_webapp_root_dir,
         runtime_data_dir,
         lease_store_dir,
         quarantine_store_dir,
@@ -1746,6 +1754,42 @@ fn write_backend_credential_store(
         serde_json::to_vec_pretty(&Value::Object(document)).context("serialize backend credential store")?,
     )
     .with_context(|| format!("write {}", path.display()))
+}
+
+fn copy_directory_recursive(source_root: &Path, destination_root: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(destination_root).with_context(|| format!("create {}", destination_root.display()))?;
+
+    for entry in fs::read_dir(source_root).with_context(|| format!("read {}", source_root.display()))? {
+        let entry = entry.with_context(|| format!("read {}", source_root.display()))?;
+        let source_path = entry.path();
+        let destination_path = destination_root.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("inspect {}", source_path.display()))?;
+
+        if file_type.is_dir() {
+            copy_directory_recursive(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path)
+                .with_context(|| format!("copy {} -> {}", source_path.display(), destination_path.display()))?;
+        }
+    }
+
+    Ok(())
+}
+
+fn prepare_manual_lab_proxy_webapp_root(
+    layout: &ManualLabRuntimeLayout,
+    interop: &ManualLabInteropConfig,
+) -> anyhow::Result<()> {
+    let player_root = layout.proxy_webapp_root_dir.join("player");
+    copy_directory_recursive(&interop.web_player_root, &player_root).with_context(|| {
+        format!(
+            "stage manual-lab web player bundle from {} into {}",
+            interop.web_player_root.display(),
+            player_root.display()
+        )
+    })
 }
 
 fn write_manual_lab_control_plane_config(
@@ -1838,10 +1882,16 @@ fn spawn_proxy(layout: &ManualLabRuntimeLayout, ports: &ManualLabPorts) -> anyho
     let process = spawn_logged_process(
         GATEWAY_BIN_PATH.as_path(),
         &[],
-        &[(
-            OsString::from("DGATEWAY_CONFIG_PATH"),
-            layout.proxy_config_dir.as_os_str().to_owned(),
-        )],
+        &[
+            (
+                OsString::from("DGATEWAY_CONFIG_PATH"),
+                layout.proxy_config_dir.as_os_str().to_owned(),
+            ),
+            (
+                OsString::from(GATEWAY_WEBAPP_PATH_ENV),
+                layout.proxy_webapp_root_dir.as_os_str().to_owned(),
+            ),
+        ],
         layout.logs_dir.join("proxy.stdout.log"),
         layout.logs_dir.join("proxy.stderr.log"),
     )
@@ -2215,6 +2265,13 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
                     }),
                 });
             }
+            if blocked.blocker == Tiny11LabGateBlocker::MissingRuntimeInputs
+                && detail.contains(GATEWAY_WEBPLAYER_PATH_ENV)
+            {
+                remediation = Some(format!(
+                    "build the recording-player bundle with `cd webapp && pnpm install --frozen-lockfile && pnpm build:libs && pnpm build:player`, or set {GATEWAY_WEBPLAYER_PATH_ENV}=<recording-player-dir>, then rerun `make manual-lab-preflight`"
+                ));
+            }
 
             return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
                 &paths,
@@ -2280,6 +2337,7 @@ fn manual_lab_interop_config_from_evidence(
 ) -> anyhow::Result<ManualLabInteropConfig> {
     Ok(ManualLabInteropConfig {
         image_store: paths.image_store.clone(),
+        web_player_root: paths.web_player_root.clone(),
         qemu_binary_path: paths.qemu_binary_path.clone(),
         kvm_path: paths.kvm_path.clone(),
         xfreerdp_path: paths.xfreerdp_path.clone(),
@@ -2306,6 +2364,7 @@ fn manual_lab_service_ready_timeout(interop_ready_timeout_secs: u16) -> Duration
 struct ManualLabInteropPaths {
     image_store: PathBuf,
     manifest_dir: PathBuf,
+    web_player_root: PathBuf,
     qemu_binary_path: PathBuf,
     kvm_path: PathBuf,
     xfreerdp_path: PathBuf,
@@ -2316,6 +2375,8 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
         .unwrap_or_else(|| PathBuf::from(CANONICAL_TINY11_IMAGE_STORE_ROOT));
     let manifest_dir =
         optional_env_path(HONEYPOT_INTEROP_MANIFEST_DIR_ENV).unwrap_or_else(|| image_store.join("manifests"));
+    let web_player_root = optional_env_path(GATEWAY_WEBPLAYER_PATH_ENV)
+        .unwrap_or_else(|| repo_relative_path("webapp/dist/recording-player"));
     let qemu_binary_path = optional_env_path(HONEYPOT_INTEROP_QEMU_BINARY_ENV)
         .unwrap_or_else(|| PathBuf::from("/usr/bin/qemu-system-x86_64"));
     let kvm_path = optional_env_path(HONEYPOT_INTEROP_KVM_PATH_ENV).unwrap_or_else(|| PathBuf::from("/dev/kvm"));
@@ -2325,6 +2386,7 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
     ManualLabInteropPaths {
         image_store,
         manifest_dir,
+        web_player_root,
         qemu_binary_path,
         kvm_path,
         xfreerdp_path,
@@ -2388,6 +2450,13 @@ fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateI
                     paths.xfreerdp_path.display()
                 ),
                 paths.xfreerdp_path.clone(),
+            ),
+            Tiny11LabRuntimeInput::existing_path(
+                format!(
+                    "{GATEWAY_WEBPLAYER_PATH_ENV} ({})",
+                    paths.web_player_root.join("index.html").display()
+                ),
+                paths.web_player_root.join("index.html"),
             ),
         ],
         consume_image_config_path: Some(default_manual_lab_control_plane_config_path()),
