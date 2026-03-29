@@ -12,15 +12,18 @@ use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
 };
 use testsuite::honeypot_manual_lab::{
-    ManualLabBlackScreenBranchVerdict, ManualLabBlackScreenDoNotRetryLedgerVerdict, ManualLabBlackScreenEvidence,
-    ManualLabBlackScreenHypothesisContext, ManualLabBlackScreenRetryCondition, ManualLabBlackScreenRunReason,
-    ManualLabBlackScreenRunVerdict, ManualLabBrowserArtifactCorrelationVerdict, ManualLabBrowserPlayerMode,
-    ManualLabBrowserVisibilityDataStatus, ManualLabMultiSessionReadyPathSlotReason,
+    ManualLabBlackScreenArtifactContractSummary, ManualLabBlackScreenBranchVerdict,
+    ManualLabBlackScreenControlRunComparisonVerdict, ManualLabBlackScreenDoNotRetryLedgerVerdict,
+    ManualLabBlackScreenEvidence, ManualLabBlackScreenHypothesisContext, ManualLabBlackScreenRetryCondition,
+    ManualLabBlackScreenRunReason, ManualLabBlackScreenRunVerdict, ManualLabBrowserArtifactCorrelationVerdict,
+    ManualLabBrowserPlayerMode, ManualLabBrowserVisibilityDataStatus, ManualLabMultiSessionReadyPathSlotReason,
     ManualLabMultiSessionReadyPathVerdict, ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict,
     ManualLabProxyConfigOptions, ManualLabReadyPathSustainVerdict, ManualLabRecordingVisibilityVerdict,
     ManualLabSessionBrowserVisibilitySummary, ManualLabSessionBrowserVisibilityWindowSummary,
     ManualLabSessionDriverEvidence, ManualLabSessionPlaybackReadyCorrelation,
-    ManualLabSessionPlayerPlaybackPathSummary, active_state_path, build_manual_lab_black_screen_do_not_retry_ledger,
+    ManualLabSessionPlayerPlaybackPathSummary, active_state_path,
+    build_manual_lab_black_screen_artifact_contract_summary,
+    build_manual_lab_black_screen_control_run_comparison_summary, build_manual_lab_black_screen_do_not_retry_ledger,
     build_manual_lab_black_screen_run_verdict_summary, build_manual_lab_multi_session_ready_path_summary,
     build_manual_lab_ready_path_sustain_summary, honeypot_manual_lab_assert_cmd,
     parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_proxy_config,
@@ -257,12 +260,13 @@ fn sample_black_screen_run_evidence(
     let multi_session_ready_path_summary =
         build_manual_lab_multi_session_ready_path_summary(&session_invocations, session_count);
 
-    ManualLabBlackScreenEvidence {
+    let mut evidence = ManualLabBlackScreenEvidence {
         git_rev: "test-git-rev".to_owned(),
         bs_rows: vec!["BS-37".to_owned()],
         driver_lane: "xfreerdp-control".to_owned(),
         session_count,
         artifact_root: PathBuf::from("target/manual-lab/manual-lab-test"),
+        run_started_at_unix_ms: Some(1_704_067_260_000),
         hypothesis: ManualLabBlackScreenHypothesisContext {
             hypothesis_id: "slot-3-control-lane-fixes-playback".to_owned(),
             hypothesis_text: "the current control lane reaches usable playback for every slot".to_owned(),
@@ -271,7 +275,21 @@ fn sample_black_screen_run_evidence(
         session_invocations,
         multi_session_ready_path_summary,
         ..Default::default()
+    };
+    evidence.artifact_contract_summary = build_manual_lab_black_screen_artifact_contract_summary(&evidence);
+    evidence
+}
+
+fn write_black_screen_evidence_fixture(root: &Path, evidence: &ManualLabBlackScreenEvidence) {
+    let evidence_path = root.join("artifacts/black-screen-evidence.json");
+    if let Some(parent) = evidence_path.parent() {
+        fs::create_dir_all(parent).expect("create black-screen evidence parent");
     }
+    fs::write(
+        &evidence_path,
+        serde_json::to_vec_pretty(evidence).expect("serialize black-screen evidence"),
+    )
+    .expect("write black-screen evidence fixture");
 }
 
 #[test]
@@ -650,6 +668,171 @@ fn manual_lab_do_not_retry_ledger_fails_closed_without_retry_condition() {
         ManualLabBlackScreenDoNotRetryLedgerVerdict::MissingRetryCondition
     );
     assert!(ledger.entries.is_empty());
+}
+
+#[test]
+fn manual_lab_control_run_comparison_accepts_same_day_control_with_matching_contract() {
+    let tempdir = tempdir().expect("create tempdir");
+    let control_root = tempdir.path().join("control-run");
+    let mut control_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    control_evidence.is_control_lane = true;
+    control_evidence.run_started_at_unix_ms = Some(1_704_067_200_000);
+    control_evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&control_evidence);
+    control_evidence.artifact_contract_summary =
+        build_manual_lab_black_screen_artifact_contract_summary(&control_evidence);
+    write_black_screen_evidence_fixture(&control_root, &control_evidence);
+
+    let mut variant_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    variant_evidence.driver_lane = "xfreerdp-rdpgfx-default".to_owned();
+    variant_evidence.run_started_at_unix_ms = Some(1_704_067_260_000);
+    variant_evidence.env.insert(
+        "DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT".to_owned(),
+        control_root.display().to_string(),
+    );
+
+    let summary = build_manual_lab_black_screen_control_run_comparison_summary(&variant_evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenControlRunComparisonVerdict::MeaningfulWithSameDayControl
+    );
+    assert_eq!(summary.control_artifact_root, Some(control_root));
+    assert_eq!(
+        summary.control_run_verdict,
+        Some(ManualLabBlackScreenRunVerdict::UsablePlayback)
+    );
+    assert_eq!(
+        summary.control_run_primary_reason,
+        Some(ManualLabBlackScreenRunReason::AllSlotsUsablePlayback)
+    );
+}
+
+#[test]
+fn manual_lab_control_run_comparison_fails_closed_when_control_json_is_missing() {
+    let tempdir = tempdir().expect("create tempdir");
+    let missing_control_root = tempdir.path().join("missing-control");
+    let mut variant_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    variant_evidence.driver_lane = "xfreerdp-rdpgfx-default".to_owned();
+    variant_evidence.env.insert(
+        "DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT".to_owned(),
+        missing_control_root.display().to_string(),
+    );
+
+    let summary = build_manual_lab_black_screen_control_run_comparison_summary(&variant_evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenControlRunComparisonVerdict::MissingControlEvidence
+    );
+    assert_eq!(summary.control_artifact_root, Some(missing_control_root));
+}
+
+#[test]
+fn manual_lab_control_run_comparison_fails_closed_when_control_run_is_stale() {
+    let tempdir = tempdir().expect("create tempdir");
+    let control_root = tempdir.path().join("stale-control");
+    let mut control_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    control_evidence.is_control_lane = true;
+    control_evidence.run_started_at_unix_ms = Some(1_704_067_200_000);
+    control_evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&control_evidence);
+    control_evidence.artifact_contract_summary =
+        build_manual_lab_black_screen_artifact_contract_summary(&control_evidence);
+    write_black_screen_evidence_fixture(&control_root, &control_evidence);
+
+    let mut variant_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    variant_evidence.driver_lane = "xfreerdp-rdpgfx-default".to_owned();
+    variant_evidence.run_started_at_unix_ms = Some(1_704_153_660_000);
+    variant_evidence.env.insert(
+        "DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT".to_owned(),
+        control_root.display().to_string(),
+    );
+
+    let summary = build_manual_lab_black_screen_control_run_comparison_summary(&variant_evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenControlRunComparisonVerdict::StaleControlRun
+    );
+}
+
+#[test]
+fn manual_lab_control_run_comparison_fails_closed_when_contracts_do_not_match() {
+    let tempdir = tempdir().expect("create tempdir");
+    let control_root = tempdir.path().join("mismatched-control");
+    let mut control_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    control_evidence.is_control_lane = true;
+    control_evidence.run_started_at_unix_ms = Some(1_704_067_200_000);
+    control_evidence.bs_rows = vec!["BS-38".to_owned()];
+    control_evidence.artifact_contract_summary = ManualLabBlackScreenArtifactContractSummary {
+        bs_rows: control_evidence.bs_rows.clone(),
+        ..build_manual_lab_black_screen_artifact_contract_summary(&control_evidence)
+    };
+    control_evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&control_evidence);
+    write_black_screen_evidence_fixture(&control_root, &control_evidence);
+
+    let mut variant_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    variant_evidence.driver_lane = "xfreerdp-rdpgfx-default".to_owned();
+    variant_evidence.run_started_at_unix_ms = Some(1_704_067_260_000);
+    variant_evidence.env.insert(
+        "DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT".to_owned(),
+        control_root.display().to_string(),
+    );
+
+    let summary = build_manual_lab_black_screen_control_run_comparison_summary(&variant_evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenControlRunComparisonVerdict::ArtifactContractMismatch
+    );
 }
 
 #[test]

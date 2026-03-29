@@ -63,6 +63,7 @@ const HONEYPOT_BS_ROWS_ENV: &str = "DGW_HONEYPOT_BS_ROWS";
 const HONEYPOT_BS_HYPOTHESIS_ID_ENV: &str = "DGW_HONEYPOT_BS_HYPOTHESIS_ID";
 const HONEYPOT_BS_HYPOTHESIS_TEXT_ENV: &str = "DGW_HONEYPOT_BS_HYPOTHESIS_TEXT";
 const HONEYPOT_BS_RETRY_CONDITION_ENV: &str = "DGW_HONEYPOT_BS_RETRY_CONDITION";
+const HONEYPOT_BS_CONTROL_ARTIFACT_ROOT_ENV: &str = "DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT";
 const HONEYPOT_INTEROP_IMAGE_STORE_ENV: &str = "DGW_HONEYPOT_INTEROP_IMAGE_STORE";
 const HONEYPOT_INTEROP_MANIFEST_DIR_ENV: &str = "DGW_HONEYPOT_INTEROP_MANIFEST_DIR";
 const HONEYPOT_INTEROP_QEMU_BINARY_ENV: &str = "DGW_HONEYPOT_INTEROP_QEMU_BINARY";
@@ -1045,6 +1046,8 @@ pub struct ManualLabBlackScreenEvidence {
     #[serde(default)]
     pub is_control_lane: bool,
     #[serde(default)]
+    pub run_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
     pub clean_state: ManualLabBlackScreenCleanStateEvidence,
     #[serde(default)]
     pub artifacts: ManualLabBlackScreenArtifactPaths,
@@ -1062,6 +1065,10 @@ pub struct ManualLabBlackScreenEvidence {
     pub run_verdict_summary: ManualLabBlackScreenRunVerdictSummary,
     #[serde(default)]
     pub do_not_retry_ledger: ManualLabBlackScreenDoNotRetryLedger,
+    #[serde(default)]
+    pub artifact_contract_summary: ManualLabBlackScreenArtifactContractSummary,
+    #[serde(default)]
+    pub control_run_comparison_summary: ManualLabBlackScreenControlRunComparisonSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1834,6 +1841,64 @@ pub struct ManualLabBlackScreenDoNotRetryLedger {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenArtifactContractSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub contract_id: String,
+    #[serde(default)]
+    pub bs_rows: Vec<String>,
+    #[serde(default)]
+    pub expected_slot_count: usize,
+    #[serde(default)]
+    pub expected_slots: Vec<usize>,
+    #[serde(default)]
+    pub multi_session_ready_path_schema_version: u32,
+    #[serde(default)]
+    pub run_verdict_schema_version: u32,
+    #[serde(default)]
+    pub do_not_retry_schema_version: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBlackScreenControlRunComparisonVerdict {
+    NotRequiredForControlLane,
+    MeaningfulWithSameDayControl,
+    MissingCurrentRunTimestamp,
+    MissingControlArtifactRoot,
+    MissingControlEvidence,
+    InvalidControlEvidence,
+    ControlRunNotControlLane,
+    ControlRunMissingTimestamp,
+    ControlRunMissingVerdict,
+    StaleControlRun,
+    ArtifactContractMismatch,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenControlRunComparisonSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabBlackScreenControlRunComparisonVerdict,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub control_artifact_root: Option<PathBuf>,
+    #[serde(default)]
+    pub control_evidence_path: Option<PathBuf>,
+    #[serde(default)]
+    pub control_run_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub control_run_verdict: Option<ManualLabBlackScreenRunVerdict>,
+    #[serde(default)]
+    pub control_run_primary_reason: Option<ManualLabBlackScreenRunReason>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ManualLabSessionGfxFilterSummary {
     #[serde(default)]
     pub server_chunk_count: u64,
@@ -2220,10 +2285,11 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
     };
     let wildcard_token = scope_token(MANUAL_LAB_WILDCARD_SCOPE);
     let dashboard_url = format!("http://127.0.0.1:{}/?token={}", ports.frontend_http, wildcard_token);
+    let created_at_unix_secs = now_unix_secs();
     let mut state = ManualLabState {
         schema_version: MANUAL_LAB_SCHEMA_VERSION,
         run_id,
-        created_at_unix_secs: now_unix_secs(),
+        created_at_unix_secs,
         run_root: layout.run_root.clone(),
         manifests_dir: layout.manifests_dir.clone(),
         dashboard_url,
@@ -2250,7 +2316,14 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         interop_image_store: interop.image_store.clone(),
         ports,
         sessions: build_session_records(&layout.logs_dir, session_count),
-        black_screen_evidence: build_black_screen_evidence(&interop, &layout.run_root, session_count),
+        black_screen_evidence: build_black_screen_evidence(
+            &interop,
+            &layout.run_root,
+            session_count,
+            created_at_unix_secs
+                .checked_mul(1000)
+                .expect("manual-lab start timestamp should fit in milliseconds"),
+        ),
     };
     state.black_screen_evidence.clean_state = clean_state;
     persist_active_state(&state)?;
@@ -4949,6 +5022,12 @@ fn build_black_screen_hypothesis_context_from_env() -> ManualLabBlackScreenHypot
     }
 }
 
+fn build_black_screen_control_artifact_root_from_env(env: &BTreeMap<String, String>) -> Option<PathBuf> {
+    env.get(HONEYPOT_BS_CONTROL_ARTIFACT_ROOT_ENV)
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+}
+
 fn collect_black_screen_env_snapshot() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for name in [
@@ -4961,6 +5040,7 @@ fn collect_black_screen_env_snapshot() -> BTreeMap<String, String> {
         HONEYPOT_BS_HYPOTHESIS_ID_ENV,
         HONEYPOT_BS_HYPOTHESIS_TEXT_ENV,
         HONEYPOT_BS_RETRY_CONDITION_ENV,
+        HONEYPOT_BS_CONTROL_ARTIFACT_ROOT_ENV,
         MANUAL_LAB_SELECTED_SOURCE_MANIFEST_ENV,
         HONEYPOT_INTEROP_DRIVER_KIND_ENV,
         HONEYPOT_INTEROP_IMAGE_STORE_ENV,
@@ -5016,6 +5096,7 @@ fn build_black_screen_evidence(
     interop: &ManualLabInteropConfig,
     run_root: &Path,
     session_count: usize,
+    run_started_at_unix_ms: u64,
 ) -> ManualLabBlackScreenEvidence {
     let mut env = collect_black_screen_env_snapshot();
     env.entry(HONEYPOT_INTEROP_DRIVER_KIND_ENV.to_owned())
@@ -5031,6 +5112,7 @@ fn build_black_screen_evidence(
         session_count,
         artifact_root: run_root.to_path_buf(),
         is_control_lane: interop.driver_kind.is_control_lane(interop.xfreerdp_graphics_mode),
+        run_started_at_unix_ms: Some(run_started_at_unix_ms),
         clean_state: ManualLabBlackScreenCleanStateEvidence::default(),
         artifacts: ManualLabBlackScreenArtifactPaths::default(),
         teardown_started_at_unix_ms: None,
@@ -5040,6 +5122,8 @@ fn build_black_screen_evidence(
         multi_session_ready_path_summary: ManualLabMultiSessionReadyPathSummary::default(),
         run_verdict_summary: ManualLabBlackScreenRunVerdictSummary::default(),
         do_not_retry_ledger: ManualLabBlackScreenDoNotRetryLedger::default(),
+        artifact_contract_summary: ManualLabBlackScreenArtifactContractSummary::default(),
+        control_run_comparison_summary: ManualLabBlackScreenControlRunComparisonSummary::default(),
     }
 }
 
@@ -5130,6 +5214,10 @@ const MANUAL_LAB_READY_PATH_SUSTAIN_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_MULTI_SESSION_READY_PATH_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BLACK_SCREEN_RUN_VERDICT_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BLACK_SCREEN_DO_NOT_RETRY_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_BLACK_SCREEN_ARTIFACT_CONTRACT_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_BLACK_SCREEN_CONTROL_COMPARISON_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_BLACK_SCREEN_ARTIFACT_CONTRACT_ID: &str = "manual-lab-black-screen";
+const MANUAL_LAB_BLACK_SCREEN_EVIDENCE_RELATIVE_PATH: &str = "artifacts/black-screen-evidence.json";
 const MANUAL_LAB_RECORDING_VISIBILITY_SUMMARY_FILENAME: &str = "recording-visibility-summary.json";
 const MANUAL_LAB_RECORDING_VISIBILITY_AT_BROWSER_TIME_SUMMARY_FILENAME: &str =
     "recording-visibility-at-browser-time-summary.json";
@@ -6679,6 +6767,149 @@ pub fn build_manual_lab_black_screen_run_verdict_summary(
     summary
 }
 
+pub fn build_manual_lab_black_screen_artifact_contract_summary(
+    evidence: &ManualLabBlackScreenEvidence,
+) -> ManualLabBlackScreenArtifactContractSummary {
+    ManualLabBlackScreenArtifactContractSummary {
+        schema_version: MANUAL_LAB_BLACK_SCREEN_ARTIFACT_CONTRACT_SCHEMA_VERSION,
+        contract_id: MANUAL_LAB_BLACK_SCREEN_ARTIFACT_CONTRACT_ID.to_owned(),
+        bs_rows: evidence.bs_rows.clone(),
+        expected_slot_count: evidence.session_count,
+        expected_slots: (1..=evidence.session_count).collect(),
+        multi_session_ready_path_schema_version: MANUAL_LAB_MULTI_SESSION_READY_PATH_SCHEMA_VERSION,
+        run_verdict_schema_version: MANUAL_LAB_BLACK_SCREEN_RUN_VERDICT_SCHEMA_VERSION,
+        do_not_retry_schema_version: MANUAL_LAB_BLACK_SCREEN_DO_NOT_RETRY_SCHEMA_VERSION,
+    }
+}
+
+fn manual_lab_black_screen_evidence_path(artifact_root: &Path) -> PathBuf {
+    artifact_root.join(MANUAL_LAB_BLACK_SCREEN_EVIDENCE_RELATIVE_PATH)
+}
+
+fn parse_unix_ms_utc_date(unix_ms: u64) -> Option<time::Date> {
+    let unix_secs = i64::try_from(unix_ms / 1000).ok()?;
+    OffsetDateTime::from_unix_timestamp(unix_secs)
+        .ok()
+        .map(|timestamp| timestamp.date())
+}
+
+fn is_same_utc_day(lhs_unix_ms: u64, rhs_unix_ms: u64) -> bool {
+    parse_unix_ms_utc_date(lhs_unix_ms) == parse_unix_ms_utc_date(rhs_unix_ms)
+}
+
+fn load_manual_lab_black_screen_evidence(
+    control_artifact_root: &Path,
+) -> anyhow::Result<(PathBuf, ManualLabBlackScreenEvidence)> {
+    let evidence_path = manual_lab_black_screen_evidence_path(control_artifact_root);
+    let bytes = fs::read(&evidence_path).with_context(|| format!("read {}", evidence_path.display()))?;
+    let evidence = serde_json::from_slice(&bytes).with_context(|| format!("parse {}", evidence_path.display()))?;
+    Ok((evidence_path, evidence))
+}
+
+pub fn build_manual_lab_black_screen_control_run_comparison_summary(
+    evidence: &ManualLabBlackScreenEvidence,
+) -> ManualLabBlackScreenControlRunComparisonSummary {
+    let mut summary = ManualLabBlackScreenControlRunComparisonSummary {
+        schema_version: MANUAL_LAB_BLACK_SCREEN_CONTROL_COMPARISON_SCHEMA_VERSION,
+        ..Default::default()
+    };
+
+    if evidence.is_control_lane {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::NotRequiredForControlLane;
+        summary.detail =
+            Some("control lane is the comparison baseline, so a sibling control run is not required".to_owned());
+        return summary;
+    }
+
+    let Some(current_run_started_at_unix_ms) = evidence.run_started_at_unix_ms else {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::MissingCurrentRunTimestamp;
+        summary.detail = Some("variant run is missing a current run_started_at_unix_ms timestamp".to_owned());
+        return summary;
+    };
+
+    let Some(control_artifact_root) = build_black_screen_control_artifact_root_from_env(&evidence.env) else {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::MissingControlArtifactRoot;
+        summary.detail = Some(format!(
+            "variant run is missing {} for same-day control comparison",
+            HONEYPOT_BS_CONTROL_ARTIFACT_ROOT_ENV
+        ));
+        return summary;
+    };
+    summary.control_artifact_root = Some(control_artifact_root.clone());
+
+    let (control_evidence_path, control_evidence) = match load_manual_lab_black_screen_evidence(&control_artifact_root)
+    {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            let control_evidence_path = manual_lab_black_screen_evidence_path(&control_artifact_root);
+            summary.control_evidence_path = Some(control_evidence_path.clone());
+            if !control_evidence_path.is_file() {
+                summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::MissingControlEvidence;
+                summary.detail = Some(format!(
+                    "variant run could not find sibling control evidence at {}",
+                    control_evidence_path.display()
+                ));
+                return summary;
+            }
+            summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::InvalidControlEvidence;
+            summary.detail = Some(format!(
+                "variant run could not load sibling control evidence from {}: {error:#}",
+                control_evidence_path.display()
+            ));
+            return summary;
+        }
+    };
+    summary.control_evidence_path = Some(control_evidence_path);
+    summary.control_run_started_at_unix_ms = control_evidence.run_started_at_unix_ms;
+    summary.control_run_verdict = Some(control_evidence.run_verdict_summary.verdict);
+    summary.control_run_primary_reason = Some(control_evidence.run_verdict_summary.primary_reason);
+
+    if !control_evidence.is_control_lane {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::ControlRunNotControlLane;
+        summary.detail = Some("sibling control evidence is not marked as a control lane run".to_owned());
+        return summary;
+    }
+
+    let Some(control_run_started_at_unix_ms) = control_evidence.run_started_at_unix_ms else {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::ControlRunMissingTimestamp;
+        summary.detail = Some("sibling control evidence is missing a run_started_at_unix_ms timestamp".to_owned());
+        return summary;
+    };
+
+    if control_evidence.run_verdict_summary.schema_version != MANUAL_LAB_BLACK_SCREEN_RUN_VERDICT_SCHEMA_VERSION
+        || control_evidence.run_verdict_summary.reason_codes.is_empty()
+    {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::ControlRunMissingVerdict;
+        summary.detail = Some("sibling control evidence is missing a current run verdict summary".to_owned());
+        return summary;
+    }
+
+    if !is_same_utc_day(current_run_started_at_unix_ms, control_run_started_at_unix_ms) {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::StaleControlRun;
+        summary.detail = Some(format!(
+            "variant run timestamp {} and control run timestamp {} were not recorded on the same UTC day",
+            current_run_started_at_unix_ms, control_run_started_at_unix_ms
+        ));
+        return summary;
+    }
+
+    let expected_contract = build_manual_lab_black_screen_artifact_contract_summary(evidence);
+    if control_evidence.artifact_contract_summary != expected_contract {
+        summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::ArtifactContractMismatch;
+        summary.detail = Some("sibling control evidence did not persist the same artifact contract summary".to_owned());
+        return summary;
+    }
+
+    summary.verdict = ManualLabBlackScreenControlRunComparisonVerdict::MeaningfulWithSameDayControl;
+    summary.detail = Some(format!(
+        "variant lane {} is backed by same-day control evidence from {} with verdict {:?}",
+        evidence.driver_lane,
+        control_artifact_root.display(),
+        control_evidence.run_verdict_summary.verdict
+    ));
+    summary
+}
+
 pub fn build_manual_lab_black_screen_do_not_retry_ledger(
     evidence: &ManualLabBlackScreenEvidence,
 ) -> ManualLabBlackScreenDoNotRetryLedger {
@@ -7933,7 +8164,7 @@ fn persist_black_screen_evidence(
     state: &ManualLabState,
     teardown_started_at_unix_ms: Option<u64>,
 ) -> anyhow::Result<()> {
-    let evidence_path = state.run_root.join("artifacts/black-screen-evidence.json");
+    let evidence_path = manual_lab_black_screen_evidence_path(&state.run_root);
     let mut evidence = state.black_screen_evidence.clone();
     if evidence.teardown_started_at_unix_ms.is_none() {
         evidence.teardown_started_at_unix_ms = teardown_started_at_unix_ms;
@@ -8135,6 +8366,8 @@ fn persist_black_screen_evidence(
         build_manual_lab_multi_session_ready_path_summary(&evidence.session_invocations, evidence.session_count);
     evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
     evidence.do_not_retry_ledger = build_manual_lab_black_screen_do_not_retry_ledger(&evidence);
+    evidence.artifact_contract_summary = build_manual_lab_black_screen_artifact_contract_summary(&evidence);
+    evidence.control_run_comparison_summary = build_manual_lab_black_screen_control_run_comparison_summary(&evidence);
     if let Some(parent) = evidence_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
