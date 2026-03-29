@@ -4,7 +4,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::path::Path;
 use std::pin::pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use async_trait::async_trait;
@@ -26,6 +26,16 @@ use crate::token::{JrecTokenClaims, RecordingFileType};
 
 const DISCONNECTED_TTL_EXTRA_LEEWAY: Duration = Duration::from_secs(10);
 const BUFFER_WRITER_SIZE: usize = 64 * 1024;
+const READY_TRACE_SCHEMA_VERSION: u32 = 1;
+
+fn ready_trace_now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the unix epoch")
+        .as_millis()
+        .try_into()
+        .expect("ready trace unix timestamp should fit in u64")
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -377,11 +387,24 @@ impl RecordingMessageSender {
     }
 
     pub(crate) fn new_chunk_appended(&self, recording_id: Uuid) -> anyhow::Result<()> {
+        let mut became_connected = false;
         {
             let mut state_map = self.state_map.lock();
             if matches!(state_map.get(&recording_id), Some(OnGoingRecordingState::Pending)) {
                 state_map.insert(recording_id, OnGoingRecordingState::Connected);
+                became_connected = true;
             }
+        }
+
+        if became_connected {
+            info!(
+                session_id = %recording_id,
+                ready_schema_version = READY_TRACE_SCHEMA_VERSION,
+                ready_event = "recording.connected.first",
+                ready_source = "recording-manager",
+                ready_ts_unix_ms = ready_trace_now_unix_ms(),
+                "Ready path trace"
+            );
         }
 
         let senders = { self.flush_map.lock().remove(&recording_id) };

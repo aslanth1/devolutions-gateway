@@ -1294,6 +1294,16 @@ impl HoneypotEventJournal {
         transport: StreamTransport,
         ready_at: String,
     ) {
+        info!(
+            session_id,
+            vm_lease_id,
+            stream_id = %stream.stream_id,
+            ready_schema_version = 1u32,
+            ready_event = "session.stream.ready.emitted",
+            ready_source = "honeypot",
+            ready_ts_unix_ms = now_unix_ms(),
+            "Ready path trace"
+        );
         self.push_event(
             Some(session_id.to_owned()),
             Some(vm_lease_id.to_owned()),
@@ -1850,6 +1860,11 @@ fn read_required_secret_file(path: &Path, field_name: &str) -> anyhow::Result<St
 
 fn now_rfc3339() -> String {
     format_rfc3339(OffsetDateTime::now_utc())
+}
+
+fn now_unix_ms() -> u64 {
+    u64::try_from(OffsetDateTime::now_utc().unix_timestamp_nanos().div_euclid(1_000_000))
+        .expect("system clock should be after the unix epoch")
 }
 
 fn format_rfc3339(timestamp: OffsetDateTime) -> String {

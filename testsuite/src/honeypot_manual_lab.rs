@@ -22,6 +22,8 @@ use honeypot_control_plane::{ConsumeTrustedImageState, ConsumeTrustedImageValida
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
 use crate::honeypot_control_plane::{
@@ -943,6 +945,10 @@ pub struct ManualLabSessionRecord {
     pub stream_probe_status: Option<String>,
     #[serde(default)]
     pub stream_probe_detail: Option<String>,
+    #[serde(default)]
+    pub stream_probe_http_status: Option<u16>,
+    #[serde(default)]
+    pub stream_probe_observed_at_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1057,7 +1063,13 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub stream_probe_detail: Option<String>,
     #[serde(default)]
+    pub stream_probe_http_status: Option<u16>,
+    #[serde(default)]
+    pub stream_probe_observed_at_unix_ms: Option<u64>,
+    #[serde(default)]
     pub playback_bootstrap_timeline: ManualLabSessionPlaybackBootstrapTimeline,
+    #[serde(default)]
+    pub playback_ready_correlation: ManualLabSessionPlaybackReadyCorrelation,
     #[serde(default)]
     pub gfx_warning_summary: Option<ManualLabSessionGfxWarningSummary>,
 }
@@ -1079,6 +1091,8 @@ pub struct ManualLabSessionPlaybackBootstrapEvent {
     pub seq: u64,
     #[serde(default)]
     pub ts_ns: u64,
+    #[serde(default)]
+    pub observed_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub thread: String,
     #[serde(default)]
@@ -1116,6 +1130,58 @@ pub struct ManualLabSessionPlaybackBootstrapTimeline {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionReadyTraceEvent {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub ts_unix_ms: u64,
+    #[serde(default)]
+    pub observed_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabPlaybackReadyVerdict {
+    AlignedReady,
+    ProbeBeforeReady,
+    SourceReadyWithoutStreamReady,
+    StreamReadyWithoutSourceReady,
+    ProbeReadyWithoutStreamReady,
+    Probe503WithoutSourceReady,
+    Probe503AfterReady,
+    #[default]
+    IncompleteEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionPlaybackReadyCorrelation {
+    #[serde(default)]
+    pub verdict: ManualLabPlaybackReadyVerdict,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub producer_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub first_chunk_appended_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub recording_connected_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub session_stream_ready_emitted_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub source_ready_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub probe_observed_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub probe_http_status: Option<u16>,
+    #[serde(default)]
+    pub ready_trace_events: Vec<ManualLabSessionReadyTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ManualLabSessionGfxWarningSummary {
     #[serde(default)]
     pub total_warning_count: u64,
@@ -1147,8 +1213,16 @@ pub struct ManualLabSessionGfxWarningSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ManualLabStreamProbeOutcome {
-    Ready(StreamTokenResponse),
-    Unavailable { detail: String },
+    Ready {
+        token: StreamTokenResponse,
+        http_status: u16,
+        observed_at_unix_ms: u64,
+    },
+    Unavailable {
+        detail: String,
+        http_status: u16,
+        observed_at_unix_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1507,8 +1581,14 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
                 &state.sessions[index].session_id,
                 &wildcard_token,
             )? {
-                ManualLabStreamProbeOutcome::Ready(token) => {
+                ManualLabStreamProbeOutcome::Ready {
+                    token,
+                    http_status,
+                    observed_at_unix_ms,
+                } => {
                     state.sessions[index].stream_probe_status = Some("ready".to_owned());
+                    state.sessions[index].stream_probe_http_status = Some(http_status);
+                    state.sessions[index].stream_probe_observed_at_unix_ms = Some(observed_at_unix_ms);
                     state.sessions[index].stream_id = Some(token.stream_id);
                     if state.sessions[index].vm_lease_id.is_none() {
                         state.sessions[index].vm_lease_id = Some(token.vm_lease_id);
@@ -1527,8 +1607,14 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
                         state.sessions[index].stream_id.as_deref().unwrap_or("<pending>")
                     );
                 }
-                ManualLabStreamProbeOutcome::Unavailable { detail } => {
+                ManualLabStreamProbeOutcome::Unavailable {
+                    detail,
+                    http_status,
+                    observed_at_unix_ms,
+                } => {
                     state.sessions[index].stream_probe_status = Some("unavailable".to_owned());
+                    state.sessions[index].stream_probe_http_status = Some(http_status);
+                    state.sessions[index].stream_probe_observed_at_unix_ms = Some(observed_at_unix_ms);
                     state.sessions[index].stream_probe_detail = Some(detail.clone());
                     persist_active_state(&state)?;
                     eprintln!(
@@ -2432,24 +2518,35 @@ fn probe_stream_token(
         &[authorization_header(wildcard_token.to_owned())],
         Some(&body),
     )?;
+    let observed_at_unix_ms = now_unix_ms();
+    let http_status = parse_http_status_code(&status)
+        .with_context(|| format!("parse HTTP status for POST {path} on port {proxy_http_port}: {status}"))?;
 
-    if status.contains("200") {
+    if http_status == 200 {
         let response: StreamTokenResponse = serde_json::from_slice(&response_body)
             .with_context(|| format!("decode typed JSON response from POST {path} on port {proxy_http_port}"))?;
         response
             .ensure_supported_schema()
             .context("manual lab stream token response uses unsupported schema version")?;
-        return Ok(ManualLabStreamProbeOutcome::Ready(response));
+        return Ok(ManualLabStreamProbeOutcome::Ready {
+            token: response,
+            http_status,
+            observed_at_unix_ms,
+        });
     }
 
-    if status.contains("503") {
+    if http_status == 503 {
         let detail = String::from_utf8_lossy(&response_body).trim().to_owned();
         let detail = if detail.is_empty() {
             status
         } else {
             format!("{status} {detail}")
         };
-        return Ok(ManualLabStreamProbeOutcome::Unavailable { detail });
+        return Ok(ManualLabStreamProbeOutcome::Unavailable {
+            detail,
+            http_status,
+            observed_at_unix_ms,
+        });
     }
 
     anyhow::bail!("unexpected HTTP status for POST {path} on port {proxy_http_port}: {status}")
@@ -2512,6 +2609,8 @@ fn build_session_records(logs_dir: &Path, session_count: usize) -> Vec<ManualLab
             stream_id: None,
             stream_probe_status: None,
             stream_probe_detail: None,
+            stream_probe_http_status: None,
+            stream_probe_observed_at_unix_ms: None,
         })
         .collect()
 }
@@ -3954,6 +4053,17 @@ fn parse_manual_lab_log_u64(line: &str, key: &str) -> Option<u64> {
     parse_manual_lab_log_field(line, key)?.parse::<u64>().ok()
 }
 
+fn parse_manual_lab_log_prefix_timestamp_unix_ms(line: &str) -> Option<u64> {
+    let timestamp = line.split_whitespace().next()?;
+    let parsed = OffsetDateTime::parse(timestamp, &Rfc3339).ok()?;
+    let unix_ms = parsed.unix_timestamp_nanos().div_euclid(1_000_000);
+    u64::try_from(unix_ms).ok()
+}
+
+fn parse_http_status_code(status: &str) -> Option<u16> {
+    status.split_whitespace().nth(1)?.parse::<u16>().ok()
+}
+
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS: [&str; 11] = [
     "playback.bootstrap.requested",
@@ -4131,6 +4241,7 @@ fn parse_manual_lab_playback_bootstrap_trace_line(
             .unwrap_or(0),
         seq: parse_manual_lab_log_u64(line, "bootstrap_seq").unwrap_or(0),
         ts_ns: parse_manual_lab_log_u64(line, "bootstrap_ts_ns").unwrap_or(0),
+        observed_at_unix_ms: parse_manual_lab_log_prefix_timestamp_unix_ms(line),
         thread: parse_manual_lab_log_field(line, "bootstrap_thread")
             .unwrap_or_default()
             .to_owned(),
@@ -4169,6 +4280,189 @@ fn parse_manual_lab_playback_bootstrap_timelines(
         .into_iter()
         .map(|(session_id, events)| (session_id, build_manual_lab_playback_bootstrap_timeline(events)))
         .collect())
+}
+
+fn parse_manual_lab_ready_trace_line(line: &str) -> Option<(String, ManualLabSessionReadyTraceEvent)> {
+    if !line.contains("Ready path trace") {
+        return None;
+    }
+
+    let session_id = parse_manual_lab_log_field(line, "session_id")?.to_owned();
+    let event = ManualLabSessionReadyTraceEvent {
+        schema_version: parse_manual_lab_log_u64(line, "ready_schema_version")
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0),
+        event: parse_manual_lab_log_field(line, "ready_event")
+            .unwrap_or_default()
+            .to_owned(),
+        source: parse_manual_lab_log_field(line, "ready_source")
+            .unwrap_or_default()
+            .to_owned(),
+        ts_unix_ms: parse_manual_lab_log_u64(line, "ready_ts_unix_ms").unwrap_or(0),
+        observed_at_unix_ms: parse_manual_lab_log_prefix_timestamp_unix_ms(line),
+    };
+
+    Some((session_id, event))
+}
+
+fn parse_manual_lab_ready_trace_events(
+    proxy_stdout_log: &Path,
+) -> anyhow::Result<BTreeMap<String, Vec<ManualLabSessionReadyTraceEvent>>> {
+    if !proxy_stdout_log.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let log = fs::read_to_string(proxy_stdout_log).with_context(|| format!("read {}", proxy_stdout_log.display()))?;
+    let mut events = BTreeMap::<String, Vec<ManualLabSessionReadyTraceEvent>>::new();
+    for line in log.lines() {
+        if let Some((session_id, event)) = parse_manual_lab_ready_trace_line(line) {
+            events.entry(session_id).or_default().push(event);
+        }
+    }
+
+    for session_events in events.values_mut() {
+        session_events.sort_by_key(|event| {
+            (
+                if event.ts_unix_ms == 0 {
+                    event.observed_at_unix_ms.unwrap_or(0)
+                } else {
+                    event.ts_unix_ms
+                },
+                event.observed_at_unix_ms.unwrap_or(0),
+            )
+        });
+    }
+
+    Ok(events)
+}
+
+fn ready_trace_event_timestamp(event: &ManualLabSessionReadyTraceEvent) -> Option<u64> {
+    if event.ts_unix_ms != 0 {
+        Some(event.ts_unix_ms)
+    } else {
+        event.observed_at_unix_ms
+    }
+}
+
+fn first_bootstrap_event_observed_at_unix_ms(
+    timeline: &ManualLabSessionPlaybackBootstrapTimeline,
+    event_name: &str,
+) -> Option<u64> {
+    timeline
+        .events
+        .iter()
+        .find(|event| event.event == event_name)
+        .and_then(|event| event.observed_at_unix_ms)
+}
+
+fn first_ready_trace_timestamp_unix_ms(events: &[ManualLabSessionReadyTraceEvent], event_name: &str) -> Option<u64> {
+    events
+        .iter()
+        .find(|event| event.event == event_name)
+        .and_then(ready_trace_event_timestamp)
+}
+
+fn earliest_timestamp(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn build_manual_lab_playback_ready_correlation(
+    timeline: &ManualLabSessionPlaybackBootstrapTimeline,
+    ready_trace_events: Vec<ManualLabSessionReadyTraceEvent>,
+    probe_status: Option<&str>,
+    probe_http_status: Option<u16>,
+    probe_observed_at_unix_ms: Option<u64>,
+) -> ManualLabSessionPlaybackReadyCorrelation {
+    let producer_started_at_unix_ms =
+        first_bootstrap_event_observed_at_unix_ms(timeline, "playback.bootstrap.request_result");
+    let first_chunk_appended_at_unix_ms =
+        first_bootstrap_event_observed_at_unix_ms(timeline, "playback.chunk.appended.first");
+    let recording_connected_at_unix_ms =
+        first_ready_trace_timestamp_unix_ms(&ready_trace_events, "recording.connected.first");
+    let session_stream_ready_emitted_at_unix_ms =
+        first_ready_trace_timestamp_unix_ms(&ready_trace_events, "session.stream.ready.emitted");
+    let source_ready_at_unix_ms = earliest_timestamp(first_chunk_appended_at_unix_ms, recording_connected_at_unix_ms);
+
+    let (verdict, detail) = if matches!(probe_http_status, Some(503)) && source_ready_at_unix_ms.is_none() {
+        (
+            ManualLabPlaybackReadyVerdict::Probe503WithoutSourceReady,
+            Some("probe observed 503 before any source-ready evidence existed".to_owned()),
+        )
+    } else if let (Some(probe_at), Some(source_ready_at)) = (probe_observed_at_unix_ms, source_ready_at_unix_ms) {
+        if probe_at < source_ready_at {
+            (
+                ManualLabPlaybackReadyVerdict::ProbeBeforeReady,
+                Some(format!(
+                    "probe observed at {probe_at} before source-ready evidence at {source_ready_at}"
+                )),
+            )
+        } else if matches!(probe_http_status, Some(503)) {
+            (
+                ManualLabPlaybackReadyVerdict::Probe503AfterReady,
+                Some(format!(
+                    "probe observed 503 at {probe_at} after source-ready evidence at {source_ready_at}"
+                )),
+            )
+        } else if probe_status == Some("ready") && session_stream_ready_emitted_at_unix_ms.is_some() {
+            (
+                ManualLabPlaybackReadyVerdict::AlignedReady,
+                Some("source-ready evidence, stream-ready emission, and ready probe all aligned".to_owned()),
+            )
+        } else if probe_status == Some("ready") {
+            (
+                ManualLabPlaybackReadyVerdict::ProbeReadyWithoutStreamReady,
+                Some("probe returned ready but no session.stream.ready emission was recorded".to_owned()),
+            )
+        } else if source_ready_at_unix_ms.is_some() && session_stream_ready_emitted_at_unix_ms.is_none() {
+            (
+                ManualLabPlaybackReadyVerdict::SourceReadyWithoutStreamReady,
+                Some("source-ready evidence exists without a session.stream.ready emission".to_owned()),
+            )
+        } else {
+            (
+                ManualLabPlaybackReadyVerdict::IncompleteEvidence,
+                Some("ready-path evidence remained incomplete after source-ready signals appeared".to_owned()),
+            )
+        }
+    } else if source_ready_at_unix_ms.is_some() && session_stream_ready_emitted_at_unix_ms.is_none() {
+        (
+            ManualLabPlaybackReadyVerdict::SourceReadyWithoutStreamReady,
+            Some("source-ready evidence exists without a session.stream.ready emission".to_owned()),
+        )
+    } else if source_ready_at_unix_ms.is_none() && session_stream_ready_emitted_at_unix_ms.is_some() {
+        (
+            ManualLabPlaybackReadyVerdict::StreamReadyWithoutSourceReady,
+            Some("session.stream.ready was emitted without preceding source-ready evidence".to_owned()),
+        )
+    } else if probe_status == Some("ready") && session_stream_ready_emitted_at_unix_ms.is_none() {
+        (
+            ManualLabPlaybackReadyVerdict::ProbeReadyWithoutStreamReady,
+            Some("probe returned ready but no session.stream.ready emission was recorded".to_owned()),
+        )
+    } else {
+        (
+            ManualLabPlaybackReadyVerdict::IncompleteEvidence,
+            Some("ready-path evidence is missing one or more authoritative timestamps".to_owned()),
+        )
+    };
+
+    ManualLabSessionPlaybackReadyCorrelation {
+        verdict,
+        detail,
+        producer_started_at_unix_ms,
+        first_chunk_appended_at_unix_ms,
+        recording_connected_at_unix_ms,
+        session_stream_ready_emitted_at_unix_ms,
+        source_ready_at_unix_ms,
+        probe_observed_at_unix_ms,
+        probe_http_status,
+        ready_trace_events,
+    }
 }
 
 fn parse_manual_lab_gfx_warning_summary_line(line: &str) -> Option<(String, ManualLabSessionGfxWarningSummary)> {
@@ -4254,28 +4548,44 @@ fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
     let evidence_path = state.run_root.join("artifacts/black-screen-evidence.json");
     let mut evidence = state.black_screen_evidence.clone();
     let playback_bootstrap_timelines = parse_manual_lab_playback_bootstrap_timelines(&state.proxy.stdout_log)?;
+    let ready_trace_events = parse_manual_lab_ready_trace_events(&state.proxy.stdout_log)?;
     let gfx_warning_summaries = parse_manual_lab_gfx_warning_summaries(&state.proxy.stdout_log)?;
     evidence.artifacts = build_black_screen_artifact_paths(state);
     evidence.session_invocations = state
         .sessions
         .iter()
-        .map(|session| ManualLabSessionDriverEvidence {
-            slot: session.slot,
-            session_id: session.session_id.clone(),
-            driver_binary: session.driver_binary.clone(),
-            driver_args: session.driver_args.clone(),
-            driver_lane: session.driver_lane.clone(),
-            stdout_log: session.stdout_log.clone(),
-            stderr_log: session.stderr_log.clone(),
-            vm_lease_id: session.vm_lease_id.clone(),
-            stream_id: session.stream_id.clone(),
-            stream_probe_status: session.stream_probe_status.clone(),
-            stream_probe_detail: session.stream_probe_detail.clone(),
-            playback_bootstrap_timeline: playback_bootstrap_timelines
+        .map(|session| {
+            let playback_bootstrap_timeline = playback_bootstrap_timelines
                 .get(&session.session_id)
                 .cloned()
-                .unwrap_or_else(|| build_manual_lab_playback_bootstrap_timeline(Vec::new())),
-            gfx_warning_summary: gfx_warning_summaries.get(&session.session_id).cloned(),
+                .unwrap_or_else(|| build_manual_lab_playback_bootstrap_timeline(Vec::new()));
+            let ready_trace_events = ready_trace_events.get(&session.session_id).cloned().unwrap_or_default();
+            let playback_ready_correlation = build_manual_lab_playback_ready_correlation(
+                &playback_bootstrap_timeline,
+                ready_trace_events,
+                session.stream_probe_status.as_deref(),
+                session.stream_probe_http_status,
+                session.stream_probe_observed_at_unix_ms,
+            );
+
+            ManualLabSessionDriverEvidence {
+                slot: session.slot,
+                session_id: session.session_id.clone(),
+                driver_binary: session.driver_binary.clone(),
+                driver_args: session.driver_args.clone(),
+                driver_lane: session.driver_lane.clone(),
+                stdout_log: session.stdout_log.clone(),
+                stderr_log: session.stderr_log.clone(),
+                vm_lease_id: session.vm_lease_id.clone(),
+                stream_id: session.stream_id.clone(),
+                stream_probe_status: session.stream_probe_status.clone(),
+                stream_probe_detail: session.stream_probe_detail.clone(),
+                stream_probe_http_status: session.stream_probe_http_status,
+                stream_probe_observed_at_unix_ms: session.stream_probe_observed_at_unix_ms,
+                playback_bootstrap_timeline,
+                playback_ready_correlation,
+                gfx_warning_summary: gfx_warning_summaries.get(&session.session_id).cloned(),
+            }
         })
         .collect();
     if let Some(parent) = evidence_path.parent() {
@@ -4412,6 +4722,15 @@ fn now_unix_secs() -> u64 {
         .as_secs()
 }
 
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock should be after the unix epoch")
+        .as_millis()
+        .try_into()
+        .expect("unix timestamp in milliseconds should fit in u64")
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -4424,12 +4743,13 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ManualLabPlaybackBootstrapVerdict, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
-        ManualLabXfreerdpGraphicsMode, association_token, build_manual_lab_playback_bootstrap_timeline,
+        ManualLabPlaybackBootstrapVerdict, ManualLabPlaybackReadyVerdict, ManualLabSessionGfxWarningSummary,
+        ManualLabSessionPlaybackBootstrapEvent, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
+        association_token, build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
         build_session_records, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, manual_lab_manifest_path, manual_lab_service_ready_timeout,
         parse_manual_lab_gfx_warning_summary_line, parse_manual_lab_playback_bootstrap_trace_line,
-        parse_proc_stat_process_state, xfreerdp_driver_args,
+        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, xfreerdp_driver_args,
     };
 
     fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
@@ -4437,6 +4757,7 @@ mod tests {
             schema_version: 1,
             seq,
             ts_ns: seq * 100,
+            observed_at_unix_ms: Some(1_700_000_000_000 + (seq * 10)),
             thread: if event.starts_with("playback.thread") || event.starts_with("playback.update") {
                 "playback-thread".to_owned()
             } else {
@@ -4596,12 +4917,36 @@ mod tests {
                     schema_version: 1,
                     seq: 7,
                     ts_ns: 998,
+                    observed_at_unix_ms: Some(1_774_735_200_000),
                     thread: "proxy".to_owned(),
                     event: "leftover.client.after".to_owned(),
                     status: "ok".to_owned(),
                     source: "client".to_owned(),
                     byte_len: 512,
                     error: None,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn manual_lab_parses_ready_trace_lines() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let line = format!(
+            "2026-03-28T22:00:01.000000Z  INFO ThreadId(42) session_id={session_id} ready_schema_version=1 ready_event=recording.connected.first ready_source=recording-manager ready_ts_unix_ms=1743201601000 Ready path trace"
+        );
+
+        let parsed = parse_manual_lab_ready_trace_line(&line);
+        assert_eq!(
+            parsed,
+            Some((
+                session_id.to_owned(),
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "recording.connected.first".to_owned(),
+                    source: "recording-manager".to_owned(),
+                    ts_unix_ms: 1_743_201_601_000,
+                    observed_at_unix_ms: Some(1_774_735_201_000),
                 }
             ))
         );
@@ -4668,6 +5013,207 @@ mod tests {
                 .as_deref()
                 .is_some_and(|detail| detail.contains("sequence gap"))
         );
+    }
+
+    #[test]
+    fn manual_lab_builds_aligned_ready_correlation() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "recording.connected.first".to_owned(),
+                    source: "recording-manager".to_owned(),
+                    ts_unix_ms: 1_700_000_000_040,
+                    observed_at_unix_ms: Some(1_700_000_000_040),
+                },
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "session.stream.ready.emitted".to_owned(),
+                    source: "honeypot".to_owned(),
+                    ts_unix_ms: 1_700_000_000_050,
+                    observed_at_unix_ms: Some(1_700_000_000_050),
+                },
+            ],
+            Some("ready"),
+            Some(200),
+            Some(1_700_000_000_060),
+        );
+
+        assert_eq!(correlation.verdict, ManualLabPlaybackReadyVerdict::AlignedReady);
+        assert_eq!(correlation.producer_started_at_unix_ms, Some(1_700_000_000_020));
+        assert_eq!(correlation.first_chunk_appended_at_unix_ms, Some(1_700_000_000_030));
+        assert_eq!(correlation.recording_connected_at_unix_ms, Some(1_700_000_000_040));
+        assert_eq!(
+            correlation.session_stream_ready_emitted_at_unix_ms,
+            Some(1_700_000_000_050)
+        );
+        assert_eq!(correlation.probe_http_status, Some(200));
+        assert_eq!(correlation.ready_trace_events.len(), 2);
+    }
+
+    #[test]
+    fn manual_lab_builds_probe_before_ready_correlation() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "recording.connected.first".to_owned(),
+                source: "recording-manager".to_owned(),
+                ts_unix_ms: 1_700_000_000_040,
+                observed_at_unix_ms: Some(1_700_000_000_040),
+            }],
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_025),
+        );
+
+        assert_eq!(correlation.verdict, ManualLabPlaybackReadyVerdict::ProbeBeforeReady);
+    }
+
+    #[test]
+    fn manual_lab_builds_probe_503_without_source_ready_correlation() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![bootstrap_event(
+            1,
+            "playback.bootstrap.requested",
+            "ok",
+        )]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            Vec::new(),
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_010),
+        );
+
+        assert_eq!(
+            correlation.verdict,
+            ManualLabPlaybackReadyVerdict::Probe503WithoutSourceReady
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_source_ready_without_stream_ready_correlation() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "recording.connected.first".to_owned(),
+                source: "recording-manager".to_owned(),
+                ts_unix_ms: 1_700_000_000_040,
+                observed_at_unix_ms: Some(1_700_000_000_040),
+            }],
+            Some("unavailable"),
+            Some(503),
+            None,
+        );
+
+        assert_eq!(
+            correlation.verdict,
+            ManualLabPlaybackReadyVerdict::SourceReadyWithoutStreamReady
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_stream_ready_without_source_ready_correlation() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![bootstrap_event(
+            1,
+            "playback.bootstrap.requested",
+            "ok",
+        )]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "session.stream.ready.emitted".to_owned(),
+                source: "honeypot".to_owned(),
+                ts_unix_ms: 1_700_000_000_050,
+                observed_at_unix_ms: Some(1_700_000_000_050),
+            }],
+            Some("ready"),
+            Some(200),
+            Some(1_700_000_000_060),
+        );
+
+        assert_eq!(
+            correlation.verdict,
+            ManualLabPlaybackReadyVerdict::StreamReadyWithoutSourceReady
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_probe_ready_without_stream_ready_correlation() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "recording.connected.first".to_owned(),
+                source: "recording-manager".to_owned(),
+                ts_unix_ms: 1_700_000_000_040,
+                observed_at_unix_ms: Some(1_700_000_000_040),
+            }],
+            Some("ready"),
+            Some(200),
+            Some(1_700_000_000_060),
+        );
+
+        assert_eq!(
+            correlation.verdict,
+            ManualLabPlaybackReadyVerdict::ProbeReadyWithoutStreamReady
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_probe_503_after_ready_correlation() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "recording.connected.first".to_owned(),
+                    source: "recording-manager".to_owned(),
+                    ts_unix_ms: 1_700_000_000_040,
+                    observed_at_unix_ms: Some(1_700_000_000_040),
+                },
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "session.stream.ready.emitted".to_owned(),
+                    source: "honeypot".to_owned(),
+                    ts_unix_ms: 1_700_000_000_050,
+                    observed_at_unix_ms: Some(1_700_000_000_050),
+                },
+            ],
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_070),
+        );
+
+        assert_eq!(correlation.verdict, ManualLabPlaybackReadyVerdict::Probe503AfterReady);
     }
 
     #[test]

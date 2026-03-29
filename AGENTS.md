@@ -1084,13 +1084,13 @@ Pass when: unknown-surface, unknown-cache-slot, `WireToSurface1` size mismatch, 
 - [x] `BS-15` Prove producer bootstrap ordering around the handshake seam.
 Pass when: the evidence shows when the producer attached relative to `intercept_connect_confirm`, when client leftovers were fed, when server leftovers were fed, and whether those steps happened before any graphics negotiation was lost.
 
-- [ ] `BS-16` Prove whether the first emitted recording bytes and the first ready state describe the same reality.
+- [x] `BS-16` Prove whether the first emitted recording bytes and the first ready state describe the same reality.
 Pass when: the run can name the timestamp for producer start, first chunk emitted, recording-manager connected state, and `session.stream.ready`, and those events do not contradict each other.
 
-- [ ] `BS-17` Emit a machine-readable playback evidence summary for every probe run.
+- [x] `BS-17` Emit a machine-readable playback evidence summary for every probe run.
 Pass when: each run stores a stable JSON or similarly structured summary with the key counters, timestamps, lane identity, and verdict so later runs can be compared without scraping free-form logs.
 
-- [ ] `BS-18` Add tests that lock the evidence-summary fields in place.
+- [x] `BS-18` Add tests that lock the evidence-summary fields in place.
 Pass when: targeted tests fail if the required negotiation, producer, and corruption counters disappear or silently rename themselves during later refactors.
 
 - [ ] `BS-19` Split FastPath warnings into known-noise and candidate-root-cause classes.
@@ -1098,6 +1098,7 @@ Pass when: the run bundle records which FastPath warnings are expected backgroun
 
 - [ ] `BS-20` Reduce the third-session failure into a named branch before new lane churn begins.
 Pass when: a failing third-session run can be labeled as negotiation loss, producer loss, player loss, decode corruption, or simple no-ready truthfulness instead of staying in the generic "black screen" bucket.
+Current evidence after the `BS-16` control proof: slot 3 is no longer generic black-screen noise; the probe hit `503` before source-ready evidence landed, and the remaining work is mapping that branch cleanly into the `BS-20` taxonomy.
 
 #### 6v.3 Driver And Non-RDPGFX Experiment Matrix
 
