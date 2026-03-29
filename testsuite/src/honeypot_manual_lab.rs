@@ -2732,6 +2732,8 @@ pub fn status() -> anyhow::Result<Option<ManualLabStatusReport>> {
         None => return Ok(None),
     };
 
+    wait_for_browser_backed_steady_window_after_active_intent(&state)?;
+
     let wildcard_token = scope_token(MANUAL_LAB_WILDCARD_SCOPE);
     let control_plane_health = get_json(
         state.ports.control_plane_http,
@@ -2760,6 +2762,58 @@ pub fn status() -> anyhow::Result<Option<ManualLabStatusReport>> {
         frontend_health,
         bootstrap,
     }))
+}
+
+fn wait_for_browser_backed_steady_window_after_active_intent(state: &ManualLabState) -> anyhow::Result<()> {
+    if state.chrome_pid.is_none() || state.sessions.len() != 1 {
+        return Ok(());
+    }
+
+    let session = &state.sessions[0];
+    let recordings_root = state.run_root.join("config/proxy/recordings");
+    let session_id = session.session_id.clone();
+
+    let initial_events = parse_manual_lab_player_websocket_events(&recordings_root, &session_id)?;
+    if initial_events.is_empty() {
+        return Ok(());
+    }
+
+    let initial_player_summary = build_manual_lab_player_playback_path_summary(&initial_events);
+    if !initial_player_summary.active_intent_observed {
+        return Ok(());
+    }
+
+    if manual_lab_has_steady_active_live_browser_window(&initial_events) {
+        return Ok(());
+    }
+
+    match wait_for_condition(
+        MANUAL_LAB_STATUS_STEADY_WINDOW_TIMEOUT,
+        || {
+            let events = parse_manual_lab_player_websocket_events(&recordings_root, &session_id)?;
+            ensure!(
+                manual_lab_has_steady_active_live_browser_window(&events),
+                "steady active_live browser window is not present yet"
+            );
+            Ok(())
+        },
+        &format!("steady active_live browser window for session {session_id}"),
+    ) {
+        Ok(()) => {
+            eprintln!(
+                "manual lab phase=browser.visibility.steady.ready run_id={} slot={} session_id={}",
+                state.run_id, session.slot, session_id
+            );
+        }
+        Err(error) => {
+            eprintln!(
+                "manual lab phase=browser.visibility.steady.timeout run_id={} slot={} session_id={} detail={:#}",
+                state.run_id, session.slot, session_id, error
+            );
+        }
+    }
+
+    Ok(())
 }
 
 pub fn down() -> anyhow::Result<ManualLabTeardownReport> {
@@ -5490,6 +5544,7 @@ const MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS: u64 = 250;
 const MANUAL_LAB_RECORDING_VISIBILITY_VIRTUAL_TIME_BUDGET_MS: u64 = 14_000;
 const MANUAL_LAB_RECORDING_VISIBILITY_VISIBLE_THRESHOLD_PER_MILLE: u16 = 10;
 const MANUAL_LAB_RECORDING_VISIBILITY_SPARSE_THRESHOLD_PER_MILLE: u16 = 1;
+const MANUAL_LAB_STATUS_STEADY_WINDOW_TIMEOUT: Duration = Duration::from_secs(6);
 
 const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
 <meta charset="utf-8">
@@ -6559,6 +6614,16 @@ fn build_manual_lab_browser_artifact_correlation_summary(
     });
 
     summary
+}
+
+fn manual_lab_has_steady_active_live_browser_window(events: &[ManualLabPlayerWebsocketEvent]) -> bool {
+    events.iter().any(|event| {
+        event.kind == "browser_visibility_window"
+            && event.window_phase.as_deref() == Some("steady")
+            && event.player_mode.as_deref() == Some("active_live")
+            && event.sample_status.as_deref() == Some("ready")
+            && !event.transition_observed.unwrap_or(false)
+    })
 }
 
 pub fn build_manual_lab_ready_path_sustain_summary(
@@ -8808,12 +8873,12 @@ mod tests {
         build_manual_lab_playback_ready_correlation, build_manual_lab_player_playback_path_summary,
         build_manual_lab_player_websocket_summary, build_session_records,
         discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
-        evaluate_manual_lab_source_manifest_candidate, ironrdp_driver_args, manual_lab_manifest_path,
-        manual_lab_service_ready_timeout, parse_manual_lab_fastpath_warning_line,
-        parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
-        parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_player_websocket_events,
-        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, summarize_guest_rdp_probe_response,
-        xfreerdp_driver_args,
+        evaluate_manual_lab_source_manifest_candidate, ironrdp_driver_args,
+        manual_lab_has_steady_active_live_browser_window, manual_lab_manifest_path, manual_lab_service_ready_timeout,
+        parse_manual_lab_fastpath_warning_line, parse_manual_lab_gfx_filter_summary_line,
+        parse_manual_lab_gfx_warning_summary_line, parse_manual_lab_playback_bootstrap_trace_line,
+        parse_manual_lab_player_websocket_events, parse_manual_lab_ready_trace_line, parse_proc_stat_process_state,
+        summarize_guest_rdp_probe_response, xfreerdp_driver_args,
     };
 
     fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
@@ -9509,6 +9574,40 @@ mod tests {
 
         assert_eq!(summary.verdict, ManualLabBrowserArtifactCorrelationVerdict::BothBlack);
         assert_eq!(summary.confidence, ManualLabEvidenceConfidence::Medium);
+    }
+
+    #[test]
+    fn manual_lab_detects_steady_active_live_browser_window() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let mut steady = player_websocket_event(session_id, "browser_visibility_window", 300);
+        steady.player_mode = Some("active_live".to_owned());
+        steady.window_phase = Some("steady".to_owned());
+        steady.sample_status = Some("ready".to_owned());
+        steady.transition_observed = Some(false);
+
+        assert!(manual_lab_has_steady_active_live_browser_window(&[steady]));
+    }
+
+    #[test]
+    fn manual_lab_rejects_transitional_or_nonsteady_browser_windows() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+
+        let mut stabilize = player_websocket_event(session_id, "browser_visibility_window", 200);
+        stabilize.player_mode = Some("active_live".to_owned());
+        stabilize.window_phase = Some("stabilize".to_owned());
+        stabilize.sample_status = Some("ready".to_owned());
+        stabilize.transition_observed = Some(false);
+
+        let mut steady_transition = player_websocket_event(session_id, "browser_visibility_window", 300);
+        steady_transition.player_mode = Some("active_live".to_owned());
+        steady_transition.window_phase = Some("steady".to_owned());
+        steady_transition.sample_status = Some("ready".to_owned());
+        steady_transition.transition_observed = Some(true);
+
+        assert!(!manual_lab_has_steady_active_live_browser_window(&[
+            stabilize,
+            steady_transition,
+        ]));
     }
 
     #[test]
