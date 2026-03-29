@@ -2181,7 +2181,9 @@ mod tests {
             let mut value = 1u8;
             for y in 1..=3 {
                 for x in 1..=3 {
-                    surface.set_pixel(x, y, value, value.wrapping_add(1), value.wrapping_add(2), 255).unwrap();
+                    surface
+                        .set_pixel(x, y, value, value.wrapping_add(1), value.wrapping_add(2), 255)
+                        .unwrap();
                     value = value.wrapping_add(3);
                 }
             }
@@ -2209,7 +2211,10 @@ mod tests {
         assert_eq!(cached_tile.width, 3);
         assert_eq!(cached_tile.height, 3);
         assert_eq!(&cached_tile.rgba_data[0..4], &[1, 2, 3, 255]);
-        assert_eq!(&cached_tile.rgba_data[cached_tile.rgba_data.len() - 4..], &[25, 26, 27, 255]);
+        assert_eq!(
+            &cached_tile.rgba_data[cached_tile.rgba_data.len() - 4..],
+            &[25, 26, 27, 255]
+        );
     }
 
     #[tokio::test]

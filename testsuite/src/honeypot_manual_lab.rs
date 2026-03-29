@@ -2132,7 +2132,7 @@ pub struct ManualLabState {
     pub created_at_unix_secs: u64,
     pub run_root: PathBuf,
     pub manifests_dir: PathBuf,
-    pub dashboard_url: String,
+    pub browser_url: String,
     pub control_plane: ManualLabServiceProcess,
     pub proxy: ManualLabServiceProcess,
     pub frontend: ManualLabServiceProcess,
@@ -2212,6 +2212,21 @@ pub fn selected_source_manifest_path() -> PathBuf {
 
 fn manual_lab_manifest_path(relative_path: &str) -> PathBuf {
     repo_relative_path(relative_path)
+}
+
+fn manual_lab_browser_url(
+    frontend_http_port: u16,
+    wildcard_token: &str,
+    sessions: &[ManualLabSessionRecord],
+) -> String {
+    if sessions.len() == 1 {
+        format!(
+            "http://127.0.0.1:{frontend_http_port}/session/{}?token={wildcard_token}",
+            sessions[0].session_id
+        )
+    } else {
+        format!("http://127.0.0.1:{frontend_http_port}/?token={wildcard_token}")
+    }
 }
 
 pub fn honeypot_manual_lab_assert_cmd() -> assert_cmd::Command {
@@ -2356,7 +2371,8 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         frontend_http: find_unused_port(),
     };
     let wildcard_token = scope_token(MANUAL_LAB_WILDCARD_SCOPE);
-    let dashboard_url = format!("http://127.0.0.1:{}/?token={}", ports.frontend_http, wildcard_token);
+    let sessions = build_session_records(&layout.logs_dir, session_count);
+    let browser_url = manual_lab_browser_url(ports.frontend_http, &wildcard_token, &sessions);
     let created_at_unix_secs = now_unix_secs();
     let mut state = ManualLabState {
         schema_version: MANUAL_LAB_SCHEMA_VERSION,
@@ -2364,7 +2380,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         created_at_unix_secs,
         run_root: layout.run_root.clone(),
         manifests_dir: layout.manifests_dir.clone(),
-        dashboard_url,
+        browser_url,
         control_plane: placeholder_process(
             layout.logs_dir.join("control-plane.stdout.log"),
             layout.logs_dir.join("control-plane.stderr.log"),
@@ -2387,7 +2403,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         xvfb_stderr_log: None,
         interop_image_store: interop.image_store.clone(),
         ports,
-        sessions: build_session_records(&layout.logs_dir, session_count),
+        sessions,
         black_screen_evidence: build_black_screen_evidence(
             &interop,
             &layout.run_root,
@@ -2544,7 +2560,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         eprintln!("manual lab phase=frontend.tiles.ready run_id={}", state.run_id);
 
         if let Some(chrome_binary) = &state.chrome_binary {
-            let chrome = spawn_chrome(chrome_binary, &layout, &state.dashboard_url)?;
+            let chrome = spawn_chrome(chrome_binary, &layout, &state.browser_url)?;
             state.chrome_pid = Some(chrome.pid);
             state.chrome_stdout_log = Some(chrome.stdout_log);
             state.chrome_stderr_log = Some(chrome.stderr_log);
@@ -3572,14 +3588,14 @@ fn wait_for_frontend_tiles(frontend_http_port: u16, expected_tiles: usize) -> an
 fn spawn_chrome(
     chrome_binary: &Path,
     layout: &ManualLabRuntimeLayout,
-    dashboard_url: &str,
+    browser_url: &str,
 ) -> anyhow::Result<SpawnedProcess> {
     let args = [
         OsString::from("--new-window"),
         OsString::from("--no-first-run"),
         OsString::from("--no-default-browser-check"),
         OsString::from(format!("--user-data-dir={}", layout.chrome_profile_dir.display())),
-        OsString::from(dashboard_url),
+        OsString::from(browser_url),
     ];
 
     spawn_logged_process(

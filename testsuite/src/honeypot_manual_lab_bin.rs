@@ -57,7 +57,7 @@ fn real_main() -> anyhow::Result<i32> {
             let state = honeypot_manual_lab::up(ManualLabUpOptions { open_browser })?;
             println!("manual lab is live");
             println!("run_id={}", state.run_id);
-            println!("dashboard_url={}", state.dashboard_url);
+            println!("browser_url={}", state.browser_url);
             println!("run_root={}", state.run_root.display());
             println!(
                 "ports control_plane={} proxy_http={} proxy_tcp={} frontend={}",
@@ -174,7 +174,7 @@ fn real_main() -> anyhow::Result<i32> {
                     let state = report.state;
                     println!("manual lab is active");
                     println!("run_id={}", state.run_id);
-                    println!("dashboard_url={}", state.dashboard_url);
+                    println!("browser_url={}", state.browser_url);
                     println!("run_root={}", state.run_root.display());
                     println!(
                         "pids control_plane={} proxy={} frontend={} chrome={} xvfb={}",
