@@ -15,7 +15,7 @@ use crate::config::Conf;
 use crate::credential::{AppCredentialMapping, ArcCredentialEntry};
 use crate::interceptor::Interceptor;
 use crate::proxy::Proxy;
-use crate::rdp_playback::RdpPlaybackProducer;
+use crate::rdp_playback::{PlaybackBootstrapTrace, RdpPlaybackProducer};
 use crate::recording::RecordingMessageSender;
 use crate::session::{DisconnectInterest, SessionInfo, SessionMessageSender};
 use crate::subscriber::SubscriberSender;
@@ -198,13 +198,36 @@ where
         .is_some_and(|runtime| runtime.has_session_binding(session_info.id));
 
     let disconnected_ttl = disconnect_interest.map_or(std::time::Duration::ZERO, |interest| interest.window);
-    let playback = if playback_needed {
-        match RdpPlaybackProducer::maybe_start(&conf, recordings, session_info.id, disconnected_ttl).await {
-            Ok(playback) => Some(playback),
+    let playback_trace = playback_needed.then(|| PlaybackBootstrapTrace::new(session_info.id));
+    let playback = if let Some(trace) = playback_trace.as_ref() {
+        trace.emit("proxy", "playback.bootstrap.requested", "ok", "proxy", None, None);
+        match RdpPlaybackProducer::maybe_start(&conf, recordings, session_info.id, disconnected_ttl, trace.clone())
+            .await
+        {
+            Ok(playback) => {
+                trace.emit(
+                    "proxy",
+                    "playback.bootstrap.request_result",
+                    "ok",
+                    "producer",
+                    None,
+                    None,
+                );
+                Some(playback)
+            }
             Err(error) => {
+                let error_text = format!("{error:#}");
+                trace.emit(
+                    "proxy",
+                    "playback.bootstrap.request_result",
+                    "error",
+                    "producer",
+                    None,
+                    Some(&error_text),
+                );
                 warn!(
                     session.id = %session_info.id,
-                    error = format!("{error:#}"),
+                    error = error_text,
                     "Proxy-owned honeypot RDP playback could not be started",
                 );
                 None
@@ -216,14 +239,34 @@ where
 
     // -- Intercept the Connect Confirm PDU, to override the server_security_protocol field -- //
 
-    intercept_connect_confirm(
+    if let Some(trace) = playback_trace.as_ref() {
+        trace.emit("proxy", "handshake.connect_confirm.start", "ok", "proxy", None, None);
+    }
+    if let Err(error) = intercept_connect_confirm(
         &mut client_framed,
         &mut server_framed,
         handshake_result.server_security_protocol,
         playback.as_ref(),
         session_info.id,
     )
-    .await?;
+    .await
+    {
+        if let Some(trace) = playback_trace.as_ref() {
+            let error_text = format!("{error:#}");
+            trace.emit(
+                "proxy",
+                "handshake.connect_confirm.end",
+                "error",
+                "proxy",
+                None,
+                Some(&error_text),
+            );
+        }
+        return Err(error);
+    }
+    if let Some(trace) = playback_trace.as_ref() {
+        trace.emit("proxy", "handshake.connect_confirm.end", "ok", "proxy", None, None);
+    }
 
     let (mut client_stream, client_leftover) = client_framed.into_inner();
     let (mut server_stream, server_leftover) = server_framed.into_inner();
@@ -232,23 +275,111 @@ where
 
     info!("RDP-TLS forwarding (credential injection)");
 
-    if let Some(playback) = playback.as_ref()
-        && let Err(error) = playback.submit_client_bytes(&client_leftover)
-    {
-        warn!(
-            session.id = %session_info.id,
-            error = format!("{error:#}"),
-            "Proxy-owned honeypot RDP playback rejected the initial client bytes",
+    if let Some(trace) = playback_trace.as_ref() {
+        trace.emit(
+            "proxy",
+            "leftover.client.before",
+            "ok",
+            "client",
+            Some(client_leftover.len()),
+            None,
+        );
+    }
+    if let Some(playback) = playback.as_ref() {
+        match playback.submit_client_bytes(&client_leftover) {
+            Ok(()) => {
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit(
+                        "proxy",
+                        "leftover.client.after",
+                        "ok",
+                        "client",
+                        Some(client_leftover.len()),
+                        None,
+                    );
+                }
+            }
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit(
+                        "proxy",
+                        "leftover.client.after",
+                        "error",
+                        "client",
+                        Some(client_leftover.len()),
+                        Some(&error_text),
+                    );
+                }
+                warn!(
+                    session.id = %session_info.id,
+                    error = error_text,
+                    "Proxy-owned honeypot RDP playback rejected the initial client bytes",
+                );
+            }
+        }
+    } else if let Some(trace) = playback_trace.as_ref() {
+        trace.emit(
+            "proxy",
+            "leftover.client.after",
+            "skipped",
+            "client",
+            Some(client_leftover.len()),
+            Some("playback_unavailable"),
         );
     }
 
-    if let Some(playback) = playback.as_ref()
-        && let Err(error) = playback.submit_server_bytes(&server_leftover)
-    {
-        warn!(
-            session.id = %session_info.id,
-            error = format!("{error:#}"),
-            "Proxy-owned honeypot RDP playback rejected the initial server bytes",
+    if let Some(trace) = playback_trace.as_ref() {
+        trace.emit(
+            "proxy",
+            "leftover.server.before",
+            "ok",
+            "server",
+            Some(server_leftover.len()),
+            None,
+        );
+    }
+    if let Some(playback) = playback.as_ref() {
+        match playback.submit_server_bytes(&server_leftover) {
+            Ok(()) => {
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit(
+                        "proxy",
+                        "leftover.server.after",
+                        "ok",
+                        "server",
+                        Some(server_leftover.len()),
+                        None,
+                    );
+                }
+            }
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit(
+                        "proxy",
+                        "leftover.server.after",
+                        "error",
+                        "server",
+                        Some(server_leftover.len()),
+                        Some(&error_text),
+                    );
+                }
+                warn!(
+                    session.id = %session_info.id,
+                    error = error_text,
+                    "Proxy-owned honeypot RDP playback rejected the initial server bytes",
+                );
+            }
+        }
+    } else if let Some(trace) = playback_trace.as_ref() {
+        trace.emit(
+            "proxy",
+            "leftover.server.after",
+            "skipped",
+            "server",
+            Some(server_leftover.len()),
+            Some("playback_unavailable"),
         );
     }
 
@@ -264,14 +395,54 @@ where
 
     let proxy_result = if let Some(playback) = playback.as_ref() {
         let mut intercepted_client_stream = Interceptor::new(client_stream);
-        intercepted_client_stream
-            .inspectors
-            .push(Box::new(playback.client_inspector()?));
+        let client_inspector = match playback.client_inspector() {
+            Ok(inspector) => {
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit("proxy", "interceptor.client.installed", "ok", "client", None, None);
+                }
+                inspector
+            }
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit(
+                        "proxy",
+                        "interceptor.client.installed",
+                        "error",
+                        "client",
+                        None,
+                        Some(&error_text),
+                    );
+                }
+                return Err(error.context("build client playback inspector"));
+            }
+        };
+        intercepted_client_stream.inspectors.push(Box::new(client_inspector));
 
         let mut intercepted_server_stream = Interceptor::new(server_stream);
-        intercepted_server_stream
-            .inspectors
-            .push(Box::new(playback.inspector()?));
+        let server_inspector = match playback.inspector() {
+            Ok(inspector) => {
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit("proxy", "interceptor.server.installed", "ok", "server", None, None);
+                }
+                inspector
+            }
+            Err(error) => {
+                let error_text = format!("{error:#}");
+                if let Some(trace) = playback_trace.as_ref() {
+                    trace.emit(
+                        "proxy",
+                        "interceptor.server.installed",
+                        "error",
+                        "server",
+                        None,
+                        Some(&error_text),
+                    );
+                }
+                return Err(error.context("build server playback inspector"));
+            }
+        };
+        intercepted_server_stream.inspectors.push(Box::new(server_inspector));
 
         forward_rdp_tls_proxy(
             conf,
@@ -286,6 +457,24 @@ where
         )
         .await
     } else {
+        if let Some(trace) = playback_trace.as_ref() {
+            trace.emit(
+                "proxy",
+                "interceptor.client.installed",
+                "skipped",
+                "client",
+                None,
+                Some("playback_unavailable"),
+            );
+            trace.emit(
+                "proxy",
+                "interceptor.server.installed",
+                "skipped",
+                "server",
+                None,
+                Some("playback_unavailable"),
+            );
+        }
         forward_rdp_tls_proxy(
             conf,
             session_info,

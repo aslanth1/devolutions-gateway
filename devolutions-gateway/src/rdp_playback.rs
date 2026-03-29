@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
 use cadeau::xmf::recorder::Recorder as XmfRecorder;
@@ -21,6 +22,175 @@ use crate::recording::RecordingMessageSender;
 use crate::token::RecordingFileType;
 use crate::wrapped_gfx::WrappedGfxExtractor;
 
+pub(crate) const PLAYBACK_BOOTSTRAP_TRACE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug)]
+struct PlaybackBootstrapTraceInner {
+    session_id: uuid::Uuid,
+    started_at: Instant,
+    seq: AtomicU64,
+    thread_started: AtomicBool,
+    first_packet: AtomicBool,
+    first_fastpath_update: AtomicBool,
+    first_wrapped_gfx_update: AtomicBool,
+    update_none: AtomicBool,
+    first_chunk_appended: AtomicBool,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct PlaybackBootstrapTrace {
+    inner: Arc<PlaybackBootstrapTraceInner>,
+}
+
+impl PlaybackBootstrapTrace {
+    pub(crate) fn new(session_id: uuid::Uuid) -> Self {
+        Self {
+            inner: Arc::new(PlaybackBootstrapTraceInner {
+                session_id,
+                started_at: Instant::now(),
+                seq: AtomicU64::new(0),
+                thread_started: AtomicBool::new(false),
+                first_packet: AtomicBool::new(false),
+                first_fastpath_update: AtomicBool::new(false),
+                first_wrapped_gfx_update: AtomicBool::new(false),
+                update_none: AtomicBool::new(false),
+                first_chunk_appended: AtomicBool::new(false),
+            }),
+        }
+    }
+
+    fn next_seq(&self) -> u64 {
+        self.inner.seq.fetch_add(1, Ordering::SeqCst).saturating_add(1)
+    }
+
+    fn monotonic_ns(&self) -> u64 {
+        let nanos = self.inner.started_at.elapsed().as_nanos();
+        u64::try_from(nanos).unwrap_or(u64::MAX)
+    }
+
+    pub(crate) fn emit(
+        &self,
+        thread: &'static str,
+        event: &'static str,
+        status: &'static str,
+        source: &'static str,
+        byte_len: Option<usize>,
+        error: Option<&str>,
+    ) {
+        let seq = self.next_seq();
+        info!(
+            session_id = %self.inner.session_id,
+            bootstrap_schema_version = PLAYBACK_BOOTSTRAP_TRACE_SCHEMA_VERSION,
+            bootstrap_seq = seq,
+            bootstrap_ts_ns = self.monotonic_ns(),
+            bootstrap_thread = thread,
+            bootstrap_event = event,
+            bootstrap_status = status,
+            bootstrap_source = source,
+            bootstrap_byte_len = u64::try_from(byte_len.unwrap_or(0)).unwrap_or(u64::MAX),
+            bootstrap_error = error.unwrap_or(""),
+            "Playback bootstrap trace"
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_once(
+        &self,
+        gate: &AtomicBool,
+        thread: &'static str,
+        event: &'static str,
+        status: &'static str,
+        source: &'static str,
+        byte_len: Option<usize>,
+        error: Option<&str>,
+    ) {
+        if gate
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            self.emit(thread, event, status, source, byte_len, error);
+        }
+    }
+
+    pub(crate) fn emit_thread_started(&self) {
+        self.emit_once(
+            &self.inner.thread_started,
+            "playback-thread",
+            "playback.thread.start",
+            "ok",
+            "thread",
+            None,
+            None,
+        );
+    }
+
+    pub(crate) fn emit_first_packet(&self, source: &'static str, byte_len: usize) {
+        self.emit_once(
+            &self.inner.first_packet,
+            "playback-thread",
+            "playback.thread.first_packet",
+            "ok",
+            source,
+            Some(byte_len),
+            None,
+        );
+    }
+
+    pub(crate) fn emit_first_fastpath_update(&self, source: &'static str) {
+        self.emit_once(
+            &self.inner.first_fastpath_update,
+            "playback-thread",
+            "playback.update.fastpath.first",
+            "ok",
+            source,
+            None,
+            None,
+        );
+    }
+
+    pub(crate) fn emit_first_wrapped_gfx_update(&self, source: &'static str) {
+        self.emit_once(
+            &self.inner.first_wrapped_gfx_update,
+            "playback-thread",
+            "playback.update.wrapped_gfx.first",
+            "ok",
+            source,
+            None,
+            None,
+        );
+    }
+
+    pub(crate) fn emit_first_chunk_appended(&self) {
+        self.emit_once(
+            &self.inner.first_chunk_appended,
+            "playback-thread",
+            "playback.chunk.appended.first",
+            "ok",
+            "recording",
+            None,
+            None,
+        );
+    }
+
+    pub(crate) fn emit_update_none_if_needed(&self) {
+        if self.inner.first_fastpath_update.load(Ordering::SeqCst)
+            || self.inner.first_wrapped_gfx_update.load(Ordering::SeqCst)
+        {
+            return;
+        }
+
+        self.emit_once(
+            &self.inner.update_none,
+            "playback-thread",
+            "playback.update.none",
+            "ok",
+            "none",
+            None,
+            None,
+        );
+    }
+}
+
 #[derive(Debug)]
 enum PlaybackPacket {
     Client(Vec<u8>),
@@ -36,11 +206,12 @@ pub struct RdpPlaybackProducer {
 }
 
 impl RdpPlaybackProducer {
-    pub async fn maybe_start(
+    pub(crate) async fn maybe_start(
         conf: &Arc<Conf>,
         recordings: RecordingMessageSender,
         session_id: uuid::Uuid,
         disconnected_ttl: Duration,
+        trace: PlaybackBootstrapTrace,
     ) -> anyhow::Result<Self> {
         let xmf_library = conf
             .get_lib_xmf_path()
@@ -55,10 +226,18 @@ impl RdpPlaybackProducer {
         let (sender, receiver) = mpsc::channel::<PlaybackPacket>();
         let recording_path_for_thread = recording_path.into_std_path_buf();
         let recordings_for_thread = recordings.clone();
+        let trace_for_thread = trace.clone();
         let thread = match thread::Builder::new()
             .name(format!("rdp-playback-{session_id}"))
-            .spawn(move || playback_thread(receiver, recording_path_for_thread, recordings_for_thread, session_id))
-        {
+            .spawn(move || {
+                playback_thread(
+                    receiver,
+                    recording_path_for_thread,
+                    recordings_for_thread,
+                    session_id,
+                    trace_for_thread,
+                )
+            }) {
             Ok(thread) => thread,
             Err(error) => {
                 recordings
@@ -167,9 +346,12 @@ fn playback_thread(
     recording_path: PathBuf,
     recordings: RecordingMessageSender,
     session_id: uuid::Uuid,
+    trace: PlaybackBootstrapTrace,
 ) {
     let mut observer = PlaybackObserver::new(session_id);
     let backend = ObserverXmfRecordingBackend::new(recording_path.clone());
+
+    trace.emit_thread_started();
 
     debug!(
         session.id = %session_id,
@@ -178,7 +360,13 @@ fn playback_thread(
     );
 
     while let Ok(packet) = receiver.recv() {
-        let updates = observer.observe(packet);
+        let (source, byte_len) = match &packet {
+            PlaybackPacket::Client(bytes) => ("client", bytes.len()),
+            PlaybackPacket::Server(bytes) => ("server", bytes.len()),
+        };
+        trace.emit_first_packet(source, byte_len);
+
+        let updates = observer.observe(packet, &trace);
         if updates.is_empty() {
             continue;
         }
@@ -206,15 +394,19 @@ fn playback_thread(
             }
         }
 
-        if appended_chunk && let Err(error) = recordings.new_chunk_appended(session_id) {
-            warn!(
-                session.id = %session_id,
-                error = format!("{error:#}"),
-                "Failed to notify JREC listeners about proxy-owned playback data",
-            );
+        if appended_chunk {
+            trace.emit_first_chunk_appended();
+            if let Err(error) = recordings.new_chunk_appended(session_id) {
+                warn!(
+                    session.id = %session_id,
+                    error = format!("{error:#}"),
+                    "Failed to notify JREC listeners about proxy-owned playback data",
+                );
+            }
         }
     }
 
+    trace.emit_update_none_if_needed();
     observer.log_summary(session_id);
     backend.finish();
 
@@ -240,7 +432,7 @@ impl PlaybackObserver {
         }
     }
 
-    fn observe(&mut self, packet: PlaybackPacket) -> Vec<FastPathSurfaceUpdate> {
+    fn observe(&mut self, packet: PlaybackPacket, trace: &PlaybackBootstrapTrace) -> Vec<FastPathSurfaceUpdate> {
         match packet {
             PlaybackPacket::Client(bytes) => {
                 self.wrapped_gfx.observe_client_packet(&bytes);
@@ -248,6 +440,9 @@ impl PlaybackObserver {
             }
             PlaybackPacket::Server(bytes) => {
                 let mut updates = self.fastpath.observe_server_packet(&bytes);
+                if let Some(first_fastpath_update) = updates.first() {
+                    trace.emit_first_fastpath_update(first_fastpath_update.source);
+                }
                 let wrapped_gfx_pdus = self.wrapped_gfx.observe_server_packet(&bytes);
 
                 for pdu in wrapped_gfx_pdus {
@@ -269,18 +464,18 @@ impl PlaybackObserver {
                     }
                 }
 
-                updates.extend(
-                    self.gfx
-                        .drain_surface_updates()
-                        .into_iter()
-                        .map(|update| FastPathSurfaceUpdate {
-                            source: update.source,
-                            surface_width: update.surface_width,
-                            surface_height: update.surface_height,
-                            rectangle: update.rectangle,
-                            rgba_data: update.rgba_data,
-                        }),
-                );
+                let wrapped_updates = self.gfx.drain_surface_updates();
+                if let Some(first_wrapped_update) = wrapped_updates.first() {
+                    trace.emit_first_wrapped_gfx_update(first_wrapped_update.source);
+                }
+
+                updates.extend(wrapped_updates.into_iter().map(|update| FastPathSurfaceUpdate {
+                    source: update.source,
+                    surface_width: update.surface_width,
+                    surface_height: update.surface_height,
+                    rectangle: update.rectangle,
+                    rgba_data: update.rgba_data,
+                }));
 
                 updates
             }

@@ -1057,7 +1057,62 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub stream_probe_detail: Option<String>,
     #[serde(default)]
+    pub playback_bootstrap_timeline: ManualLabSessionPlaybackBootstrapTimeline,
+    #[serde(default)]
     pub gfx_warning_summary: Option<ManualLabSessionGfxWarningSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabPlaybackBootstrapVerdict {
+    Complete,
+    #[default]
+    Incomplete,
+    Contradiction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionPlaybackBootstrapEvent {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub seq: u64,
+    #[serde(default)]
+    pub ts_ns: u64,
+    #[serde(default)]
+    pub thread: String,
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub byte_len: u64,
+    #[serde(default)]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionPlaybackBootstrapTimeline {
+    #[serde(default)]
+    pub verdict: ManualLabPlaybackBootstrapVerdict,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub first_seq: Option<u64>,
+    #[serde(default)]
+    pub last_seq: Option<u64>,
+    #[serde(default)]
+    pub update_event: Option<String>,
+    #[serde(default)]
+    pub required_events: Vec<String>,
+    #[serde(default)]
+    pub missing_events: Vec<String>,
+    #[serde(default)]
+    pub failed_events: Vec<String>,
+    #[serde(default)]
+    pub events: Vec<ManualLabSessionPlaybackBootstrapEvent>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -3899,6 +3954,223 @@ fn parse_manual_lab_log_u64(line: &str, key: &str) -> Option<u64> {
     parse_manual_lab_log_field(line, key)?.parse::<u64>().ok()
 }
 
+const MANUAL_LAB_PLAYBACK_BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS: [&str; 11] = [
+    "playback.bootstrap.requested",
+    "playback.bootstrap.request_result",
+    "handshake.connect_confirm.start",
+    "handshake.connect_confirm.end",
+    "leftover.client.before",
+    "leftover.client.after",
+    "leftover.server.before",
+    "leftover.server.after",
+    "interceptor.client.installed",
+    "interceptor.server.installed",
+    "playback.thread.start",
+];
+const MANUAL_LAB_PLAYBACK_BOOTSTRAP_UPDATE_EVENTS: [&str; 3] = [
+    "playback.update.fastpath.first",
+    "playback.update.wrapped_gfx.first",
+    "playback.update.none",
+];
+
+fn build_manual_lab_playback_bootstrap_timeline(
+    mut events: Vec<ManualLabSessionPlaybackBootstrapEvent>,
+) -> ManualLabSessionPlaybackBootstrapTimeline {
+    events.sort_by_key(|event| event.seq);
+
+    let required_events = MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS
+        .iter()
+        .map(|event| (*event).to_owned())
+        .collect::<Vec<_>>();
+    let mut missing_events = required_events
+        .iter()
+        .filter(|required| !events.iter().any(|event| event.event == **required))
+        .cloned()
+        .collect::<Vec<_>>();
+    if !events
+        .iter()
+        .any(|event| MANUAL_LAB_PLAYBACK_BOOTSTRAP_UPDATE_EVENTS.contains(&event.event.as_str()))
+    {
+        missing_events.push("playback.update.*".to_owned());
+    }
+
+    let failed_events = events
+        .iter()
+        .filter(|event| {
+            (MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS.contains(&event.event.as_str())
+                || MANUAL_LAB_PLAYBACK_BOOTSTRAP_UPDATE_EVENTS.contains(&event.event.as_str()))
+                && event.status != "ok"
+        })
+        .map(|event| format!("{}:{}", event.event, event.status))
+        .collect::<Vec<_>>();
+
+    let contradiction = detect_manual_lab_playback_bootstrap_contradiction(&events);
+    let detail = if let Some(detail) = contradiction.clone() {
+        Some(detail)
+    } else if !failed_events.is_empty() {
+        Some(format!("non-ok bootstrap events: {}", failed_events.join(", ")))
+    } else if !missing_events.is_empty() {
+        Some(format!("missing bootstrap events: {}", missing_events.join(", ")))
+    } else {
+        None
+    };
+    let verdict = if contradiction.is_some() {
+        ManualLabPlaybackBootstrapVerdict::Contradiction
+    } else if !failed_events.is_empty() || !missing_events.is_empty() {
+        ManualLabPlaybackBootstrapVerdict::Incomplete
+    } else {
+        ManualLabPlaybackBootstrapVerdict::Complete
+    };
+    let update_event = events
+        .iter()
+        .find(|event| MANUAL_LAB_PLAYBACK_BOOTSTRAP_UPDATE_EVENTS.contains(&event.event.as_str()))
+        .map(|event| event.event.clone());
+
+    ManualLabSessionPlaybackBootstrapTimeline {
+        verdict,
+        detail,
+        first_seq: events.first().map(|event| event.seq),
+        last_seq: events.last().map(|event| event.seq),
+        update_event,
+        required_events,
+        missing_events,
+        failed_events,
+        events,
+    }
+}
+
+fn detect_manual_lab_playback_bootstrap_contradiction(
+    events: &[ManualLabSessionPlaybackBootstrapEvent],
+) -> Option<String> {
+    let mut last_seq = None;
+
+    for event in events {
+        if event.schema_version != MANUAL_LAB_PLAYBACK_BOOTSTRAP_SCHEMA_VERSION {
+            return Some(format!(
+                "unexpected bootstrap schema version {} for {}",
+                event.schema_version, event.event
+            ));
+        }
+
+        match last_seq {
+            Some(previous_seq) if event.seq <= previous_seq => {
+                return Some(format!(
+                    "non-monotonic bootstrap sequence {} -> {}",
+                    previous_seq, event.seq
+                ));
+            }
+            Some(previous_seq) if event.seq != previous_seq.saturating_add(1) => {
+                return Some(format!("bootstrap sequence gap {} -> {}", previous_seq, event.seq));
+            }
+            None if event.seq != 1 => {
+                return Some(format!("bootstrap sequence started at {}", event.seq));
+            }
+            _ => {}
+        }
+
+        last_seq = Some(event.seq);
+    }
+
+    for (before, after) in [
+        ("playback.bootstrap.requested", "playback.bootstrap.request_result"),
+        ("handshake.connect_confirm.start", "handshake.connect_confirm.end"),
+        ("leftover.client.before", "leftover.client.after"),
+        ("leftover.server.before", "leftover.server.after"),
+        ("playback.thread.start", "playback.thread.first_packet"),
+        ("playback.thread.first_packet", "playback.chunk.appended.first"),
+    ] {
+        if let Some(detail) = detect_manual_lab_playback_bootstrap_out_of_order(events, before, after) {
+            return Some(detail);
+        }
+    }
+
+    let thread_start = events.iter().position(|event| event.event == "playback.thread.start");
+    for update_event in MANUAL_LAB_PLAYBACK_BOOTSTRAP_UPDATE_EVENTS {
+        if let (Some(start), Some(update)) = (
+            thread_start,
+            events.iter().position(|event| event.event == update_event),
+        ) && update < start
+        {
+            return Some(format!("{update_event} appeared before playback.thread.start"));
+        }
+    }
+
+    None
+}
+
+fn detect_manual_lab_playback_bootstrap_out_of_order(
+    events: &[ManualLabSessionPlaybackBootstrapEvent],
+    before: &str,
+    after: &str,
+) -> Option<String> {
+    let before_index = events.iter().position(|event| event.event == before)?;
+    let after_index = events.iter().position(|event| event.event == after)?;
+    if after_index < before_index {
+        return Some(format!("{after} appeared before {before}"));
+    }
+
+    None
+}
+
+fn parse_manual_lab_playback_bootstrap_trace_line(
+    line: &str,
+) -> Option<(String, ManualLabSessionPlaybackBootstrapEvent)> {
+    if !line.contains("Playback bootstrap trace") {
+        return None;
+    }
+
+    let session_id = parse_manual_lab_log_field(line, "session_id")?.to_owned();
+    let error = parse_manual_lab_log_field(line, "bootstrap_error")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let event = ManualLabSessionPlaybackBootstrapEvent {
+        schema_version: parse_manual_lab_log_u64(line, "bootstrap_schema_version")
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0),
+        seq: parse_manual_lab_log_u64(line, "bootstrap_seq").unwrap_or(0),
+        ts_ns: parse_manual_lab_log_u64(line, "bootstrap_ts_ns").unwrap_or(0),
+        thread: parse_manual_lab_log_field(line, "bootstrap_thread")
+            .unwrap_or_default()
+            .to_owned(),
+        event: parse_manual_lab_log_field(line, "bootstrap_event")
+            .unwrap_or_default()
+            .to_owned(),
+        status: parse_manual_lab_log_field(line, "bootstrap_status")
+            .unwrap_or_default()
+            .to_owned(),
+        source: parse_manual_lab_log_field(line, "bootstrap_source")
+            .unwrap_or_default()
+            .to_owned(),
+        byte_len: parse_manual_lab_log_u64(line, "bootstrap_byte_len").unwrap_or(0),
+        error,
+    };
+
+    Some((session_id, event))
+}
+
+fn parse_manual_lab_playback_bootstrap_timelines(
+    proxy_stdout_log: &Path,
+) -> anyhow::Result<BTreeMap<String, ManualLabSessionPlaybackBootstrapTimeline>> {
+    if !proxy_stdout_log.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let log = fs::read_to_string(proxy_stdout_log).with_context(|| format!("read {}", proxy_stdout_log.display()))?;
+    let mut timelines = BTreeMap::<String, Vec<ManualLabSessionPlaybackBootstrapEvent>>::new();
+    for line in log.lines() {
+        if let Some((session_id, event)) = parse_manual_lab_playback_bootstrap_trace_line(line) {
+            timelines.entry(session_id).or_default().push(event);
+        }
+    }
+
+    Ok(timelines
+        .into_iter()
+        .map(|(session_id, events)| (session_id, build_manual_lab_playback_bootstrap_timeline(events)))
+        .collect())
+}
+
 fn parse_manual_lab_gfx_warning_summary_line(line: &str) -> Option<(String, ManualLabSessionGfxWarningSummary)> {
     if !line.contains("GFX warning summary") {
         return None;
@@ -3981,6 +4253,7 @@ fn parse_manual_lab_gfx_warning_summaries(
 fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
     let evidence_path = state.run_root.join("artifacts/black-screen-evidence.json");
     let mut evidence = state.black_screen_evidence.clone();
+    let playback_bootstrap_timelines = parse_manual_lab_playback_bootstrap_timelines(&state.proxy.stdout_log)?;
     let gfx_warning_summaries = parse_manual_lab_gfx_warning_summaries(&state.proxy.stdout_log)?;
     evidence.artifacts = build_black_screen_artifact_paths(state);
     evidence.session_invocations = state
@@ -3998,6 +4271,10 @@ fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
             stream_id: session.stream_id.clone(),
             stream_probe_status: session.stream_probe_status.clone(),
             stream_probe_detail: session.stream_probe_detail.clone(),
+            playback_bootstrap_timeline: playback_bootstrap_timelines
+                .get(&session.session_id)
+                .cloned()
+                .unwrap_or_else(|| build_manual_lab_playback_bootstrap_timeline(Vec::new())),
             gfx_warning_summary: gfx_warning_summaries.get(&session.session_id).cloned(),
         })
         .collect();
@@ -4147,11 +4424,31 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ManualLabSessionGfxWarningSummary, ManualLabXfreerdpGraphicsMode, association_token, build_session_records,
-        discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
+        ManualLabPlaybackBootstrapVerdict, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
+        ManualLabXfreerdpGraphicsMode, association_token, build_manual_lab_playback_bootstrap_timeline,
+        build_session_records, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, manual_lab_manifest_path, manual_lab_service_ready_timeout,
-        parse_manual_lab_gfx_warning_summary_line, parse_proc_stat_process_state, xfreerdp_driver_args,
+        parse_manual_lab_gfx_warning_summary_line, parse_manual_lab_playback_bootstrap_trace_line,
+        parse_proc_stat_process_state, xfreerdp_driver_args,
     };
+
+    fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
+        ManualLabSessionPlaybackBootstrapEvent {
+            schema_version: 1,
+            seq,
+            ts_ns: seq * 100,
+            thread: if event.starts_with("playback.thread") || event.starts_with("playback.update") {
+                "playback-thread".to_owned()
+            } else {
+                "proxy".to_owned()
+            },
+            event: event.to_owned(),
+            status: status.to_owned(),
+            source: "test".to_owned(),
+            byte_len: 0,
+            error: None,
+        }
+    }
 
     #[test]
     fn manual_lab_manifest_paths_resolve_from_repo_root() {
@@ -4280,6 +4577,96 @@ mod tests {
                     cache_to_surface_replay_skipped_count: 12,
                 }
             ))
+        );
+    }
+
+    #[test]
+    fn manual_lab_parses_playback_bootstrap_trace_lines() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let line = format!(
+            "2026-03-28T22:00:00.000000Z  INFO ThreadId(42) session_id={session_id} bootstrap_schema_version=1 bootstrap_seq=7 bootstrap_ts_ns=998 bootstrap_thread=proxy bootstrap_event=leftover.client.after bootstrap_status=ok bootstrap_source=client bootstrap_byte_len=512 bootstrap_error=\"\" Playback bootstrap trace"
+        );
+
+        let parsed = parse_manual_lab_playback_bootstrap_trace_line(&line);
+        assert_eq!(
+            parsed,
+            Some((
+                session_id.to_owned(),
+                ManualLabSessionPlaybackBootstrapEvent {
+                    schema_version: 1,
+                    seq: 7,
+                    ts_ns: 998,
+                    thread: "proxy".to_owned(),
+                    event: "leftover.client.after".to_owned(),
+                    status: "ok".to_owned(),
+                    source: "client".to_owned(),
+                    byte_len: 512,
+                    error: None,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn manual_lab_marks_complete_bootstrap_timeline() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "handshake.connect_confirm.start", "ok"),
+            bootstrap_event(4, "handshake.connect_confirm.end", "ok"),
+            bootstrap_event(5, "leftover.client.before", "ok"),
+            bootstrap_event(6, "leftover.client.after", "ok"),
+            bootstrap_event(7, "leftover.server.before", "ok"),
+            bootstrap_event(8, "leftover.server.after", "ok"),
+            bootstrap_event(9, "interceptor.client.installed", "ok"),
+            bootstrap_event(10, "interceptor.server.installed", "ok"),
+            bootstrap_event(11, "playback.thread.start", "ok"),
+            bootstrap_event(12, "playback.thread.first_packet", "ok"),
+            bootstrap_event(13, "playback.update.none", "ok"),
+        ]);
+
+        assert_eq!(timeline.verdict, ManualLabPlaybackBootstrapVerdict::Complete);
+        assert_eq!(timeline.first_seq, Some(1));
+        assert_eq!(timeline.last_seq, Some(13));
+        assert_eq!(timeline.update_event.as_deref(), Some("playback.update.none"));
+        assert!(timeline.missing_events.is_empty());
+        assert!(timeline.failed_events.is_empty());
+    }
+
+    #[test]
+    fn manual_lab_marks_incomplete_bootstrap_timeline_when_required_event_is_missing() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "handshake.connect_confirm.start", "ok"),
+            bootstrap_event(4, "handshake.connect_confirm.end", "ok"),
+            bootstrap_event(5, "leftover.client.before", "ok"),
+            bootstrap_event(6, "leftover.client.after", "ok"),
+            bootstrap_event(7, "leftover.server.before", "ok"),
+            bootstrap_event(8, "interceptor.client.installed", "ok"),
+            bootstrap_event(9, "interceptor.server.installed", "ok"),
+            bootstrap_event(10, "playback.thread.start", "ok"),
+            bootstrap_event(11, "playback.thread.first_packet", "ok"),
+            bootstrap_event(12, "playback.update.none", "ok"),
+        ]);
+
+        assert_eq!(timeline.verdict, ManualLabPlaybackBootstrapVerdict::Incomplete);
+        assert!(timeline.missing_events.contains(&"leftover.server.after".to_owned()));
+    }
+
+    #[test]
+    fn manual_lab_marks_contradiction_for_bootstrap_sequence_gap() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(3, "playback.bootstrap.request_result", "ok"),
+        ]);
+
+        assert_eq!(timeline.verdict, ManualLabPlaybackBootstrapVerdict::Contradiction);
+        assert!(
+            timeline
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("sequence gap"))
         );
     }
 

@@ -1081,7 +1081,7 @@ Pass when: every probe run records `rdpegfx_pdu_count`, payload counts, or equiv
 - [x] `BS-14` Count corruption-signaling warnings in `rdp_gfx`.
 Pass when: unknown-surface, unknown-cache-slot, `WireToSurface1` size mismatch, and related warning classes are counted per session instead of being treated as unstructured log noise.
 
-- [ ] `BS-15` Prove producer bootstrap ordering around the handshake seam.
+- [x] `BS-15` Prove producer bootstrap ordering around the handshake seam.
 Pass when: the evidence shows when the producer attached relative to `intercept_connect_confirm`, when client leftovers were fed, when server leftovers were fed, and whether those steps happened before any graphics negotiation was lost.
 
 - [ ] `BS-16` Prove whether the first emitted recording bytes and the first ready state describe the same reality.
