@@ -966,9 +966,71 @@ pub struct ManualLabBlackScreenEvidence {
     #[serde(default)]
     pub is_control_lane: bool,
     #[serde(default)]
+    pub clean_state: ManualLabBlackScreenCleanStateEvidence,
+    #[serde(default)]
+    pub artifacts: ManualLabBlackScreenArtifactPaths,
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub session_invocations: Vec<ManualLabSessionDriverEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenCleanStateEvidence {
+    #[serde(default)]
+    pub active_state_path: PathBuf,
+    #[serde(default)]
+    pub active_state_absent_before_launch: bool,
+    #[serde(default)]
+    pub run_root_absent_before_launch: bool,
+    #[serde(default)]
+    pub qmp_dir_absent_before_launch: bool,
+    #[serde(default)]
+    pub qga_dir_absent_before_launch: bool,
+    #[serde(default)]
+    pub recordings_dir_absent_before_launch: bool,
+    #[serde(default)]
+    pub control_plane_credentials_absent_before_launch: bool,
+    #[serde(default)]
+    pub proxy_credentials_absent_before_launch: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenArtifactPaths {
+    #[serde(default)]
+    pub control_plane_stdout_log: PathBuf,
+    #[serde(default)]
+    pub control_plane_stderr_log: PathBuf,
+    #[serde(default)]
+    pub proxy_stdout_log: PathBuf,
+    #[serde(default)]
+    pub proxy_stderr_log: PathBuf,
+    #[serde(default)]
+    pub frontend_stdout_log: PathBuf,
+    #[serde(default)]
+    pub frontend_stderr_log: PathBuf,
+    #[serde(default)]
+    pub chrome_stdout_log: Option<PathBuf>,
+    #[serde(default)]
+    pub chrome_stderr_log: Option<PathBuf>,
+    #[serde(default)]
+    pub xvfb_stdout_log: Option<PathBuf>,
+    #[serde(default)]
+    pub xvfb_stderr_log: Option<PathBuf>,
+    #[serde(default)]
+    pub recordings_root: PathBuf,
+    #[serde(default)]
+    pub player_console_log: PathBuf,
+    #[serde(default)]
+    pub player_websocket_log: PathBuf,
+    #[serde(default)]
+    pub player_http_log: PathBuf,
+    #[serde(default)]
+    pub stream_http_log: PathBuf,
+    #[serde(default)]
+    pub session_events_log: PathBuf,
+    #[serde(default)]
+    pub verdict_markdown: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1064,6 +1126,22 @@ struct ManualLabRuntimeLayout {
 
 pub fn active_state_path() -> PathBuf {
     repo_relative_path(MANUAL_LAB_ACTIVE_STATE_RELATIVE_PATH)
+}
+
+fn manual_lab_run_root(run_id: &str) -> PathBuf {
+    repo_relative_path(MANUAL_LAB_ROOT_RELATIVE_PATH).join(run_id)
+}
+
+fn manual_lab_qemu_runtime_root(run_id: &str) -> PathBuf {
+    std::env::temp_dir().join(format!(
+        "dgw-manual-lab-{}",
+        run_id
+            .strip_prefix("manual-lab-")
+            .unwrap_or(run_id)
+            .chars()
+            .take(12)
+            .collect::<String>()
+    ))
 }
 
 pub fn selected_source_manifest_path() -> PathBuf {
@@ -1203,6 +1281,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
     let session_count = manual_lab_session_count_from_env()?;
 
     let run_id = format!("manual-lab-{}", Uuid::new_v4().simple());
+    let clean_state = build_black_screen_clean_state(&run_id);
     let layout = create_runtime_layout(&run_id)?;
     let ports = ManualLabPorts {
         control_plane_http: find_unused_port(),
@@ -1244,6 +1323,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         sessions: build_session_records(&layout.logs_dir, session_count),
         black_screen_evidence: build_black_screen_evidence(&interop, &layout.run_root, session_count),
     };
+    state.black_screen_evidence.clean_state = clean_state;
     persist_active_state(&state)?;
 
     let result = (|| -> anyhow::Result<ManualLabState> {
@@ -1756,7 +1836,7 @@ fn teardown_internal(state: &ManualLabState) -> ManualLabTeardownReport {
 }
 
 fn create_runtime_layout(run_id: &str) -> anyhow::Result<ManualLabRuntimeLayout> {
-    let run_root = repo_relative_path(MANUAL_LAB_ROOT_RELATIVE_PATH).join(run_id);
+    let run_root = manual_lab_run_root(run_id);
     let logs_dir = run_root.join("logs");
     let manifests_dir = run_root.join("manifests");
     let service_config_dir = run_root.join("config");
@@ -1767,15 +1847,7 @@ fn create_runtime_layout(run_id: &str) -> anyhow::Result<ManualLabRuntimeLayout>
     let runtime_data_dir = run_root.join("runtime/control-plane-data");
     let lease_store_dir = run_root.join("runtime/leases");
     let quarantine_store_dir = run_root.join("runtime/quarantine");
-    let qemu_runtime_root = std::env::temp_dir().join(format!(
-        "dgw-manual-lab-{}",
-        run_id
-            .strip_prefix("manual-lab-")
-            .unwrap_or(run_id)
-            .chars()
-            .take(12)
-            .collect::<String>()
-    ));
+    let qemu_runtime_root = manual_lab_qemu_runtime_root(run_id);
     let qmp_dir = qemu_runtime_root.join("qmp");
     let qga_dir = qemu_runtime_root.join("qga");
     let chrome_profile_dir = run_root.join("chrome-profile");
@@ -3720,14 +3792,62 @@ fn build_black_screen_evidence(
         session_count,
         artifact_root: run_root.to_path_buf(),
         is_control_lane: interop.xfreerdp_graphics_mode.is_control_lane(),
+        clean_state: ManualLabBlackScreenCleanStateEvidence::default(),
+        artifacts: ManualLabBlackScreenArtifactPaths::default(),
         env: collect_black_screen_env_snapshot(),
         session_invocations: Vec::new(),
+    }
+}
+
+fn build_black_screen_clean_state(run_id: &str) -> ManualLabBlackScreenCleanStateEvidence {
+    let run_root = manual_lab_run_root(run_id);
+    let qemu_runtime_root = manual_lab_qemu_runtime_root(run_id);
+    let qmp_dir = qemu_runtime_root.join("qmp");
+    let qga_dir = qemu_runtime_root.join("qga");
+    let recordings_dir = run_root.join("config/proxy/recordings");
+    let control_plane_credentials = run_root.join("secrets/control-plane/backend-credentials.json");
+    let proxy_credentials = run_root.join("secrets/proxy/backend-credentials.json");
+    let active_state = active_state_path();
+
+    ManualLabBlackScreenCleanStateEvidence {
+        active_state_path: active_state.clone(),
+        active_state_absent_before_launch: !active_state.exists(),
+        run_root_absent_before_launch: !run_root.exists(),
+        qmp_dir_absent_before_launch: !qmp_dir.exists(),
+        qga_dir_absent_before_launch: !qga_dir.exists(),
+        recordings_dir_absent_before_launch: !recordings_dir.exists(),
+        control_plane_credentials_absent_before_launch: !control_plane_credentials.exists(),
+        proxy_credentials_absent_before_launch: !proxy_credentials.exists(),
+    }
+}
+
+fn build_black_screen_artifact_paths(state: &ManualLabState) -> ManualLabBlackScreenArtifactPaths {
+    let artifacts_root = state.run_root.join("artifacts");
+    ManualLabBlackScreenArtifactPaths {
+        control_plane_stdout_log: state.control_plane.stdout_log.clone(),
+        control_plane_stderr_log: state.control_plane.stderr_log.clone(),
+        proxy_stdout_log: state.proxy.stdout_log.clone(),
+        proxy_stderr_log: state.proxy.stderr_log.clone(),
+        frontend_stdout_log: state.frontend.stdout_log.clone(),
+        frontend_stderr_log: state.frontend.stderr_log.clone(),
+        chrome_stdout_log: state.chrome_stdout_log.clone(),
+        chrome_stderr_log: state.chrome_stderr_log.clone(),
+        xvfb_stdout_log: state.xvfb_stdout_log.clone(),
+        xvfb_stderr_log: state.xvfb_stderr_log.clone(),
+        recordings_root: state.run_root.join("config/proxy/recordings"),
+        player_console_log: artifacts_root.join("player-console.ndjson"),
+        player_websocket_log: artifacts_root.join("player-websocket.ndjson"),
+        player_http_log: artifacts_root.join("player-http.ndjson"),
+        stream_http_log: artifacts_root.join("stream-http.json"),
+        session_events_log: artifacts_root.join("session-events.json"),
+        verdict_markdown: artifacts_root.join("black-screen-verdict.md"),
     }
 }
 
 fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
     let evidence_path = state.run_root.join("artifacts/black-screen-evidence.json");
     let mut evidence = state.black_screen_evidence.clone();
+    evidence.artifacts = build_black_screen_artifact_paths(state);
     evidence.session_invocations = state
         .sessions
         .iter()

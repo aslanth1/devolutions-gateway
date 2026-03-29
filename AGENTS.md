@@ -1046,36 +1046,36 @@ Pass when: the default manual-lab `xfreerdp` invocation matches the pre-experime
 - [x] `BS-03` Record the exact driver command line and binary identity for every run.
 Pass when: each run bundle preserves the driver executable path, version or build identity, full arguments, and any wrapper env so later comparisons never rely on memory or shell history.
 
-- [ ] `BS-04` Reset and verify a clean pre-experiment state before black-screen runs.
+- [x] `BS-04` Reset and verify a clean pre-experiment state before black-screen runs.
 Pass when: tests confirm no stale `active.json`, stale sockets, stale recording directories, or leftover credentials from prior proof runs before a new control or variant lane is evaluated.
 
-- [ ] `BS-05` Capture a one-session `xfreerdp` control run before any variant run opens.
+- [x] `BS-05` Capture a one-session `xfreerdp` control run before any variant run opens.
 Pass when: a single-session manual-lab run stores proxy logs, frontend logs, player console output, session events, and recording artifacts under a named artifact root that can be compared to later variants.
 
-- [ ] `BS-06` Capture a two-session `xfreerdp` control run before concurrency conclusions are drawn.
+- [x] `BS-06` Capture a two-session `xfreerdp` control run before concurrency conclusions are drawn.
 Pass when: a two-session run records per-session negotiation counters, readiness transitions, websocket outcomes, and artifact timestamps so resource contention is separated from single-session decode issues.
 
-- [ ] `BS-07` Capture a three-session `xfreerdp` control run before calling the third-slot problem nondeterministic.
+- [x] `BS-07` Capture a three-session `xfreerdp` control run before calling the third-slot problem nondeterministic.
 Pass when: a three-session run records enough evidence to name which session diverged, when it diverged, and whether the failure was negotiation, producer, player, or timing related instead of only saying "slot 3 was bad".
 
-- [ ] `BS-08` Preserve the truthful negative path during all black-screen investigation work.
+- [x] `BS-08` Preserve the truthful negative path during all black-screen investigation work.
 Pass when: runs without a proven active producer still return `503 honeypot stream is unavailable`, still emit `session.stream.failed`, and never regress to fake live bindings while visual-debug work proceeds.
 
-- [ ] `BS-09` Preserve the active ready-path invariant during black-screen investigation work.
+- [x] `BS-09` Preserve the active ready-path invariant during black-screen investigation work.
 Pass when: once `session.stream.ready` is emitted for an active session, the player does not immediately fall back to static `recording.json` without a separately recorded stream failure reason.
 
-- [ ] `BS-10` Standardize the minimum artifact set for every black-screen run.
+- [x] `BS-10` Standardize the minimum artifact set for every black-screen run.
 Pass when: each run bundle includes proxy playback logs, session lifecycle logs, player console output, websocket close reason, `recording-*.webm`, `recording.json`, relevant HTTP responses, and a short verdict keyed by row ID.
 
 #### 6v.2 Negotiation, Channel, And Producer Truth
 
-- [ ] `BS-11` Prove whether `drdynvc` negotiation occurs on the control lane.
+- [x] `BS-11` Prove whether `drdynvc` negotiation occurs on the control lane.
 Pass when: logs or summaries record whether `drdynvc` was requested, accepted, assigned a channel ID, and kept open long enough for wrapped graphics payloads to be observed.
 
-- [ ] `BS-12` Prove whether `rdpgfx` actually opens on the control lane.
+- [x] `BS-12` Prove whether `rdpgfx` actually opens on the control lane.
 Pass when: the evidence set includes explicit `rdpgfx` open counts and channel identifiers so the team can distinguish "RDPGFX never negotiated" from "RDPGFX negotiated but rendered badly".
 
-- [ ] `BS-13` Count wrapped graphics PDUs and payload bytes per session.
+- [x] `BS-13` Count wrapped graphics PDUs and payload bytes per session.
 Pass when: every probe run records `rdpegfx_pdu_count`, payload counts, or equivalent summary fields per session so black-screen runs can be sorted into "no graphics data" and "graphics data present" branches.
 
 - [ ] `BS-14` Count corruption-signaling warnings in `rdp_gfx`.
