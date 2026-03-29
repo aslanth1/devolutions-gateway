@@ -3549,11 +3549,11 @@ fn read_guest_rdp_probe_response(stream: &mut TcpStream) -> anyhow::Result<Vec<u
     let mut filled_end = 0;
 
     loop {
-        if let Some(info) = ironrdp_pdu::find_size(&buf[..filled_end]).context("find guest RDP probe PDU size")? {
-            if filled_end >= info.length {
-                buf.truncate(info.length);
-                return Ok(buf);
-            }
+        if let Some(info) = ironrdp_pdu::find_size(&buf[..filled_end]).context("find guest RDP probe PDU size")?
+            && filled_end >= info.length
+        {
+            buf.truncate(info.length);
+            return Ok(buf);
         }
 
         if filled_end == buf.len() {
