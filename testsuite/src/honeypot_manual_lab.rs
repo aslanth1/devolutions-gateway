@@ -68,6 +68,7 @@ const HONEYPOT_INTEROP_RDP_PASSWORD_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_PASSWO
 const HONEYPOT_INTEROP_RDP_DOMAIN_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_DOMAIN";
 const HONEYPOT_INTEROP_RDP_SECURITY_ENV: &str = "DGW_HONEYPOT_INTEROP_RDP_SECURITY";
 const HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV: &str = "DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS";
+const HONEYPOT_INTEROP_DRIVER_KIND_ENV: &str = "DGW_HONEYPOT_INTEROP_DRIVER_KIND";
 const HONEYPOT_INTEROP_XFREERDP_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_PATH";
 const HONEYPOT_INTEROP_XFREERDP_GFX_MODE_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_GFX_MODE";
 const HONEYPOT_INTEROP_XFREERDP_RDPGFX_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_RDPGFX";
@@ -129,6 +130,18 @@ static HONEYPOT_MANUAL_LAB_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
         .current_target()
         .run()
         .expect("build honeypot-manual-lab")
+        .path()
+        .to_path_buf()
+});
+
+static HONEYPOT_MANUAL_IRONRDP_DRIVER_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
+    escargot::CargoBuild::new()
+        .manifest_path(manual_lab_manifest_path("testsuite/Cargo.toml"))
+        .bin("honeypot-manual-irondrdp-driver")
+        .current_release()
+        .current_target()
+        .run()
+        .expect("build honeypot-manual-irondrdp-driver")
         .path()
         .to_path_buf()
 });
@@ -865,6 +878,8 @@ struct ManualLabInteropConfig {
     web_player_root: PathBuf,
     qemu_binary_path: PathBuf,
     kvm_path: PathBuf,
+    driver_kind: ManualLabDriverKind,
+    ironrdp_driver_path: PathBuf,
     xfreerdp_path: PathBuf,
     xfreerdp_graphics_mode: ManualLabXfreerdpGraphicsMode,
     ready_timeout_secs: u16,
@@ -873,6 +888,60 @@ struct ManualLabInteropConfig {
     rdp_domain: Option<String>,
     rdp_security: Option<String>,
     evidence: HoneypotInteropStoreEvidence,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualLabDriverKind {
+    Xfreerdp,
+    IronRdpNoGfx,
+}
+
+impl ManualLabDriverKind {
+    fn parse(value: &str) -> anyhow::Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "xfreerdp" | "control" => Ok(Self::Xfreerdp),
+            "ironrdp" | "ironrdp-no-gfx" | "ironrdp-no-rdpgfx" => Ok(Self::IronRdpNoGfx),
+            other => Err(anyhow::anyhow!(
+                "unsupported driver kind {other:?}; expected xfreerdp or ironrdp-no-gfx"
+            )),
+        }
+    }
+
+    fn kind_name(self) -> &'static str {
+        match self {
+            Self::Xfreerdp => "xfreerdp",
+            Self::IronRdpNoGfx => "ironrdp",
+        }
+    }
+
+    fn env_name(self) -> &'static str {
+        match self {
+            Self::Xfreerdp => "xfreerdp",
+            Self::IronRdpNoGfx => "ironrdp-no-gfx",
+        }
+    }
+
+    fn lane_name(self, xfreerdp_graphics_mode: ManualLabXfreerdpGraphicsMode) -> &'static str {
+        match self {
+            Self::Xfreerdp => xfreerdp_graphics_mode.lane_name(),
+            Self::IronRdpNoGfx => "ironrdp-no-rdpgfx",
+        }
+    }
+
+    fn is_control_lane(self, xfreerdp_graphics_mode: ManualLabXfreerdpGraphicsMode) -> bool {
+        match self {
+            Self::Xfreerdp => xfreerdp_graphics_mode.is_control_lane(),
+            Self::IronRdpNoGfx => false,
+        }
+    }
+
+    fn requires_display(self) -> bool {
+        matches!(self, Self::Xfreerdp)
+    }
+
+    fn enforces_single_session_gate(self) -> bool {
+        matches!(self, Self::IronRdpNoGfx)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1559,6 +1628,11 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
     let interop = readiness.interop;
     let chrome_binary = readiness.chrome_binary;
     let session_count = manual_lab_session_count_from_env()?;
+    ensure!(
+        !interop.driver_kind.enforces_single_session_gate() || session_count == 1,
+        "{} currently supports exactly one manual-lab session; rerun with {MANUAL_LAB_SESSION_COUNT_ENV}=1",
+        interop.driver_kind.lane_name(interop.xfreerdp_graphics_mode)
+    );
 
     let run_id = format!("manual-lab-{}", Uuid::new_v4().simple());
     let clean_state = build_black_screen_clean_state(&run_id);
@@ -1607,14 +1681,16 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
     persist_active_state(&state)?;
 
     let result = (|| -> anyhow::Result<ManualLabState> {
-        let driver_display = resolve_driver_display(&layout.logs_dir)?;
-        state.driver_display = driver_display.value.clone();
-        if let Some(xvfb) = driver_display.xvfb {
-            state.xvfb_pid = Some(xvfb.pid);
-            state.xvfb_stdout_log = Some(xvfb.stdout_log);
-            state.xvfb_stderr_log = Some(xvfb.stderr_log);
+        if interop.driver_kind.requires_display() {
+            let driver_display = resolve_driver_display(&layout.logs_dir)?;
+            state.driver_display = driver_display.value.clone();
+            if let Some(xvfb) = driver_display.xvfb {
+                state.xvfb_pid = Some(xvfb.pid);
+                state.xvfb_stdout_log = Some(xvfb.stdout_log);
+                state.xvfb_stderr_log = Some(xvfb.stderr_log);
+            }
+            persist_active_state(&state)?;
         }
-        persist_active_state(&state)?;
 
         write_three_host_manifests(&interop.evidence, &layout.manifests_dir)?;
         write_control_plane_service_token(&layout.control_plane_service_token_path)?;
@@ -1648,16 +1724,16 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
 
         let session_timeout = Duration::from_secs(u64::from(interop.ready_timeout_secs));
         for index in 0..state.sessions.len() {
-            let driver_args = xfreerdp_driver_args(
+            let driver_args = manual_lab_driver_args(
                 &state.sessions[index].session_id,
                 state.sessions[index].expected_guest_rdp_port,
                 state.ports.proxy_tcp,
-                interop.rdp_security.as_deref(),
-                interop.xfreerdp_graphics_mode,
+                &interop,
             );
-            state.sessions[index].driver_binary = Some(interop.xfreerdp_path.clone());
+            state.sessions[index].driver_binary = Some(manual_lab_driver_binary(&interop).to_path_buf());
             state.sessions[index].driver_args = driver_args.clone();
-            state.sessions[index].driver_lane = Some(interop.xfreerdp_graphics_mode.lane_name().to_owned());
+            state.sessions[index].driver_lane =
+                Some(interop.driver_kind.lane_name(interop.xfreerdp_graphics_mode).to_owned());
             persist_active_state(&state)?;
             eprintln!(
                 "manual lab phase=session.driver.spawn run_id={} slot={} session_id={}",
@@ -1665,7 +1741,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
             );
             let driver = {
                 let session = &state.sessions[index];
-                spawn_xfreerdp_driver(session, &interop, &state, &driver_args)?
+                spawn_manual_lab_driver(session, &interop, &state, &driver_args)?
             };
             state.sessions[index].xfreerdp_pid = Some(driver.pid);
             persist_active_state(&state)?;
@@ -2018,7 +2094,7 @@ fn teardown_internal(state: &ManualLabState) -> ManualLabTeardownReport {
         if let Some(pid) = session.xfreerdp_pid
             && let Err(error) = terminate_pid(pid, MANUAL_LAB_TEARDOWN_TIMEOUT)
         {
-            notes.push(format!("xfreerdp pid {pid}: {error:#}"));
+            notes.push(format!("driver pid {pid}: {error:#}"));
         }
     }
 
@@ -2535,21 +2611,62 @@ fn wait_for_services_ready(state: &ManualLabState, service_ready_timeout: Durati
     Ok(())
 }
 
-fn spawn_xfreerdp_driver(
+fn manual_lab_driver_binary(interop: &ManualLabInteropConfig) -> &Path {
+    match interop.driver_kind {
+        ManualLabDriverKind::Xfreerdp => &interop.xfreerdp_path,
+        ManualLabDriverKind::IronRdpNoGfx => &interop.ironrdp_driver_path,
+    }
+}
+
+fn spawn_manual_lab_driver(
     session: &ManualLabSessionRecord,
     interop: &ManualLabInteropConfig,
     state: &ManualLabState,
     driver_args: &[String],
 ) -> anyhow::Result<SpawnedProcess> {
-    spawn_logged_process_with_display(
-        &interop.xfreerdp_path,
-        driver_args,
-        &[],
-        &state.driver_display,
-        session.stdout_log.clone(),
-        session.stderr_log.clone(),
-    )
-    .with_context(|| format!("spawn xfreerdp driver for session {}", session.session_id))
+    match interop.driver_kind {
+        ManualLabDriverKind::Xfreerdp => spawn_logged_process_with_display(
+            &interop.xfreerdp_path,
+            driver_args,
+            &[],
+            &state.driver_display,
+            session.stdout_log.clone(),
+            session.stderr_log.clone(),
+        )
+        .with_context(|| format!("spawn xfreerdp driver for session {}", session.session_id)),
+        ManualLabDriverKind::IronRdpNoGfx => spawn_logged_process(
+            &interop.ironrdp_driver_path,
+            &driver_args.iter().map(OsString::from).collect::<Vec<_>>(),
+            &[],
+            session.stdout_log.clone(),
+            session.stderr_log.clone(),
+        )
+        .with_context(|| format!("spawn ironrdp driver for session {}", session.session_id)),
+    }
+}
+
+fn manual_lab_driver_args(
+    session_id: &str,
+    expected_guest_rdp_port: u16,
+    proxy_tcp_port: u16,
+    interop: &ManualLabInteropConfig,
+) -> Vec<String> {
+    match interop.driver_kind {
+        ManualLabDriverKind::Xfreerdp => xfreerdp_driver_args(
+            session_id,
+            expected_guest_rdp_port,
+            proxy_tcp_port,
+            interop.rdp_security.as_deref(),
+            interop.xfreerdp_graphics_mode,
+        ),
+        ManualLabDriverKind::IronRdpNoGfx => ironrdp_no_gfx_driver_args(
+            session_id,
+            expected_guest_rdp_port,
+            proxy_tcp_port,
+            interop.rdp_security.as_deref(),
+            &interop.rdp_domain,
+        ),
+    }
 }
 
 fn xfreerdp_driver_args(
@@ -2588,6 +2705,44 @@ fn xfreerdp_driver_args(
 
     if let Some(security) = rdp_security {
         args.push(format!("/sec:{security}"));
+    }
+
+    args
+}
+
+fn ironrdp_no_gfx_driver_args(
+    session_id: &str,
+    expected_guest_rdp_port: u16,
+    proxy_tcp_port: u16,
+    rdp_security: Option<&str>,
+    rdp_domain: &Option<String>,
+) -> Vec<String> {
+    let association_token = association_token(session_id, &format!("127.0.0.1:{expected_guest_rdp_port}"));
+    let mut args = vec![
+        "--host".to_owned(),
+        "127.0.0.1".to_owned(),
+        "--proxy-port".to_owned(),
+        proxy_tcp_port.to_string(),
+        "--username".to_owned(),
+        MANUAL_LAB_DRIVER_PROXY_USERNAME.to_owned(),
+        "--password".to_owned(),
+        MANUAL_LAB_DRIVER_PROXY_PASSWORD.to_owned(),
+        "--association-token".to_owned(),
+        association_token,
+        "--session-id".to_owned(),
+        session_id.to_owned(),
+        "--lifetime-secs".to_owned(),
+        "300".to_owned(),
+    ];
+
+    if let Some(domain) = rdp_domain {
+        args.push("--domain".to_owned());
+        args.push(domain.clone());
+    }
+
+    if let Some(security) = rdp_security {
+        args.push("--security".to_owned());
+        args.push(security.to_owned());
     }
 
     args
@@ -2914,6 +3069,8 @@ fn manual_lab_interop_config_from_evidence(
         web_player_root: paths.web_player_root.clone(),
         qemu_binary_path: paths.qemu_binary_path.clone(),
         kvm_path: paths.kvm_path.clone(),
+        driver_kind: manual_lab_driver_kind_from_env()?,
+        ironrdp_driver_path: paths.ironrdp_driver_path.clone(),
         xfreerdp_path: paths.xfreerdp_path.clone(),
         xfreerdp_graphics_mode: xfreerdp_graphics_mode_from_env()?,
         ready_timeout_secs: optional_env_string(HONEYPOT_INTEROP_READY_TIMEOUT_SECS_ENV)
@@ -2929,6 +3086,14 @@ fn manual_lab_interop_config_from_evidence(
     })
 }
 
+fn manual_lab_driver_kind_from_env() -> anyhow::Result<ManualLabDriverKind> {
+    let Some(value) = optional_env_string(HONEYPOT_INTEROP_DRIVER_KIND_ENV) else {
+        return Ok(ManualLabDriverKind::Xfreerdp);
+    };
+
+    ManualLabDriverKind::parse(&value).with_context(|| format!("parse {HONEYPOT_INTEROP_DRIVER_KIND_ENV}"))
+}
+
 fn manual_lab_service_ready_timeout(interop_ready_timeout_secs: u16) -> Duration {
     Duration::from_secs(u64::from(
         interop_ready_timeout_secs.max(MANUAL_LAB_SERVICE_READY_TIMEOUT_FLOOR_SECS),
@@ -2942,6 +3107,8 @@ struct ManualLabInteropPaths {
     web_player_root: PathBuf,
     qemu_binary_path: PathBuf,
     kvm_path: PathBuf,
+    driver_kind: ManualLabDriverKind,
+    ironrdp_driver_path: PathBuf,
     xfreerdp_path: PathBuf,
 }
 
@@ -2955,6 +3122,8 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
     let qemu_binary_path = optional_env_path(HONEYPOT_INTEROP_QEMU_BINARY_ENV)
         .unwrap_or_else(|| PathBuf::from("/usr/bin/qemu-system-x86_64"));
     let kvm_path = optional_env_path(HONEYPOT_INTEROP_KVM_PATH_ENV).unwrap_or_else(|| PathBuf::from("/dev/kvm"));
+    let driver_kind = manual_lab_driver_kind_from_env().unwrap_or(ManualLabDriverKind::Xfreerdp);
+    let ironrdp_driver_path = HONEYPOT_MANUAL_IRONRDP_DRIVER_BIN_PATH.clone();
     let xfreerdp_path =
         optional_env_path(HONEYPOT_INTEROP_XFREERDP_PATH_ENV).unwrap_or_else(|| PathBuf::from("xfreerdp"));
 
@@ -2964,6 +3133,8 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
         web_player_root,
         qemu_binary_path,
         kvm_path,
+        driver_kind,
+        ironrdp_driver_path,
         xfreerdp_path,
     }
 }
@@ -2989,6 +3160,24 @@ fn manual_lab_bootstrap_import_lock_held(detail: &str) -> bool {
 }
 
 fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateInputs {
+    let driver_runtime_input = match paths.driver_kind {
+        ManualLabDriverKind::Xfreerdp => Tiny11LabRuntimeInput::existing_command(
+            format!(
+                "{HONEYPOT_INTEROP_XFREERDP_PATH_ENV} ({})",
+                paths.xfreerdp_path.display()
+            ),
+            paths.xfreerdp_path.clone(),
+        ),
+        ManualLabDriverKind::IronRdpNoGfx => Tiny11LabRuntimeInput::existing_path(
+            format!(
+                "{HONEYPOT_INTEROP_DRIVER_KIND_ENV}={} ({})",
+                paths.driver_kind.kind_name(),
+                paths.ironrdp_driver_path.display()
+            ),
+            paths.ironrdp_driver_path.clone(),
+        ),
+    };
+
     Tiny11LabGateInputs {
         image_store_root: paths.image_store.clone(),
         manifest_dir: paths.manifest_dir.clone(),
@@ -3019,13 +3208,7 @@ fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateI
                 format!("{HONEYPOT_INTEROP_KVM_PATH_ENV} ({})", paths.kvm_path.display()),
                 paths.kvm_path.clone(),
             ),
-            Tiny11LabRuntimeInput::existing_command(
-                format!(
-                    "{HONEYPOT_INTEROP_XFREERDP_PATH_ENV} ({})",
-                    paths.xfreerdp_path.display()
-                ),
-                paths.xfreerdp_path.clone(),
-            ),
+            driver_runtime_input,
             Tiny11LabRuntimeInput::existing_path(
                 format!(
                     "{GATEWAY_WEBPLAYER_PATH_ENV} ({})",
@@ -4038,6 +4221,7 @@ fn collect_black_screen_env_snapshot() -> BTreeMap<String, String> {
         MANUAL_LAB_SESSION_COUNT_ENV,
         HONEYPOT_BS_ROWS_ENV,
         MANUAL_LAB_SELECTED_SOURCE_MANIFEST_ENV,
+        HONEYPOT_INTEROP_DRIVER_KIND_ENV,
         HONEYPOT_INTEROP_IMAGE_STORE_ENV,
         HONEYPOT_INTEROP_MANIFEST_DIR_ENV,
         HONEYPOT_INTEROP_QEMU_BINARY_ENV,
@@ -4092,20 +4276,24 @@ fn build_black_screen_evidence(
     run_root: &Path,
     session_count: usize,
 ) -> ManualLabBlackScreenEvidence {
+    let mut env = collect_black_screen_env_snapshot();
+    env.entry(HONEYPOT_INTEROP_DRIVER_KIND_ENV.to_owned())
+        .or_insert_with(|| interop.driver_kind.env_name().to_owned());
+
     ManualLabBlackScreenEvidence {
         git_rev: detect_git_rev(),
         bs_rows: parse_bs_rows_from_env(),
-        driver_kind: "xfreerdp".to_owned(),
-        driver_lane: interop.xfreerdp_graphics_mode.lane_name().to_owned(),
-        driver_binary: interop.xfreerdp_path.clone(),
-        driver_version: probe_command_version(&interop.xfreerdp_path, &["/version", "--version"]),
+        driver_kind: interop.driver_kind.kind_name().to_owned(),
+        driver_lane: interop.driver_kind.lane_name(interop.xfreerdp_graphics_mode).to_owned(),
+        driver_binary: manual_lab_driver_binary(interop).to_path_buf(),
+        driver_version: probe_command_version(manual_lab_driver_binary(interop), &["--version", "/version"]),
         session_count,
         artifact_root: run_root.to_path_buf(),
-        is_control_lane: interop.xfreerdp_graphics_mode.is_control_lane(),
+        is_control_lane: interop.driver_kind.is_control_lane(interop.xfreerdp_graphics_mode),
         clean_state: ManualLabBlackScreenCleanStateEvidence::default(),
         artifacts: ManualLabBlackScreenArtifactPaths::default(),
         teardown_started_at_unix_ms: None,
-        env: collect_black_screen_env_snapshot(),
+        env,
         session_invocations: Vec::new(),
     }
 }
@@ -4257,11 +4445,7 @@ fn build_manual_lab_fastpath_warning_summary(
     unattributed_warning_count: u64,
     correlation: &ManualLabSessionPlaybackReadyCorrelation,
     aligned_ready_baseline_warn_codes: &BTreeSet<String>,
-) -> Option<ManualLabSessionFastPathWarningSummary> {
-    if events.is_empty() && unattributed_warning_count == 0 {
-        return None;
-    }
-
+) -> ManualLabSessionFastPathWarningSummary {
     let mut summary = ManualLabSessionFastPathWarningSummary {
         schema_version: MANUAL_LAB_FASTPATH_WARNING_SCHEMA_VERSION,
         with_session_id_count: events
@@ -4347,7 +4531,7 @@ fn build_manual_lab_fastpath_warning_summary(
         ManualLabFastPathWarningEvidence::Uncertain
     };
 
-    Some(summary)
+    summary
 }
 
 fn build_manual_lab_playback_bootstrap_timeline(
@@ -5188,7 +5372,7 @@ fn persist_black_screen_evidence(
                     playback_bootstrap_timeline,
                     playback_ready_correlation,
                     gfx_filter_summary,
-                    fastpath_warning_summary,
+                    fastpath_warning_summary: Some(fastpath_warning_summary),
                     gfx_warning_summary,
                     black_screen_branch,
                 }
@@ -5351,18 +5535,19 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ManualLabBlackScreenBranchVerdict, ManualLabEvidenceConfidence, ManualLabFastPathWarningEvent,
-        ManualLabFastPathWarningEvidence, ManualLabPlaybackBootstrapVerdict, ManualLabPlaybackReadyVerdict,
-        ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
-        ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode, association_token,
-        build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
+        ManualLabBlackScreenBranchVerdict, ManualLabDriverKind, ManualLabEvidenceConfidence,
+        ManualLabFastPathWarningEvent, ManualLabFastPathWarningEvidence, ManualLabPlaybackBootstrapVerdict,
+        ManualLabPlaybackReadyVerdict, ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary,
+        ManualLabSessionPlaybackBootstrapEvent, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
+        association_token, build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
         build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_bootstrap_timeline,
         build_manual_lab_playback_ready_correlation, build_session_records,
         discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
-        evaluate_manual_lab_source_manifest_candidate, manual_lab_manifest_path, manual_lab_service_ready_timeout,
-        parse_manual_lab_fastpath_warning_line, parse_manual_lab_gfx_filter_summary_line,
-        parse_manual_lab_gfx_warning_summary_line, parse_manual_lab_playback_bootstrap_trace_line,
-        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, xfreerdp_driver_args,
+        evaluate_manual_lab_source_manifest_candidate, ironrdp_no_gfx_driver_args, manual_lab_manifest_path,
+        manual_lab_service_ready_timeout, parse_manual_lab_fastpath_warning_line,
+        parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
+        parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_ready_trace_line,
+        parse_proc_stat_process_state, xfreerdp_driver_args,
     };
 
     fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
@@ -5661,8 +5846,7 @@ mod tests {
             0,
             &correlation,
             &BTreeSet::from(["fastpath_process_server_frame_error".to_owned()]),
-        )
-        .expect("summary should exist");
+        );
 
         assert_eq!(summary.total_warning_count, 1);
         assert_eq!(summary.known_noise_count, 1);
@@ -5694,8 +5878,7 @@ mod tests {
             0,
             &correlation,
             &BTreeSet::new(),
-        )
-        .expect("summary should exist");
+        );
 
         assert_eq!(summary.known_noise_count, 0);
         assert_eq!(summary.candidate_root_cause_count, 1);
@@ -5703,6 +5886,25 @@ mod tests {
             summary.overall_evidence,
             ManualLabFastPathWarningEvidence::CandidateRootCause
         );
+    }
+
+    #[test]
+    fn manual_lab_emits_zero_fastpath_warning_summary_when_no_events_exist() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(Vec::new());
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            Vec::new(),
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_010),
+        );
+        let summary = build_manual_lab_fastpath_warning_summary(&[], 0, &correlation, &BTreeSet::new());
+
+        assert_eq!(summary.schema_version, 1);
+        assert_eq!(summary.total_warning_count, 0);
+        assert_eq!(summary.with_session_id_count, 0);
+        assert_eq!(summary.without_session_id_count, 0);
+        assert_eq!(summary.overall_evidence, ManualLabFastPathWarningEvidence::Uncertain);
     }
 
     #[test]
@@ -6189,6 +6391,43 @@ mod tests {
         assert_eq!(
             ManualLabXfreerdpGraphicsMode::parse("progressive").expect("parse progressive"),
             ManualLabXfreerdpGraphicsMode::Progressive
+        );
+    }
+
+    #[test]
+    fn manual_lab_driver_kind_parser_accepts_supported_values() {
+        assert_eq!(
+            ManualLabDriverKind::parse("xfreerdp").expect("parse xfreerdp"),
+            ManualLabDriverKind::Xfreerdp
+        );
+        assert_eq!(
+            ManualLabDriverKind::parse("ironrdp").expect("parse ironrdp"),
+            ManualLabDriverKind::IronRdpNoGfx
+        );
+        assert_eq!(
+            ManualLabDriverKind::parse("ironrdp-no-rdpgfx").expect("parse ironrdp-no-rdpgfx"),
+            ManualLabDriverKind::IronRdpNoGfx
+        );
+    }
+
+    #[test]
+    fn manual_lab_irondrdp_driver_args_include_association_token() {
+        let args = ironrdp_no_gfx_driver_args(
+            "642e76af-caa3-487b-b3ed-8abe864a7bc9",
+            3391,
+            3389,
+            Some("nla"),
+            &Some("LAB".to_owned()),
+        );
+
+        assert!(args.windows(2).any(|window| window == ["--host", "127.0.0.1"]));
+        assert!(args.windows(2).any(|window| window == ["--proxy-port", "3389"]));
+        assert!(args.windows(2).any(|window| window == ["--security", "nla"]));
+        assert!(args.windows(2).any(|window| window == ["--domain", "LAB"]));
+        assert!(args.windows(2).any(|window| window[0] == "--association-token"));
+        assert!(
+            args.windows(2)
+                .any(|window| window == ["--session-id", "642e76af-caa3-487b-b3ed-8abe864a7bc9"])
         );
     }
 

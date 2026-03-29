@@ -1114,14 +1114,18 @@ Current evidence after the first control-minus proof: the opt-in lane recorded `
 - [ ] `BS-23` Try an explicit `xfreerdp` `Rfx` or similarly scoped codec variant only after the control-minus result is archived.
 Pass when: the exact codec flags, lane identity, and comparison result are recorded so the repo never reopens a vague "maybe `Rfx` helps" experiment without evidence.
 
-- [ ] `BS-24` Add an opt-in IronRDP lane that intentionally omits `RdpgfxClient`.
+- [x] `BS-24` Add an opt-in IronRDP lane that intentionally omits `RdpgfxClient`.
 Pass when: manual-lab can launch an IronRDP client lane on demand, the lane stays opt-in, and the evidence proves whether `rdpgfx` really stayed off for that run.
+Current evidence after the first matched IronRDP no-gfx proof: manual-lab can now launch the repo-owned `honeypot-manual-irondrdp-driver` on demand with `DGW_HONEYPOT_INTEROP_DRIVER_KIND=ironrdp-no-gfx`, and the teardown-flushed proof run `manual-lab-eb0834bc52804af28e579f6f1979d20f` recorded `driver_lane=ironrdp-no-rdpgfx`, `rdpegfx_pdu_count=0`, zero emitted surface updates, and `black_screen_branch=negotiation_loss`. The paired proxy logs for that run also showed the wrapped graphics extractor stayed at `rdpgfx_dynamic_channel_open_count=0`, which is the direct evidence that this lane really kept graphics negotiation off in this path.
+Current evidence after the normalized post-patch proof: the opt-in lane `manual-lab-a31508115dbf48a693f636e1359123f3` again launched the repo-owned `honeypot-manual-irondrdp-driver` with `DGW_HONEYPOT_INTEROP_DRIVER_KIND=ironrdp-no-gfx`, and the teardown-flushed evidence plus proxy summaries again showed `driver_lane=ironrdp-no-rdpgfx`, `rdpgfx_dynamic_channel_open_count=0`, `rdpegfx_pdu_count=0`, zero emitted surface updates, and `black_screen_branch=negotiation_loss`.
 
 - [ ] `BS-25` Add an opt-in IronRDP comparison lane with normal negotiated graphics.
 Pass when: the repo can compare IronRDP with and without graphics capability under the same artifact contract instead of assuming the client swap alone explains any visual difference.
 
-- [ ] `BS-26` Keep the evidence contract identical across all driver lanes.
+- [x] `BS-26` Keep the evidence contract identical across all driver lanes.
 Pass when: control and variant runs always capture the same logs, counters, websocket outcomes, artifacts, and verdict fields so comparisons stay apples-to-apples.
+Current evidence after the matched control and IronRDP reruns: the explicit control run `manual-lab-50bc4d617e1c481d8b47ef6c4035f38e` and the explicit IronRDP no-gfx run `manual-lab-eb0834bc52804af28e579f6f1979d20f` now expose identical top-level and per-session evidence keys, including deterministic `fastpath_warning_summary` objects even when warning counts are zero. Both runs captured the same artifact families, stream-probe outcomes, playback timelines, GFX summaries, warning summaries, and branch verdict fields, leaving only the populated values different (`rdpegfx_pdu_count=1065` versus `0`, `player_loss` versus `negotiation_loss`) instead of the comparison contract itself.
+Current evidence after the serializer hardening reruns: the control run `manual-lab-11a01160e2e14918895e2af5e469b799` and the IronRDP no-gfx run `manual-lab-a31508115dbf48a693f636e1359123f3` now both emit explicit `DGW_HONEYPOT_INTEROP_DRIVER_KIND` values plus deterministic `fastpath_warning_summary`, `gfx_filter_summary`, `gfx_warning_summary`, `playback_ready_correlation`, and `black_screen_branch` objects. The remaining differences are value-level comparisons like warning-code contents and negotiation counters (`rdpegfx_pdu_count=1203` versus `0`), not missing evidence families.
 
 - [ ] `BS-27` Promote a new default control lane only if the variant wins on both protocol proof and visible output.
 Pass when: the candidate lane shows reproducible visual improvement, proves whether `rdpgfx` was really on or off, preserves truthful negative-path behavior, and does not regress session assignment or teardown semantics.
