@@ -1103,3 +1103,83 @@ fn honeypot_docs_keep_proxy_capture_fallback_gate_canonical() {
         "`testsuite/tests/honeypot_docs.rs` now enforces the canonical `BS-39` blocker record in [decisions.md](decisions.md), so control-plane-assisted capture fallback cannot open without an explicit proxy-seam rejection after the required exhausted lanes are recorded.",
     );
 }
+
+#[test]
+fn honeypot_docs_keep_black_screen_runbook_contract_canonical() {
+    let runbook_path = "docs/honeypot/runbook.md";
+    let runbook = read_repo_text(runbook_path);
+    assert_contains(runbook_path, &runbook, "## Black-Screen Experiment Contract");
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "`docs/honeypot/runbook.md` is the single operator-facing authority for black-screen experiment order and artifact naming.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "`ManualLabBlackScreenEvidence`, `build_manual_lab_black_screen_run_verdict_summary`, `build_manual_lab_black_screen_control_run_comparison_summary`, and `build_manual_lab_black_screen_do_not_retry_ledger` in `testsuite/src/honeypot_manual_lab.rs`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Across runs, the required experiment order is `control -> variant -> compare`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Within each run, keep the existing manual-lab command order `ensure-artifacts -> preflight -> up -> status -> down`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Control runs must keep the emitted baseline lane `driver_lane=xfreerdp-control-default`, keep `is_control_lane=true`, and archive the finished run root before any variant lane opens.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "the current sanctioned names are `xfreerdp-control-default`, `xfreerdp-no-gfx`, `xfreerdp-rfx`, `xfreerdp-progressive`, and `ironrdp-no-rdpgfx`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Variant runs must set `DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT=<control-run-root>` so `control_run_comparison_summary` can require same-day sibling control evidence before the result is treated as meaningful.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Tag each run with `DGW_HONEYPOT_BS_ROWS`, and tag every non-green retry candidate with `DGW_HONEYPOT_BS_HYPOTHESIS_ID`, `DGW_HONEYPOT_BS_HYPOTHESIS_TEXT`, and `DGW_HONEYPOT_BS_RETRY_CONDITION` so the persisted `do_not_retry_ledger` stays machine-checkable.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Run-level artifacts live under `artifacts/` and must retain `black-screen-evidence.json`, `black-screen-verdict.md`, `player-console.ndjson`, `player-websocket.ndjson`, `player-http.ndjson`, `stream-http.json`, and `session-events.json`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Session-local black-screen evidence keeps `recording-*.webm`, `recording-visibility-summary.json`, and `recording-visibility-at-browser-time-summary.json`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Preserve any active-path `recording.json` fallback fetch evidence in `player-http.ndjson` instead of inventing a second ad hoc dump filename.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The top-level verdict surface is `run_verdict_summary.verdict`, and the only accepted tokens are `usable_playback`, `producer_ready_but_corruption_unresolved`, and `contract_violation_or_missing_proof`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Control comparison is meaningful for variant lanes only when `control_run_comparison_summary.verdict=meaningful_with_same_day_control`; the control lane itself records `not_required_for_control_lane`.",
+    );
+
+    let testing_path = "docs/honeypot/testing.md";
+    let testing = read_repo_text(testing_path);
+    assert_contains(
+        testing_path,
+        &testing,
+        "[runbook.md](runbook.md) now carries the canonical black-screen experiment order and artifact naming contract, and `testsuite/tests/honeypot_docs.rs` fails closed if that section drifts away from the reducer-owned names, filenames, or verdict tokens.",
+    );
+}

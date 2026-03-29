@@ -290,6 +290,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - Chrome opens automatically by default when `up` succeeds.
 - Pass `--no-browser` to leave the deck running without opening Chrome, and set `DGW_HONEYPOT_MANUAL_LAB_CHROME` or `DGW_HONEYPOT_MANUAL_LAB_XVFB` if your host needs non-default binary paths.
 - A full live-proof run remains separate from the contract-tier tests because it needs an operator host with isolated helper-display support such as `Xvfb`, or the helper `xfreerdp` sessions will render on the active desktop.
+- [runbook.md](runbook.md) now carries the canonical black-screen experiment order and artifact naming contract, and `testsuite/tests/honeypot_docs.rs` fails closed if that section drifts away from the reducer-owned names, filenames, or verdict tokens.
 
 ## Tiny11 Production And Recycle Evidence
 

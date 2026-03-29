@@ -1185,11 +1185,13 @@ Current evidence after the control-comparison reducer: `testsuite/src/honeypot_m
 Pass when: fallback capture work cannot open until the repo records why the proxy-owned `/jet/jrec/push/{session_id}` seam was insufficient even after the instrumentation-first and non-RDPGFX lanes were exhausted.
 Current evidence after the blocker-record lock: `docs/honeypot/decisions.md` now holds the single canonical `BS-39` gate, with the proxy-owned `/jet/jrec/push/{session_id}` seam recorded separately from the current fallback rejection reason and the required exhausted lanes `instrumentation-first` plus `non-RDPGFX`. `docs/honeypot/testing.md` points at that record as enforcement evidence, and `testsuite/tests/honeypot_docs.rs` now proves the row fails closed if any one of those fields or the `fallback_status=blocked` state disappears.
 
-- [ ] `BS-40` Add a short runbook for black-screen experiment order and artifact naming.
+- [x] `BS-40` Add a short runbook for black-screen experiment order and artifact naming.
 Pass when: AGENTS or the linked docs name the command order, lane naming, artifact filenames, and verdict format that each row expects so future runs do not improvise new layouts.
+Current evidence after the canonical runbook contract: `docs/honeypot/runbook.md` now carries one authoritative `Black-Screen Experiment Contract` section that names the required `control -> variant -> compare` order, the existing per-run command order `ensure-artifacts -> preflight -> up -> status -> down`, the sanctioned emitted lane names, the persisted `artifacts/` filenames, the session-local recording artifact names, and the accepted top-level verdict tokens. `docs/honeypot/testing.md` now points back to that section instead of duplicating the rule set, and `testsuite/tests/honeypot_docs.rs` now fails closed if the reducer-owned identifiers, filenames, or verdict vocabulary drift.
 
-- [ ] `BS-41` Keep baseline Rust verification green after every accepted black-screen change.
+- [x] `BS-41` Keep baseline Rust verification green after every accepted black-screen change.
 Pass when: any change that clears one or more `BS-*` rows still ends with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests` staying green unless the run bundle records a known unrelated blocker.
+Current evidence after the acceptance-gate lock: the accepted `BS-40` patch ends with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`, and the run bundle records no unrelated blocker. Black-screen rows now treat that baseline Rust trio as an explicit acceptance gate rather than an implied habit.
 
 ## Verification Matrix
 

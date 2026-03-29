@@ -245,6 +245,22 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - Use the host-process manual deck only for the live three-host observation workflow.
 - Treat isolated helper-display support such as `Xvfb` as the preferred operator-host shape for a real live-proof run so the three helper RDP clients do not steal focus on the operator desktop.
 
+## Black-Screen Experiment Contract
+
+- `docs/honeypot/runbook.md` is the single operator-facing authority for black-screen experiment order and artifact naming.
+- This section is anchored to `ManualLabBlackScreenEvidence`, `build_manual_lab_black_screen_run_verdict_summary`, `build_manual_lab_black_screen_control_run_comparison_summary`, and `build_manual_lab_black_screen_do_not_retry_ledger` in `testsuite/src/honeypot_manual_lab.rs`.
+- Across runs, the required experiment order is `control -> variant -> compare`.
+- Within each run, keep the existing manual-lab command order `ensure-artifacts -> preflight -> up -> status -> down`.
+- Control runs must keep the emitted baseline lane `driver_lane=xfreerdp-control-default`, keep `is_control_lane=true`, and archive the finished run root before any variant lane opens.
+- Variant runs must use emitted `driver_lane` values only and must not invent ad hoc labels; the current sanctioned names are `xfreerdp-control-default`, `xfreerdp-no-gfx`, `xfreerdp-rfx`, `xfreerdp-progressive`, and `ironrdp-no-rdpgfx`.
+- Variant runs must set `DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT=<control-run-root>` so `control_run_comparison_summary` can require same-day sibling control evidence before the result is treated as meaningful.
+- Tag each run with `DGW_HONEYPOT_BS_ROWS`, and tag every non-green retry candidate with `DGW_HONEYPOT_BS_HYPOTHESIS_ID`, `DGW_HONEYPOT_BS_HYPOTHESIS_TEXT`, and `DGW_HONEYPOT_BS_RETRY_CONDITION` so the persisted `do_not_retry_ledger` stays machine-checkable.
+- Run-level artifacts live under `artifacts/` and must retain `black-screen-evidence.json`, `black-screen-verdict.md`, `player-console.ndjson`, `player-websocket.ndjson`, `player-http.ndjson`, `stream-http.json`, and `session-events.json`.
+- Session-local black-screen evidence keeps `recording-*.webm`, `recording-visibility-summary.json`, and `recording-visibility-at-browser-time-summary.json`.
+- Preserve any active-path `recording.json` fallback fetch evidence in `player-http.ndjson` instead of inventing a second ad hoc dump filename.
+- The top-level verdict surface is `run_verdict_summary.verdict`, and the only accepted tokens are `usable_playback`, `producer_ready_but_corruption_unresolved`, and `contract_violation_or_missing_proof`.
+- Control comparison is meaningful for variant lanes only when `control_run_comparison_summary.verdict=meaningful_with_same_day_control`; the control lane itself records `not_required_for_control_lane`.
+
 ## Routine Observation
 
 - The frontend dashboard is the preferred operator surface for live sessions.
