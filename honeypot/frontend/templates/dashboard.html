@@ -249,6 +249,7 @@
       const bootSessionId = {{ boot_session_id_json|safe }};
       const operatorToken = {{ operator_token_json|safe }};
       let reconnectTimer = null;
+      let focusRetryTimer = null;
       const cursorNode = document.getElementById("cursor-value");
       const tileGrid = document.getElementById("tile-grid");
       const focusPanel = document.getElementById("focus-panel");
@@ -296,22 +297,56 @@
         return focusPanel.querySelector("[data-focused-session-id]")?.getAttribute("data-focused-session-id") || null;
       }
 
+      function clearFocusRetry() {
+        if (focusRetryTimer !== null) {
+          window.clearTimeout(focusRetryTimer);
+          focusRetryTimer = null;
+        }
+      }
+
+      function scheduleFocusRetry(sessionId) {
+        clearFocusRetry();
+        focusRetryTimer = window.setTimeout(() => {
+          focusRetryTimer = null;
+          if (currentFocusedSessionId() && currentFocusedSessionId() !== sessionId) {
+            return;
+          }
+          refreshFocus(sessionId).catch(() => scheduleFocusRetry(sessionId));
+        }, 1500);
+      }
+
+      function syncFocusRetry(sessionId) {
+        if (!sessionId || currentFocusedSessionId() !== sessionId) {
+          clearFocusRetry();
+          return;
+        }
+        if (focusPanel.querySelector(".stream-frame")) {
+          clearFocusRetry();
+          return;
+        }
+        scheduleFocusRetry(sessionId);
+      }
+
       async function refreshFocus(sessionId) {
         const html = await fetchHtml(`/session/${encodeURIComponent(sessionId)}`);
         const activeFocusId = currentFocusedSessionId();
         if (activeFocusId && activeFocusId !== sessionId) {
+          clearFocusRetry();
           return;
         }
         if (html === null) {
+          clearFocusRetry();
           focusPanel.innerHTML = `<div class="focus-empty">Session ${sessionId} is no longer available.</div>`;
           return;
         }
         focusPanel.innerHTML = html;
+        syncFocusRetry(sessionId);
       }
 
       function dropTile(sessionId, message) {
         document.getElementById(`session-tile-${sessionId}`)?.remove();
         if (currentFocusedSessionId() === sessionId) {
+          clearFocusRetry();
           focusPanel.innerHTML = `<div class="focus-empty">${message}</div>`;
         }
       }
@@ -380,8 +415,16 @@
       if (bootSessionId) {
         refreshFocus(bootSessionId).catch(() => {
           focusPanel.innerHTML = `<div class="focus-empty">The initial session focus could not be loaded yet.</div>`;
+          scheduleFocusRetry(bootSessionId);
         });
       }
+
+      document.body.addEventListener("htmx:afterSwap", (event) => {
+        if (event.detail?.target !== focusPanel) {
+          return;
+        }
+        syncFocusRetry(currentFocusedSessionId());
+      });
 
       connectEvents();
     })();

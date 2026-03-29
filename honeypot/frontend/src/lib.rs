@@ -1580,5 +1580,7 @@ mod tests {
 
         assert!(html.contains("const bootSessionId = \"session-1\";"), "{html}");
         assert!(html.contains("refreshFocus(bootSessionId)"), "{html}");
+        assert!(html.contains("function scheduleFocusRetry(sessionId)"), "{html}");
+        assert!(html.contains("document.body.addEventListener(\"htmx:afterSwap\""), "{html}");
     }
 }
