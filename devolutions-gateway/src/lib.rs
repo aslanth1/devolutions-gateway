@@ -31,7 +31,9 @@ pub mod ngrok;
 pub mod plugin_manager;
 pub mod proxy;
 pub mod rd_clean_path;
+pub mod rdp_gfx;
 pub mod rdp_pcb;
+pub mod rdp_playback;
 pub mod rdp_proxy;
 pub mod recording;
 pub mod session;
@@ -42,6 +44,7 @@ pub mod tls;
 pub mod token;
 pub mod traffic_audit;
 pub mod utils;
+pub mod wrapped_gfx;
 pub mod ws;
 
 use std::sync::Arc;

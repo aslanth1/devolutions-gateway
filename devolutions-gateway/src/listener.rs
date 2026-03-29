@@ -1,4 +1,5 @@
 use std::net::{SocketAddr, ToSocketAddrs as _};
+use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
@@ -149,6 +150,7 @@ async fn handle_tcp_peer(stream: TcpStream, state: DgwState, peer_addr: SocketAd
         [b'J', b'E', b'T', b'\0'] => anyhow::bail!("not yet supported"),
         [b'J', b'M', b'U', b'X'] => anyhow::bail!("not yet supported"),
         _ => {
+            let recordings = state.recordings;
             GenericClient::builder()
                 .conf(state.conf_handle.get_conf())
                 .client_addr(peer_addr)
@@ -157,7 +159,8 @@ async fn handle_tcp_peer(stream: TcpStream, state: DgwState, peer_addr: SocketAd
                 .jrl(state.jrl)
                 .sessions(state.sessions)
                 .subscriber_tx(state.subscriber_tx)
-                .active_recordings(state.recordings.active_recordings)
+                .active_recordings(Arc::clone(&recordings.active_recordings))
+                .recordings(recordings)
                 .credential_store(state.credential_store)
                 .build()
                 .serve()

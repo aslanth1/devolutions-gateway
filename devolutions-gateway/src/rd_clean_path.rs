@@ -464,8 +464,14 @@ async fn handle_with_credential_injection(
 
     // -- Intercept the Connect Confirm PDU, to override the server_security_protocol field -- //
 
-    crate::rdp_proxy::intercept_connect_confirm(&mut client_framed, &mut server_framed, server_security_protocol)
-        .await?;
+    crate::rdp_proxy::intercept_connect_confirm(
+        &mut client_framed,
+        &mut server_framed,
+        server_security_protocol,
+        None,
+        uuid::Uuid::nil(),
+    )
+    .await?;
 
     let (mut client_stream, client_leftover) = client_framed.into_inner();
     let (mut server_stream, server_leftover) = server_framed.into_inner();

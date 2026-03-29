@@ -999,28 +999,28 @@ Pass when: the runbook and testing docs explain the `index.html` plus `assets/` 
 
 ### Milestone 6u: Real JREC Producer Playback
 
-- [ ] Lock the canonical real-playback seam to the existing proxy-owned JREC path before any alternate capture work begins.
+- [x] Lock the canonical real-playback seam to the existing proxy-owned JREC path before any alternate capture work begins.
 Pass when: the task plan names `rdp_proxy.rs` plus `session.rs` plus `recording.rs` plus `jrec.rs` as the preferred producer seam for honeypot RDP playback, explicitly keeps `/jet/jrec/push/{session_id}` as the producer contract, and marks any control-plane-assisted display capture as fallback-only pending an explicit rejection of the proxy seam.
 
-- [ ] Preserve the current negative-path contract while real playback is added.
+- [x] Preserve the current negative-path contract while real playback is added.
 Pass when: targeted tests keep `503 honeypot stream is unavailable`, `session.stream.failed`, and `ErrorCode::StreamUnavailable` as the expected result whenever no active JREC producer exists, so playback work cannot regress back into fake live bindings.
 
-- [ ] Identify one producer bootstrap hook and one producer teardown hook in the existing proxy session lifecycle.
+- [x] Identify one producer bootstrap hook and one producer teardown hook in the existing proxy session lifecycle.
 Pass when: one documented lifecycle point in `rdp_proxy.rs` or `session.rs` owns producer start after honeypot RDP session assignment is stable, one teardown path owns producer stop on disconnect or kill or recycle, and the implementation avoids duplicate start paths.
 
-- [ ] Start a real JREC push writer for honeypot RDP sessions through the current recording stack.
+- [x] Start a real JREC push writer for honeypot RDP sessions through the current recording stack.
 Pass when: an assigned honeypot RDP session can create a producer on `/jet/jrec/push/{session_id}` with a file type compatible with the current player contract and without introducing a new runtime service or parallel stream API.
 
-- [ ] Gate `session.stream.ready` on recording-manager proof rather than on stream intent.
+- [x] Gate `session.stream.ready` on recording-manager proof rather than on stream intent.
 Pass when: honeypot stream metadata transitions to ready only after `active_recordings` contains the session and `OnGoingRecordingState::Connected` is observed for that recording, while failed or timed-out producer startup continues to emit explicit failure state.
 
-- [ ] Clear producer state and stale metadata on every terminal session path.
+- [x] Clear producer state and stale metadata on every terminal session path.
 Pass when: disconnect, operator kill, recycle, producer abort, and token-expiry paths all close the producer, clear stale `stream_id` or endpoint metadata, and prevent `/jet/jrec/shadow/{session_id}` from reusing dead state.
 
 - [ ] Add positive ready-path tests for real playback alongside the existing failure-path tests.
 Pass when: tests in `testsuite/tests/` prove both the preserved `stream unavailable` contract and a new producer-ready contract where `/jet/jrec/play/?isActive=true` no longer immediately falls back to `recording.json` 404 for an active honeypot RDP session.
 
-- [ ] Add a manual-lab proof that observes at least one true live-ready session.
+- [x] Add a manual-lab proof that observes at least one true live-ready session.
 Pass when: a sanctioned `manual-lab` proof run records at least one `session.stream.ready` event, the active player remains attached without immediate `StreamingEnded` for that session, and any still-unavailable sessions remain explicitly truthful instead of regressing to fake live behavior.
 
 - [ ] Bound any control-plane-assisted capture fallback behind an explicit rejection gate.

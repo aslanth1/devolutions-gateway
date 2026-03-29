@@ -1,3 +1,4 @@
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
@@ -228,6 +229,7 @@ async fn run_tcp_tunnel(mut tunnel: ngrok::tunnel::TcpTunnel, state: DgwState) {
                 let peer_addr = conn.remote_addr();
 
                 let fut = async move {
+                    let recordings = state.recordings;
                     if let Err(e) = GenericClient::builder()
                         .conf(state.conf_handle.get_conf())
                         .client_addr(peer_addr)
@@ -236,7 +238,8 @@ async fn run_tcp_tunnel(mut tunnel: ngrok::tunnel::TcpTunnel, state: DgwState) {
                         .jrl(state.jrl)
                         .sessions(state.sessions)
                         .subscriber_tx(state.subscriber_tx)
-                        .active_recordings(state.recordings.active_recordings)
+                        .active_recordings(Arc::clone(&recordings.active_recordings))
+                        .recordings(recordings)
                         .credential_store(state.credential_store)
                         .build()
                         .serve()

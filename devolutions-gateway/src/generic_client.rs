@@ -10,7 +10,7 @@ use crate::config::Conf;
 use crate::credential::CredentialStoreHandle;
 use crate::proxy::Proxy;
 use crate::rdp_pcb::{extract_association_claims, read_pcb};
-use crate::recording::ActiveRecordings;
+use crate::recording::{ActiveRecordings, RecordingMessageSender};
 use crate::session::{ConnectionModeDetails, DisconnectInterest, SessionInfo, SessionMessageSender};
 use crate::subscriber::SubscriberSender;
 use crate::token::{self, ConnectionMode, CurrentJrl, RecordingPolicy, TokenCache};
@@ -26,6 +26,7 @@ pub struct GenericClient<S> {
     sessions: SessionMessageSender,
     subscriber_tx: SubscriberSender,
     active_recordings: Arc<ActiveRecordings>,
+    recordings: RecordingMessageSender,
     credential_store: CredentialStoreHandle,
 }
 
@@ -48,6 +49,7 @@ where
             sessions,
             subscriber_tx,
             active_recordings,
+            recordings,
             credential_store,
         } = self;
 
@@ -173,6 +175,7 @@ where
                                 .server_stream(server_stream)
                                 .sessions(sessions_for_proxy)
                                 .subscriber_tx(subscriber_tx)
+                                .recordings(recordings)
                                 .credential_entry(entry)
                                 .client_stream_leftover_bytes(leftover_bytes)
                                 .server_dns_name(selected_target.host().to_owned())

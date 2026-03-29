@@ -201,6 +201,7 @@ impl ActiveRecordings {
 
 #[derive(Debug, Clone)]
 pub enum OnGoingRecordingState {
+    Pending,
     Connected,
     LastSeen { timestamp: i64 },
 }
@@ -286,11 +287,25 @@ impl fmt::Debug for RecordingManagerMessage {
 pub struct RecordingMessageSender {
     channel: mpsc::Sender<RecordingManagerMessage>,
     flush_map: Arc<Mutex<HashMap<Uuid, Vec<oneshot::Sender<()>>>>>,
+    state_map: Arc<Mutex<HashMap<Uuid, OnGoingRecordingState>>>,
     pub active_recordings: Arc<ActiveRecordings>,
 }
 
 impl RecordingMessageSender {
-    async fn connect(
+    pub(crate) async fn begin_external_recording(
+        &self,
+        id: Uuid,
+        file_type: RecordingFileType,
+        disconnected_ttl: Duration,
+    ) -> anyhow::Result<Utf8PathBuf> {
+        self.connect(id, file_type, disconnected_ttl).await
+    }
+
+    pub(crate) async fn end_external_recording(&self, id: Uuid) -> anyhow::Result<()> {
+        self.disconnect(id).await
+    }
+
+    pub(crate) async fn connect(
         &self,
         id: Uuid,
         file_type: RecordingFileType,
@@ -311,7 +326,7 @@ impl RecordingMessageSender {
             .context("couldn't receive recording file path for this recording")
     }
 
-    async fn disconnect(&self, id: Uuid) -> anyhow::Result<()> {
+    pub(crate) async fn disconnect(&self, id: Uuid) -> anyhow::Result<()> {
         self.channel
             .send(RecordingManagerMessage::Disconnect { id })
             .await
@@ -320,6 +335,10 @@ impl RecordingMessageSender {
     }
 
     pub async fn get_state(&self, id: Uuid) -> anyhow::Result<Option<OnGoingRecordingState>> {
+        if let Some(state) = self.state_map.lock().get(&id).cloned() {
+            return Ok(Some(state));
+        }
+
         let (tx, rx) = oneshot::channel();
         self.channel
             .send(RecordingManagerMessage::GetState { id, channel: tx })
@@ -358,6 +377,13 @@ impl RecordingMessageSender {
     }
 
     pub(crate) fn new_chunk_appended(&self, recording_id: Uuid) -> anyhow::Result<()> {
+        {
+            let mut state_map = self.state_map.lock();
+            if matches!(state_map.get(&recording_id), Some(OnGoingRecordingState::Pending)) {
+                state_map.insert(recording_id, OnGoingRecordingState::Connected);
+            }
+        }
+
         let senders = { self.flush_map.lock().remove(&recording_id) };
 
         let Some(senders) = senders else {
@@ -397,22 +423,26 @@ impl RecordingMessageSender {
 pub struct RecordingMessageReceiver {
     channel: mpsc::Receiver<RecordingManagerMessage>,
     active_recordings: Arc<ActiveRecordings>,
+    state_map: Arc<Mutex<HashMap<Uuid, OnGoingRecordingState>>>,
 }
 
 pub fn recording_message_channel() -> (RecordingMessageSender, RecordingMessageReceiver) {
     let ongoing_recordings = Arc::new(ActiveRecordings(Mutex::new(HashSet::new())));
+    let state_map = Arc::new(Mutex::new(HashMap::new()));
 
     let (tx, rx) = mpsc::channel(64);
 
     let handle = RecordingMessageSender {
         channel: tx,
         flush_map: Arc::new(Mutex::new(HashMap::new())),
+        state_map: Arc::clone(&state_map),
         active_recordings: Arc::clone(&ongoing_recordings),
     };
 
     let receiver = RecordingMessageReceiver {
         channel: rx,
         active_recordings: ongoing_recordings,
+        state_map,
     };
 
     (handle, receiver)
@@ -482,7 +512,10 @@ impl RecordingManagerTask {
         const LENGTH_WARNING_THRESHOLD: usize = 1000;
 
         if let Some(ongoing) = self.ongoing_recordings.get(&id)
-            && matches!(ongoing.state, OnGoingRecordingState::Connected)
+            && matches!(
+                ongoing.state,
+                OnGoingRecordingState::Pending | OnGoingRecordingState::Connected
+            )
         {
             anyhow::bail!("concurrent recording for the same session is not supported");
         }
@@ -562,13 +595,14 @@ impl RecordingManagerTask {
         self.ongoing_recordings.insert(
             id,
             OnGoingRecording {
-                state: OnGoingRecordingState::Connected,
+                state: OnGoingRecordingState::Pending,
                 manifest,
                 manifest_path,
                 session_must_be_recorded,
                 disconnected_ttl,
             },
         );
+        self.rx.state_map.lock().insert(id, OnGoingRecordingState::Pending);
         let ongoing_recording_count = self.ongoing_recordings.len();
 
         // Sanity check
@@ -588,13 +622,20 @@ impl RecordingManagerTask {
             return Err(anyhow::anyhow!("unknown recording for ID {id}"));
         };
 
-        if !matches!(ongoing.state, OnGoingRecordingState::Connected) {
-            anyhow::bail!("a recording not connected can’t be disconnected (there is probably a bug)");
+        if !matches!(
+            ongoing.state,
+            OnGoingRecordingState::Pending | OnGoingRecordingState::Connected
+        ) {
+            anyhow::bail!("a recording that is already disconnected can’t be disconnected again");
         }
 
         let end_time = time::OffsetDateTime::now_utc().unix_timestamp();
 
         ongoing.state = OnGoingRecordingState::LastSeen { timestamp: end_time };
+        self.rx
+            .state_map
+            .lock()
+            .insert(id, OnGoingRecordingState::LastSeen { timestamp: end_time });
 
         let current_file = ongoing
             .manifest
@@ -693,6 +734,7 @@ impl RecordingManagerTask {
                     }
 
                     self.ongoing_recordings.remove(&id);
+                    self.rx.state_map.lock().remove(&id);
                     self.recording_end_notifier.remove(&id);
                 }
                 _ => {

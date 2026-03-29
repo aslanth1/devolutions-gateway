@@ -1469,8 +1469,12 @@ dependencies = [
  "ironrdp-acceptor",
  "ironrdp-connector",
  "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdcleanpath",
+ "ironrdp-session",
+ "ironrdp-svc",
  "ironrdp-tokio",
  "jmux-proxy",
  "job-queue",
@@ -1481,6 +1485,7 @@ dependencies = [
  "network-scanner",
  "ngrok",
  "nonempty",
+ "openh264",
  "parking_lot",
  "pcap-file",
  "picky",
@@ -3354,6 +3359,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-session"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "997627ed3bdcd706fe44b8fdd958763b188336c4fc29b6443121867514069ac4"
+dependencies = [
+ "ironrdp-connector",
+ "ironrdp-core",
+ "ironrdp-displaycontrol",
+ "ironrdp-dvc",
+ "ironrdp-error",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-svc"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4140,6 +4162,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nasm-rs"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
+dependencies = [
+ "log",
+]
+
+[[package]]
 name = "native-tls"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4546,6 +4577,27 @@ name = "oorandom"
 version = "11.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
+name = "openh264"
+version = "0.9.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a12b82c14f702c2cece4e0fc28896c6a6bed5317dc13448c86ac41df91a6f82"
+dependencies = [
+ "openh264-sys2",
+ "wide",
+]
+
+[[package]]
+name = "openh264-sys2"
+version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fa9e072e9b270f3b291c80488dc160abc31ecc214ab3bfde937213cfd8c83b32"
+dependencies = [
+ "cc",
+ "nasm-rs",
+ "walkdir",
+]
 
 [[package]]
 name = "openssl"
@@ -5995,6 +6047,15 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safe_arch"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "safemem"
@@ -8188,6 +8249,16 @@ dependencies = [
  "objc2-system-configuration",
  "wasite",
  "web-sys",
+]
+
+[[package]]
+name = "wide"
+version = "0.7.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
+dependencies = [
+ "bytemuck",
+ "safe_arch",
 ]
 
 [[package]]

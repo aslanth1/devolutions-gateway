@@ -41,6 +41,10 @@ ironrdp-rdcleanpath = "0.2"
 ironrdp-tokio = "0.8"
 ironrdp-connector = { version = "0.8" }
 ironrdp-acceptor = { version = "0.8" }
+ironrdp-dvc = "0.5"
+ironrdp-svc = "0.6"
+ironrdp-graphics = "0.7"
+ironrdp-session = "0.8"
 ceviche = "0.7"
 picky-krb = "0.12"
 kdc = "0.1"
@@ -120,6 +124,7 @@ dlopen_derive = "0.1"
 
 # Video processing for session recording
 cadeau = { version = "0.5", features = ["dlopen"] }
+openh264 = "0.9"
 
 # Dependencies required for PCAP support
 # QUESTION: should we keep that built-in?

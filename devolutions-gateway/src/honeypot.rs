@@ -318,6 +318,10 @@ impl HoneypotRuntime {
         self.events.lock().session_metadata_patch(&session_id.to_string())
     }
 
+    pub fn has_session_binding(&self, session_id: uuid::Uuid) -> bool {
+        self.events.lock().session_binding(&session_id.to_string()).is_some()
+    }
+
     pub fn record_stream_failed(
         &self,
         session_id: uuid::Uuid,

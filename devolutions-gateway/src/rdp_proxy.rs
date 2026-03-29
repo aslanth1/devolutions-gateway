@@ -13,7 +13,10 @@ use typed_builder::TypedBuilder;
 use crate::api::kdc_proxy::send_krb_message;
 use crate::config::Conf;
 use crate::credential::{AppCredentialMapping, ArcCredentialEntry};
+use crate::interceptor::Interceptor;
 use crate::proxy::Proxy;
+use crate::rdp_playback::RdpPlaybackProducer;
+use crate::recording::RecordingMessageSender;
 use crate::session::{DisconnectInterest, SessionInfo, SessionMessageSender};
 use crate::subscriber::SubscriberSender;
 use crate::target_addr::TargetAddr;
@@ -30,6 +33,7 @@ pub struct RdpProxy<C, S> {
     client_stream_leftover_bytes: bytes::BytesMut,
     sessions: SessionMessageSender,
     subscriber_tx: SubscriberSender,
+    recordings: RecordingMessageSender,
     server_dns_name: String,
     disconnect_interest: Option<DisconnectInterest>,
 }
@@ -61,6 +65,7 @@ where
         client_stream_leftover_bytes,
         sessions,
         subscriber_tx,
+        recordings,
         server_dns_name,
         disconnect_interest,
     } = proxy;
@@ -187,12 +192,36 @@ where
     client_credssp_res.context("CredSSP with client")?;
     server_credssp_res.context("CredSSP with server")?;
 
+    let playback_needed = sessions
+        .honeypot()
+        .runtime()
+        .is_some_and(|runtime| runtime.has_session_binding(session_info.id));
+
+    let disconnected_ttl = disconnect_interest.map_or(std::time::Duration::ZERO, |interest| interest.window);
+    let playback = if playback_needed {
+        match RdpPlaybackProducer::maybe_start(&conf, recordings, session_info.id, disconnected_ttl).await {
+            Ok(playback) => Some(playback),
+            Err(error) => {
+                warn!(
+                    session.id = %session_info.id,
+                    error = format!("{error:#}"),
+                    "Proxy-owned honeypot RDP playback could not be started",
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // -- Intercept the Connect Confirm PDU, to override the server_security_protocol field -- //
 
     intercept_connect_confirm(
         &mut client_framed,
         &mut server_framed,
         handshake_result.server_security_protocol,
+        playback.as_ref(),
+        session_info.id,
     )
     .await?;
 
@@ -202,6 +231,26 @@ where
     // -- At this point, proceed to the usual two-way forwarding -- //
 
     info!("RDP-TLS forwarding (credential injection)");
+
+    if let Some(playback) = playback.as_ref()
+        && let Err(error) = playback.submit_client_bytes(&client_leftover)
+    {
+        warn!(
+            session.id = %session_info.id,
+            error = format!("{error:#}"),
+            "Proxy-owned honeypot RDP playback rejected the initial client bytes",
+        );
+    }
+
+    if let Some(playback) = playback.as_ref()
+        && let Err(error) = playback.submit_server_bytes(&server_leftover)
+    {
+        warn!(
+            session.id = %session_info.id,
+            error = format!("{error:#}"),
+            "Proxy-owned honeypot RDP playback rejected the initial server bytes",
+        );
+    }
 
     client_stream
         .write_all(&server_leftover)
@@ -213,6 +262,74 @@ where
         .await
         .context("write client leftover to server")?;
 
+    let proxy_result = if let Some(playback) = playback.as_ref() {
+        let mut intercepted_client_stream = Interceptor::new(client_stream);
+        intercepted_client_stream
+            .inspectors
+            .push(Box::new(playback.client_inspector()?));
+
+        let mut intercepted_server_stream = Interceptor::new(server_stream);
+        intercepted_server_stream
+            .inspectors
+            .push(Box::new(playback.inspector()?));
+
+        forward_rdp_tls_proxy(
+            conf,
+            session_info,
+            client_addr,
+            intercepted_client_stream,
+            server_addr,
+            intercepted_server_stream,
+            sessions,
+            subscriber_tx,
+            disconnect_interest,
+        )
+        .await
+    } else {
+        forward_rdp_tls_proxy(
+            conf,
+            session_info,
+            client_addr,
+            client_stream,
+            server_addr,
+            server_stream,
+            sessions,
+            subscriber_tx,
+            disconnect_interest,
+        )
+        .await
+    };
+
+    if let Some(playback) = playback {
+        let finish_result = playback.finish().await;
+        proxy_result.context("RDP-TLS traffic proxying failed")?;
+        finish_result.context("finalize proxy-owned honeypot playback")?;
+    } else {
+        proxy_result.context("RDP-TLS traffic proxying failed")?;
+    }
+
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "proxy forwarding seam mirrors Proxy::builder inputs"
+)]
+async fn forward_rdp_tls_proxy<C, S>(
+    conf: Arc<Conf>,
+    session_info: SessionInfo,
+    client_addr: SocketAddr,
+    client_stream: C,
+    server_addr: SocketAddr,
+    server_stream: S,
+    sessions: SessionMessageSender,
+    subscriber_tx: SubscriberSender,
+    disconnect_interest: Option<DisconnectInterest>,
+) -> anyhow::Result<()>
+where
+    C: AsyncRead + AsyncWrite + Unpin + Send,
+    S: AsyncRead + AsyncWrite + Unpin + Send,
+{
     Proxy::builder()
         .conf(conf)
         .session_info(session_info)
@@ -226,9 +343,6 @@ where
         .build()
         .select_dissector_and_forward()
         .await
-        .context("RDP-TLS traffic proxying failed")?;
-
-    Ok(())
 }
 
 #[derive(Debug)]
@@ -242,6 +356,8 @@ pub(crate) async fn intercept_connect_confirm<C, S>(
     client_framed: &mut ironrdp_tokio::MovableTokioFramed<C>,
     server_framed: &mut ironrdp_tokio::MovableTokioFramed<S>,
     server_security_protocol: nego::SecurityProtocol,
+    playback: Option<&RdpPlaybackProducer>,
+    session_id: uuid::Uuid,
 ) -> anyhow::Result<()>
 where
     C: AsyncWrite + AsyncRead + Unpin + Send,
@@ -251,6 +367,15 @@ where
         .read_pdu()
         .await
         .context("read MCS Connect Initial from client")?;
+    if let Some(playback) = playback
+        && let Err(error) = playback.submit_client_bytes(&received_frame)
+    {
+        warn!(
+            session.id = %session_id,
+            error = format!("{error:#}"),
+            "Proxy-owned honeypot playback rejected the client ConnectInitial frame",
+        );
+    }
     let received_connect_initial: x224::X224<x224::X224Data<'_>> =
         ironrdp_core::decode(&received_frame).context("decode PDU from client")?;
     let mut received_connect_initial: mcs::ConnectInitial =

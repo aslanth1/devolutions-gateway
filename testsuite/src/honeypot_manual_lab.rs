@@ -1896,19 +1896,29 @@ fn spawn_control_plane(
 }
 
 fn spawn_proxy(layout: &ManualLabRuntimeLayout, ports: &ManualLabPorts) -> anyhow::Result<ManualLabServiceProcess> {
+    let mut env = vec![
+        (
+            OsString::from("DGATEWAY_CONFIG_PATH"),
+            layout.proxy_config_dir.as_os_str().to_owned(),
+        ),
+        (
+            OsString::from(GATEWAY_WEBAPP_PATH_ENV),
+            layout.proxy_webapp_root_dir.as_os_str().to_owned(),
+        ),
+    ];
+
+    let xmf_library_path = repo_relative_path("target/manual-lab/xmf-official/libxmf.so");
+    if xmf_library_path.is_file() {
+        env.push((
+            OsString::from("DGATEWAY_LIB_XMF_PATH"),
+            xmf_library_path.as_os_str().to_owned(),
+        ));
+    }
+
     let process = spawn_logged_process(
         GATEWAY_BIN_PATH.as_path(),
         &[],
-        &[
-            (
-                OsString::from("DGATEWAY_CONFIG_PATH"),
-                layout.proxy_config_dir.as_os_str().to_owned(),
-            ),
-            (
-                OsString::from(GATEWAY_WEBAPP_PATH_ENV),
-                layout.proxy_webapp_root_dir.as_os_str().to_owned(),
-            ),
-        ],
+        &env,
         layout.logs_dir.join("proxy.stdout.log"),
         layout.logs_dir.join("proxy.stderr.log"),
     )
