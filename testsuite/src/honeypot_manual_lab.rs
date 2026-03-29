@@ -976,6 +976,8 @@ pub struct ManualLabBlackScreenEvidence {
     #[serde(default)]
     pub artifacts: ManualLabBlackScreenArtifactPaths,
     #[serde(default)]
+    pub teardown_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub session_invocations: Vec<ManualLabSessionDriverEvidence>,
@@ -1071,7 +1073,11 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub playback_ready_correlation: ManualLabSessionPlaybackReadyCorrelation,
     #[serde(default)]
+    pub gfx_filter_summary: Option<ManualLabSessionGfxFilterSummary>,
+    #[serde(default)]
     pub gfx_warning_summary: Option<ManualLabSessionGfxWarningSummary>,
+    #[serde(default)]
+    pub black_screen_branch: ManualLabSessionBlackScreenBranch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1179,6 +1185,70 @@ pub struct ManualLabSessionPlaybackReadyCorrelation {
     pub probe_http_status: Option<u16>,
     #[serde(default)]
     pub ready_trace_events: Vec<ManualLabSessionReadyTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionGfxFilterSummary {
+    #[serde(default)]
+    pub server_chunk_count: u64,
+    #[serde(default)]
+    pub rdpegfx_pdu_count: u64,
+    #[serde(default)]
+    pub emitted_surface_update_count: u64,
+    #[serde(default)]
+    pub pending_surface_update_count: u64,
+    #[serde(default)]
+    pub surface_count: u64,
+    #[serde(default)]
+    pub cached_tile_count: u64,
+    #[serde(default)]
+    pub codec_context_surface_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabEvidenceConfidence {
+    High,
+    Medium,
+    #[default]
+    Low,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBlackScreenBranchVerdict {
+    AlignedReady,
+    NegotiationLoss,
+    ProducerLoss,
+    PlayerLoss,
+    DecodeCorruption,
+    NoReadyTruthfulness,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionBlackScreenBranch {
+    #[serde(default)]
+    pub verdict: ManualLabBlackScreenBranchVerdict,
+    #[serde(default)]
+    pub confidence: ManualLabEvidenceConfidence,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub teardown_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub source_ready_after_teardown: bool,
+    #[serde(default)]
+    pub decode_warning_delta_exceeds_baseline: bool,
+    #[serde(default)]
+    pub aligned_ready_baseline_session_count: usize,
+    #[serde(default)]
+    pub rdpegfx_pdu_count: Option<u64>,
+    #[serde(default)]
+    pub emitted_surface_update_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1992,7 +2062,8 @@ fn teardown_internal(state: &ManualLabState) -> ManualLabTeardownReport {
         }
     }
 
-    if let Err(error) = persist_black_screen_evidence(state) {
+    let teardown_started_at_unix_ms = Some(now_unix_ms());
+    if let Err(error) = persist_black_screen_evidence(state, teardown_started_at_unix_ms) {
         notes.push(format!("persist black-screen evidence after teardown: {error:#}"));
     }
 
@@ -2633,7 +2704,7 @@ fn persist_active_state(state: &ManualLabState) -> anyhow::Result<()> {
         serde_json::to_vec_pretty(state).context("serialize manual lab active state")?,
     )
     .with_context(|| format!("write {}", active_path.display()))?;
-    persist_black_screen_evidence(state)
+    persist_black_screen_evidence(state, None)
 }
 
 fn load_active_state() -> anyhow::Result<Option<ManualLabState>> {
@@ -3984,6 +4055,7 @@ fn build_black_screen_evidence(
         is_control_lane: interop.xfreerdp_graphics_mode.is_control_lane(),
         clean_state: ManualLabBlackScreenCleanStateEvidence::default(),
         artifacts: ManualLabBlackScreenArtifactPaths::default(),
+        teardown_started_at_unix_ms: None,
         env: collect_black_screen_env_snapshot(),
         session_invocations: Vec::new(),
     }
@@ -4465,6 +4537,43 @@ fn build_manual_lab_playback_ready_correlation(
     }
 }
 
+fn parse_manual_lab_gfx_filter_summary_line(line: &str) -> Option<(String, ManualLabSessionGfxFilterSummary)> {
+    if !line.contains("GFX filter summary") {
+        return None;
+    }
+
+    let session_id = parse_manual_lab_log_field(line, "session_id")?.to_owned();
+    let summary = ManualLabSessionGfxFilterSummary {
+        server_chunk_count: parse_manual_lab_log_u64(line, "server_chunk_count").unwrap_or(0),
+        rdpegfx_pdu_count: parse_manual_lab_log_u64(line, "rdpegfx_pdu_count").unwrap_or(0),
+        emitted_surface_update_count: parse_manual_lab_log_u64(line, "emitted_surface_update_count").unwrap_or(0),
+        pending_surface_update_count: parse_manual_lab_log_u64(line, "pending_surface_update_count").unwrap_or(0),
+        surface_count: parse_manual_lab_log_u64(line, "surface_count").unwrap_or(0),
+        cached_tile_count: parse_manual_lab_log_u64(line, "cached_tile_count").unwrap_or(0),
+        codec_context_surface_count: parse_manual_lab_log_u64(line, "codec_context_surface_count").unwrap_or(0),
+    };
+
+    Some((session_id, summary))
+}
+
+fn parse_manual_lab_gfx_filter_summaries(
+    proxy_stdout_log: &Path,
+) -> anyhow::Result<BTreeMap<String, ManualLabSessionGfxFilterSummary>> {
+    if !proxy_stdout_log.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let log = fs::read_to_string(proxy_stdout_log).with_context(|| format!("read {}", proxy_stdout_log.display()))?;
+    let mut summaries = BTreeMap::new();
+    for line in log.lines() {
+        if let Some((session_id, summary)) = parse_manual_lab_gfx_filter_summary_line(line) {
+            summaries.insert(session_id, summary);
+        }
+    }
+
+    Ok(summaries)
+}
+
 fn parse_manual_lab_gfx_warning_summary_line(line: &str) -> Option<(String, ManualLabSessionGfxWarningSummary)> {
     if !line.contains("GFX warning summary") {
         return None;
@@ -4544,14 +4653,247 @@ fn parse_manual_lab_gfx_warning_summaries(
     Ok(summaries)
 }
 
-fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
+fn build_manual_lab_gfx_warning_baseline(
+    summaries: &[ManualLabSessionGfxWarningSummary],
+) -> Option<ManualLabSessionGfxWarningSummary> {
+    if summaries.is_empty() {
+        return None;
+    }
+
+    let mut baseline = ManualLabSessionGfxWarningSummary::default();
+    for summary in summaries {
+        baseline.total_warning_count = baseline.total_warning_count.max(summary.total_warning_count);
+        baseline.wire_to_surface1_unknown_surface_count = baseline
+            .wire_to_surface1_unknown_surface_count
+            .max(summary.wire_to_surface1_unknown_surface_count);
+        baseline.wire_to_surface2_metadata_unknown_surface_count = baseline
+            .wire_to_surface2_metadata_unknown_surface_count
+            .max(summary.wire_to_surface2_metadata_unknown_surface_count);
+        baseline.wire_to_surface2_update_unknown_surface_count = baseline
+            .wire_to_surface2_update_unknown_surface_count
+            .max(summary.wire_to_surface2_update_unknown_surface_count);
+        baseline.delete_encoding_context_unknown_surface_or_context_count = baseline
+            .delete_encoding_context_unknown_surface_or_context_count
+            .max(summary.delete_encoding_context_unknown_surface_or_context_count);
+        baseline.surface_to_cache_unknown_surface_count = baseline
+            .surface_to_cache_unknown_surface_count
+            .max(summary.surface_to_cache_unknown_surface_count);
+        baseline.cache_to_surface_unknown_cache_slot_count = baseline
+            .cache_to_surface_unknown_cache_slot_count
+            .max(summary.cache_to_surface_unknown_cache_slot_count);
+        baseline.cache_to_surface_unknown_surface_count = baseline
+            .cache_to_surface_unknown_surface_count
+            .max(summary.cache_to_surface_unknown_surface_count);
+        baseline.wire_to_surface1_update_failed_count = baseline
+            .wire_to_surface1_update_failed_count
+            .max(summary.wire_to_surface1_update_failed_count);
+        baseline.wire_to_surface1_decode_skipped_count = baseline
+            .wire_to_surface1_decode_skipped_count
+            .max(summary.wire_to_surface1_decode_skipped_count);
+        baseline.wire_to_surface2_decode_skipped_count = baseline
+            .wire_to_surface2_decode_skipped_count
+            .max(summary.wire_to_surface2_decode_skipped_count);
+        baseline.surface_to_cache_capture_skipped_count = baseline
+            .surface_to_cache_capture_skipped_count
+            .max(summary.surface_to_cache_capture_skipped_count);
+        baseline.cache_to_surface_replay_skipped_count = baseline
+            .cache_to_surface_replay_skipped_count
+            .max(summary.cache_to_surface_replay_skipped_count);
+    }
+
+    Some(baseline)
+}
+
+fn exceeds_decode_candidate_threshold(value: u64, baseline: u64) -> bool {
+    value >= baseline.saturating_add(10) && value.saturating_mul(5) >= baseline.saturating_mul(6)
+}
+
+fn decode_warning_delta_exceeds_baseline(
+    summary: Option<&ManualLabSessionGfxWarningSummary>,
+    baseline: Option<&ManualLabSessionGfxWarningSummary>,
+) -> bool {
+    let (Some(summary), Some(baseline)) = (summary, baseline) else {
+        return false;
+    };
+
+    let mut exceeded = 0;
+    for (value, baseline_value) in [
+        (
+            summary.wire_to_surface1_update_failed_count,
+            baseline.wire_to_surface1_update_failed_count,
+        ),
+        (
+            summary.wire_to_surface1_decode_skipped_count,
+            baseline.wire_to_surface1_decode_skipped_count,
+        ),
+        (
+            summary.wire_to_surface2_decode_skipped_count,
+            baseline.wire_to_surface2_decode_skipped_count,
+        ),
+        (
+            summary.cache_to_surface_unknown_cache_slot_count,
+            baseline.cache_to_surface_unknown_cache_slot_count,
+        ),
+        (
+            summary.surface_to_cache_capture_skipped_count,
+            baseline.surface_to_cache_capture_skipped_count,
+        ),
+    ] {
+        if exceeds_decode_candidate_threshold(value, baseline_value) {
+            exceeded += 1;
+        }
+    }
+
+    exceeded >= 2
+}
+
+fn build_manual_lab_black_screen_branch(
+    timeline: &ManualLabSessionPlaybackBootstrapTimeline,
+    correlation: &ManualLabSessionPlaybackReadyCorrelation,
+    gfx_filter_summary: Option<&ManualLabSessionGfxFilterSummary>,
+    gfx_warning_summary: Option<&ManualLabSessionGfxWarningSummary>,
+    aligned_ready_warning_baseline: Option<&ManualLabSessionGfxWarningSummary>,
+    aligned_ready_baseline_session_count: usize,
+    teardown_started_at_unix_ms: Option<u64>,
+) -> ManualLabSessionBlackScreenBranch {
+    let mut reasons = Vec::new();
+    let source_ready_after_teardown = match (correlation.source_ready_at_unix_ms, teardown_started_at_unix_ms) {
+        (Some(source_ready_at), Some(teardown_started_at)) => source_ready_at >= teardown_started_at,
+        _ => false,
+    };
+    let decode_warning_delta_exceeds_baseline =
+        decode_warning_delta_exceeds_baseline(gfx_warning_summary, aligned_ready_warning_baseline);
+    let rdpegfx_pdu_count = gfx_filter_summary.map(|summary| summary.rdpegfx_pdu_count);
+    let emitted_surface_update_count = gfx_filter_summary.map(|summary| summary.emitted_surface_update_count);
+    let has_rdpegfx = rdpegfx_pdu_count.is_some_and(|count| count > 0);
+    let producer_started = correlation.producer_started_at_unix_ms.is_some();
+    let source_ready = correlation.source_ready_at_unix_ms.is_some();
+    let stream_ready = correlation.session_stream_ready_emitted_at_unix_ms.is_some();
+
+    let (verdict, confidence, detail) = if correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady {
+        reasons.push("source-ready evidence, stream-ready emission, and probe all aligned".to_owned());
+        (
+            ManualLabBlackScreenBranchVerdict::AlignedReady,
+            ManualLabEvidenceConfidence::High,
+            Some("session reached a fully aligned ready path".to_owned()),
+        )
+    } else if !has_rdpegfx && gfx_filter_summary.is_some() {
+        reasons.push("no rdpegfx PDUs were counted in the GFX filter summary".to_owned());
+        (
+            ManualLabBlackScreenBranchVerdict::NegotiationLoss,
+            ManualLabEvidenceConfidence::High,
+            Some("graphics negotiation never produced RDPEGFX PDUs for this session".to_owned()),
+        )
+    } else if source_ready && !stream_ready && !source_ready_after_teardown {
+        reasons.push("source-ready evidence exists without a session.stream.ready emission".to_owned());
+        (
+            ManualLabBlackScreenBranchVerdict::PlayerLoss,
+            ManualLabEvidenceConfidence::High,
+            Some("source-ready evidence landed, but the player-ready event never followed".to_owned()),
+        )
+    } else if correlation.verdict == ManualLabPlaybackReadyVerdict::ProbeReadyWithoutStreamReady
+        && !source_ready_after_teardown
+    {
+        reasons.push("the probe returned ready without a matching session.stream.ready emission".to_owned());
+        (
+            ManualLabBlackScreenBranchVerdict::PlayerLoss,
+            ManualLabEvidenceConfidence::Medium,
+            Some("the player path advertised ready without the proxy emitting stream-ready".to_owned()),
+        )
+    } else if decode_warning_delta_exceeds_baseline && source_ready && !source_ready_after_teardown {
+        reasons.push("warning counters exceeded the aligned-ready baseline".to_owned());
+        (
+            ManualLabBlackScreenBranchVerdict::DecodeCorruption,
+            ManualLabEvidenceConfidence::Medium,
+            Some(
+                "decode-corruption candidate: ready-path evidence exists and warning deltas spiked above baseline"
+                    .to_owned(),
+            ),
+        )
+    } else if producer_started
+        && matches!(
+            correlation.verdict,
+            ManualLabPlaybackReadyVerdict::Probe503WithoutSourceReady
+                | ManualLabPlaybackReadyVerdict::ProbeBeforeReady
+                | ManualLabPlaybackReadyVerdict::IncompleteEvidence
+        )
+        && (!source_ready || source_ready_after_teardown)
+    {
+        if source_ready_after_teardown {
+            reasons.push("source-ready evidence first appeared at or after teardown".to_owned());
+        } else {
+            reasons.push("no source-ready evidence existed when the live probe observed the session".to_owned());
+        }
+        (
+            ManualLabBlackScreenBranchVerdict::NoReadyTruthfulness,
+            ManualLabEvidenceConfidence::High,
+            Some(
+                "the live probe was truthful: the stream was not ready during the active observation window".to_owned(),
+            ),
+        )
+    } else if producer_started && !source_ready && has_rdpegfx {
+        reasons.push(
+            "producer bootstrap started and graphics data was observed, but no source-ready evidence landed".to_owned(),
+        );
+        (
+            ManualLabBlackScreenBranchVerdict::ProducerLoss,
+            ManualLabEvidenceConfidence::Medium,
+            Some("graphics negotiation succeeded, but the producer never reached a source-ready state".to_owned()),
+        )
+    } else if timeline.verdict == ManualLabPlaybackBootstrapVerdict::Contradiction {
+        reasons.push("bootstrap timeline contains a contradiction".to_owned());
+        (
+            ManualLabBlackScreenBranchVerdict::Inconclusive,
+            ManualLabEvidenceConfidence::Low,
+            Some("bootstrap evidence is contradictory, so the session cannot be named confidently".to_owned()),
+        )
+    } else {
+        reasons.push("the available evidence does not satisfy a higher-confidence BS-20 branch".to_owned());
+        (
+            ManualLabBlackScreenBranchVerdict::Inconclusive,
+            ManualLabEvidenceConfidence::Low,
+            Some("the session still needs more evidence before a BS-20 branch can be named".to_owned()),
+        )
+    };
+
+    if let Some(detail) = correlation.detail.as_ref() {
+        reasons.push(detail.clone());
+    }
+    if let Some(rdpegfx_pdu_count) = rdpegfx_pdu_count {
+        reasons.push(format!("rdpegfx_pdu_count={rdpegfx_pdu_count}"));
+    }
+    if source_ready_after_teardown {
+        reasons.push("late source-ready evidence arrived only after teardown began".to_owned());
+    }
+
+    ManualLabSessionBlackScreenBranch {
+        verdict,
+        confidence,
+        detail,
+        reasons,
+        teardown_started_at_unix_ms,
+        source_ready_after_teardown,
+        decode_warning_delta_exceeds_baseline,
+        aligned_ready_baseline_session_count,
+        rdpegfx_pdu_count,
+        emitted_surface_update_count,
+    }
+}
+
+fn persist_black_screen_evidence(
+    state: &ManualLabState,
+    teardown_started_at_unix_ms: Option<u64>,
+) -> anyhow::Result<()> {
     let evidence_path = state.run_root.join("artifacts/black-screen-evidence.json");
     let mut evidence = state.black_screen_evidence.clone();
+    if evidence.teardown_started_at_unix_ms.is_none() {
+        evidence.teardown_started_at_unix_ms = teardown_started_at_unix_ms;
+    }
     let playback_bootstrap_timelines = parse_manual_lab_playback_bootstrap_timelines(&state.proxy.stdout_log)?;
     let ready_trace_events = parse_manual_lab_ready_trace_events(&state.proxy.stdout_log)?;
+    let gfx_filter_summaries = parse_manual_lab_gfx_filter_summaries(&state.proxy.stdout_log)?;
     let gfx_warning_summaries = parse_manual_lab_gfx_warning_summaries(&state.proxy.stdout_log)?;
-    evidence.artifacts = build_black_screen_artifact_paths(state);
-    evidence.session_invocations = state
+    let session_evidence = state
         .sessions
         .iter()
         .map(|session| {
@@ -4567,26 +4909,71 @@ fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
                 session.stream_probe_http_status,
                 session.stream_probe_observed_at_unix_ms,
             );
+            let gfx_filter_summary = gfx_filter_summaries.get(&session.session_id).cloned();
+            let gfx_warning_summary = gfx_warning_summaries.get(&session.session_id).cloned();
 
-            ManualLabSessionDriverEvidence {
-                slot: session.slot,
-                session_id: session.session_id.clone(),
-                driver_binary: session.driver_binary.clone(),
-                driver_args: session.driver_args.clone(),
-                driver_lane: session.driver_lane.clone(),
-                stdout_log: session.stdout_log.clone(),
-                stderr_log: session.stderr_log.clone(),
-                vm_lease_id: session.vm_lease_id.clone(),
-                stream_id: session.stream_id.clone(),
-                stream_probe_status: session.stream_probe_status.clone(),
-                stream_probe_detail: session.stream_probe_detail.clone(),
-                stream_probe_http_status: session.stream_probe_http_status,
-                stream_probe_observed_at_unix_ms: session.stream_probe_observed_at_unix_ms,
+            (
+                session,
                 playback_bootstrap_timeline,
                 playback_ready_correlation,
-                gfx_warning_summary: gfx_warning_summaries.get(&session.session_id).cloned(),
-            }
+                gfx_filter_summary,
+                gfx_warning_summary,
+            )
         })
+        .collect::<Vec<_>>();
+    let aligned_ready_warning_summaries = session_evidence
+        .iter()
+        .filter_map(|(_, _, correlation, _, gfx_warning_summary)| {
+            (correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
+                .then_some(gfx_warning_summary.clone())
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    let aligned_ready_warning_baseline = build_manual_lab_gfx_warning_baseline(&aligned_ready_warning_summaries);
+    let aligned_ready_baseline_session_count = aligned_ready_warning_summaries.len();
+    evidence.artifacts = build_black_screen_artifact_paths(state);
+    evidence.session_invocations = session_evidence
+        .into_iter()
+        .map(
+            |(
+                session,
+                playback_bootstrap_timeline,
+                playback_ready_correlation,
+                gfx_filter_summary,
+                gfx_warning_summary,
+            )| {
+                let black_screen_branch = build_manual_lab_black_screen_branch(
+                    &playback_bootstrap_timeline,
+                    &playback_ready_correlation,
+                    gfx_filter_summary.as_ref(),
+                    gfx_warning_summary.as_ref(),
+                    aligned_ready_warning_baseline.as_ref(),
+                    aligned_ready_baseline_session_count,
+                    evidence.teardown_started_at_unix_ms,
+                );
+
+                ManualLabSessionDriverEvidence {
+                    slot: session.slot,
+                    session_id: session.session_id.clone(),
+                    driver_binary: session.driver_binary.clone(),
+                    driver_args: session.driver_args.clone(),
+                    driver_lane: session.driver_lane.clone(),
+                    stdout_log: session.stdout_log.clone(),
+                    stderr_log: session.stderr_log.clone(),
+                    vm_lease_id: session.vm_lease_id.clone(),
+                    stream_id: session.stream_id.clone(),
+                    stream_probe_status: session.stream_probe_status.clone(),
+                    stream_probe_detail: session.stream_probe_detail.clone(),
+                    stream_probe_http_status: session.stream_probe_http_status,
+                    stream_probe_observed_at_unix_ms: session.stream_probe_observed_at_unix_ms,
+                    playback_bootstrap_timeline,
+                    playback_ready_correlation,
+                    gfx_filter_summary,
+                    gfx_warning_summary,
+                    black_screen_branch,
+                }
+            },
+        )
         .collect();
     if let Some(parent) = evidence_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -4743,13 +5130,16 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ManualLabPlaybackBootstrapVerdict, ManualLabPlaybackReadyVerdict, ManualLabSessionGfxWarningSummary,
+        ManualLabBlackScreenBranchVerdict, ManualLabEvidenceConfidence, ManualLabPlaybackBootstrapVerdict,
+        ManualLabPlaybackReadyVerdict, ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary,
         ManualLabSessionPlaybackBootstrapEvent, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
-        association_token, build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
+        association_token, build_manual_lab_black_screen_branch, build_manual_lab_gfx_warning_baseline,
+        build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
         build_session_records, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, manual_lab_manifest_path, manual_lab_service_ready_timeout,
-        parse_manual_lab_gfx_warning_summary_line, parse_manual_lab_playback_bootstrap_trace_line,
-        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, xfreerdp_driver_args,
+        parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
+        parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_ready_trace_line,
+        parse_proc_stat_process_state, xfreerdp_driver_args,
     };
 
     fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
@@ -4896,6 +5286,31 @@ mod tests {
                     wire_to_surface2_decode_skipped_count: 10,
                     surface_to_cache_capture_skipped_count: 11,
                     cache_to_surface_replay_skipped_count: 12,
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn manual_lab_parses_gfx_filter_summary_lines() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let line = format!(
+            "2026-03-28T22:00:00.000000Z  INFO devolutions_gateway::rdp_gfx: GFX filter summary session_id={session_id} server_chunk_count=1 rdpegfx_pdu_count=1175 emitted_surface_update_count=582 pending_surface_update_count=0 surface_count=1 cached_tile_count=417 codec_context_surface_count=0"
+        );
+
+        let parsed = parse_manual_lab_gfx_filter_summary_line(&line);
+        assert_eq!(
+            parsed,
+            Some((
+                session_id.to_owned(),
+                ManualLabSessionGfxFilterSummary {
+                    server_chunk_count: 1,
+                    rdpegfx_pdu_count: 1175,
+                    emitted_surface_update_count: 582,
+                    pending_surface_update_count: 0,
+                    surface_count: 1,
+                    cached_tile_count: 417,
+                    codec_context_surface_count: 0,
                 }
             ))
         );
@@ -5214,6 +5629,149 @@ mod tests {
         );
 
         assert_eq!(correlation.verdict, ManualLabPlaybackReadyVerdict::Probe503AfterReady);
+    }
+
+    #[test]
+    fn manual_lab_builds_no_ready_truthfulness_branch_for_late_source_ready() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "recording.connected.first".to_owned(),
+                source: "recording-manager".to_owned(),
+                ts_unix_ms: 1_700_000_000_080,
+                observed_at_unix_ms: Some(1_700_000_000_080),
+            }],
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_025),
+        );
+
+        let branch = build_manual_lab_black_screen_branch(
+            &timeline,
+            &correlation,
+            Some(&ManualLabSessionGfxFilterSummary {
+                rdpegfx_pdu_count: 1045,
+                emitted_surface_update_count: 496,
+                ..Default::default()
+            }),
+            Some(&ManualLabSessionGfxWarningSummary::default()),
+            None,
+            0,
+            Some(1_700_000_000_070),
+        );
+
+        assert_eq!(branch.verdict, ManualLabBlackScreenBranchVerdict::NoReadyTruthfulness);
+        assert_eq!(branch.confidence, ManualLabEvidenceConfidence::High);
+        assert!(branch.source_ready_after_teardown);
+    }
+
+    #[test]
+    fn manual_lab_builds_player_loss_branch_from_source_ready_without_stream_ready() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "recording.connected.first".to_owned(),
+                source: "recording-manager".to_owned(),
+                ts_unix_ms: 1_700_000_000_040,
+                observed_at_unix_ms: Some(1_700_000_000_040),
+            }],
+            Some("unavailable"),
+            Some(503),
+            None,
+        );
+
+        let branch = build_manual_lab_black_screen_branch(
+            &timeline,
+            &correlation,
+            Some(&ManualLabSessionGfxFilterSummary {
+                rdpegfx_pdu_count: 1175,
+                emitted_surface_update_count: 582,
+                ..Default::default()
+            }),
+            Some(&ManualLabSessionGfxWarningSummary::default()),
+            None,
+            0,
+            None,
+        );
+
+        assert_eq!(branch.verdict, ManualLabBlackScreenBranchVerdict::PlayerLoss);
+        assert_eq!(branch.confidence, ManualLabEvidenceConfidence::High);
+    }
+
+    #[test]
+    fn manual_lab_builds_decode_corruption_branch_when_warning_delta_exceeds_baseline() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "recording.connected.first".to_owned(),
+                    source: "recording-manager".to_owned(),
+                    ts_unix_ms: 1_700_000_000_040,
+                    observed_at_unix_ms: Some(1_700_000_000_040),
+                },
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "session.stream.ready.emitted".to_owned(),
+                    source: "honeypot".to_owned(),
+                    ts_unix_ms: 1_700_000_000_050,
+                    observed_at_unix_ms: Some(1_700_000_000_050),
+                },
+            ],
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_070),
+        );
+        let baseline = build_manual_lab_gfx_warning_baseline(&[ManualLabSessionGfxWarningSummary {
+            wire_to_surface1_update_failed_count: 8,
+            wire_to_surface1_decode_skipped_count: 9,
+            wire_to_surface2_decode_skipped_count: 10,
+            cache_to_surface_unknown_cache_slot_count: 6,
+            surface_to_cache_capture_skipped_count: 11,
+            ..Default::default()
+        }])
+        .expect("aligned-ready baseline");
+
+        let branch = build_manual_lab_black_screen_branch(
+            &timeline,
+            &correlation,
+            Some(&ManualLabSessionGfxFilterSummary {
+                rdpegfx_pdu_count: 1175,
+                emitted_surface_update_count: 582,
+                ..Default::default()
+            }),
+            Some(&ManualLabSessionGfxWarningSummary {
+                wire_to_surface1_update_failed_count: 24,
+                wire_to_surface1_decode_skipped_count: 25,
+                wire_to_surface2_decode_skipped_count: 26,
+                cache_to_surface_unknown_cache_slot_count: 22,
+                surface_to_cache_capture_skipped_count: 27,
+                ..Default::default()
+            }),
+            Some(&baseline),
+            2,
+            None,
+        );
+
+        assert_eq!(branch.verdict, ManualLabBlackScreenBranchVerdict::DecodeCorruption);
+        assert_eq!(branch.confidence, ManualLabEvidenceConfidence::Medium);
+        assert!(branch.decode_warning_delta_exceeds_baseline);
     }
 
     #[test]

@@ -1096,9 +1096,9 @@ Pass when: targeted tests fail if the required negotiation, producer, and corrup
 - [ ] `BS-19` Split FastPath warnings into known-noise and candidate-root-cause classes.
 Pass when: the run bundle records which FastPath warnings are expected background noise and which correlate with visible corruption, so the same warning is not argued about repeatedly across runs.
 
-- [ ] `BS-20` Reduce the third-session failure into a named branch before new lane churn begins.
+- [x] `BS-20` Reduce the third-session failure into a named branch before new lane churn begins.
 Pass when: a failing third-session run can be labeled as negotiation loss, producer loss, player loss, decode corruption, or simple no-ready truthfulness instead of staying in the generic "black screen" bucket.
-Current evidence after the `BS-16` control proof: slot 3 is no longer generic black-screen noise; the probe hit `503` before source-ready evidence landed, and the remaining work is mapping that branch cleanly into the `BS-20` taxonomy.
+Current evidence after the repeated `BS-20` control proof: slot 3 no longer sits in the generic black-screen bucket; two fresh `xfreerdp` control runs classified it as `negotiation_loss` with `rdpegfx_pdu_count=0`, while slots 1 and 2 stayed `aligned_ready`.
 
 #### 6v.3 Driver And Non-RDPGFX Experiment Matrix
 
