@@ -873,6 +873,7 @@ struct DashboardPageTemplate<'a> {
     session_count: usize,
     replay_cursor: &'a str,
     replay_cursor_json: &'a str,
+    boot_session_id_json: &'a str,
     operator_token_json: &'a str,
     has_live_sessions: bool,
     system_kill_button_html: &'a str,
@@ -936,6 +937,13 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         .iter()
         .filter(|session| session_is_live_for_dashboard(session.state))
         .count();
+    let boot_session_id_json = serde_json::to_string(
+        &live_sessions
+            .first()
+            .map(|session| session.session_id.as_str())
+            .filter(|_| live_sessions.len() == 1),
+    )
+    .unwrap_or_else(|_| "null".to_owned());
     let operator_token_json = serde_json::to_string(operator_token).unwrap_or_else(|_| "\"invalid-token\"".to_owned());
     let replay_cursor_json = serde_json::to_string(&bootstrap.replay_cursor).unwrap_or_else(|_| "\"0\"".to_owned());
 
@@ -944,6 +952,7 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         session_count,
         replay_cursor: &bootstrap.replay_cursor,
         replay_cursor_json: &replay_cursor_json,
+        boot_session_id_json: &boot_session_id_json,
         operator_token_json: &operator_token_json,
         has_live_sessions: !live_sessions.is_empty(),
         system_kill_button_html: &system_kill_button,
@@ -1458,7 +1467,8 @@ fn operator_token_query(operator_token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use devolutions_gateway::token::AccessScope;
-    use honeypot_contracts::frontend::BootstrapSession;
+    use honeypot_contracts::SCHEMA_VERSION;
+    use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
 
     use super::*;
 
@@ -1542,5 +1552,33 @@ mod tests {
 
         assert!(html.contains("window.location.replace(window.location.href)"));
         assert!(html.contains("Stream unavailable"));
+    }
+
+    #[test]
+    fn dashboard_page_bootstraps_single_live_session() {
+        let bootstrap = BootstrapResponse {
+            schema_version: SCHEMA_VERSION,
+            correlation_id: "corr-1".to_owned(),
+            generated_at: "2026-03-29T00:00:00Z".to_owned(),
+            replay_cursor: "cursor-1".to_owned(),
+            sessions: vec![BootstrapSession {
+                session_id: "session-1".to_owned(),
+                vm_lease_id: Some("lease-1".to_owned()),
+                state: SessionState::Ready,
+                last_event_id: "event-1".to_owned(),
+                last_session_seq: 1,
+                stream_state: StreamState::Ready,
+                stream_preview: None,
+            }],
+        };
+
+        let html = render_dashboard_page(
+            &FrontendConfig::default(),
+            &bootstrap,
+            &test_access("operator-token", AccessScope::Wildcard),
+        );
+
+        assert!(html.contains("const bootSessionId = \"session-1\";"), "{html}");
+        assert!(html.contains("refreshFocus(bootSessionId)"), "{html}");
     }
 }

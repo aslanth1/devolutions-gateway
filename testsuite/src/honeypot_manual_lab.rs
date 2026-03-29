@@ -2222,16 +2222,9 @@ fn manual_lab_manifest_path(relative_path: &str) -> PathBuf {
 fn manual_lab_browser_url(
     frontend_http_port: u16,
     wildcard_token: &str,
-    sessions: &[ManualLabSessionRecord],
+    _sessions: &[ManualLabSessionRecord],
 ) -> String {
-    if sessions.len() == 1 {
-        format!(
-            "http://127.0.0.1:{frontend_http_port}/session/{}?token={wildcard_token}",
-            sessions[0].session_id
-        )
-    } else {
-        format!("http://127.0.0.1:{frontend_http_port}/?token={wildcard_token}")
-    }
+    format!("http://127.0.0.1:{frontend_http_port}/?token={wildcard_token}")
 }
 
 pub fn honeypot_manual_lab_assert_cmd() -> assert_cmd::Command {

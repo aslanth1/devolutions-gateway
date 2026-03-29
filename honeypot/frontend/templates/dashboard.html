@@ -246,6 +246,7 @@
   <script>
     (() => {
       let replayCursor = {{ replay_cursor_json|safe }};
+      const bootSessionId = {{ boot_session_id_json|safe }};
       const operatorToken = {{ operator_token_json|safe }};
       let reconnectTimer = null;
       const cursorNode = document.getElementById("cursor-value");
@@ -291,10 +292,26 @@
         }
       }
 
+      function currentFocusedSessionId() {
+        return focusPanel.querySelector("[data-focused-session-id]")?.getAttribute("data-focused-session-id") || null;
+      }
+
+      async function refreshFocus(sessionId) {
+        const html = await fetchHtml(`/session/${encodeURIComponent(sessionId)}`);
+        const activeFocusId = currentFocusedSessionId();
+        if (activeFocusId && activeFocusId !== sessionId) {
+          return;
+        }
+        if (html === null) {
+          focusPanel.innerHTML = `<div class="focus-empty">Session ${sessionId} is no longer available.</div>`;
+          return;
+        }
+        focusPanel.innerHTML = html;
+      }
+
       function dropTile(sessionId, message) {
         document.getElementById(`session-tile-${sessionId}`)?.remove();
-        const focused = focusPanel.querySelector("[data-focused-session-id]");
-        if (focused && focused.getAttribute("data-focused-session-id") === sessionId) {
+        if (currentFocusedSessionId() === sessionId) {
           focusPanel.innerHTML = `<div class="focus-empty">${message}</div>`;
         }
       }
@@ -343,6 +360,9 @@
             default:
               try {
                 await upsertTile(sessionId);
+                if (currentFocusedSessionId() === sessionId) {
+                  await refreshFocus(sessionId);
+                }
               } catch (_error) {
                 source.close();
                 scheduleReconnect();
@@ -355,6 +375,12 @@
           source.close();
           scheduleReconnect();
         };
+      }
+
+      if (bootSessionId) {
+        refreshFocus(bootSessionId).catch(() => {
+          focusPanel.innerHTML = `<div class="focus-empty">The initial session focus could not be loaded yet.</div>`;
+        });
       }
 
       connectEvents();
