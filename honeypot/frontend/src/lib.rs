@@ -552,6 +552,9 @@ async fn session_handler(
     Path(session_id): Path<String>,
     Query(query): Query<OperatorTokenQuery>,
 ) -> Response {
+    let is_fragment_request = headers.get("X-Requested-With").and_then(|value| value.to_str().ok())
+        == Some("honeypot-frontend")
+        || headers.get("HX-Request").and_then(|value| value.to_str().ok()) == Some("true");
     let access = match state
         .runtime
         .authorize_operator(&headers, query.token.as_deref(), RequiredScope::StreamRead)
@@ -604,6 +607,7 @@ async fn session_handler(
         stream_preview.as_ref(),
         player_url.as_deref(),
         &access,
+        !is_fragment_request && player_url.is_none(),
     ))
     .into_response()
 }
@@ -1314,11 +1318,20 @@ fn render_focus_panel(
     stream_preview: Option<&StreamPreview>,
     player_url: Option<&str>,
     access: &OperatorAccess,
+    standalone_retry: bool,
 ) -> String {
     let session_id = escape_html(&session.session_id);
     let state_label = escape_html(session_state_label(session.state));
     let stream_label = escape_html(stream_state_label(session.stream_state));
     let focus_actions = render_focus_action_buttons(session, access);
+    let retry_script = if standalone_retry {
+        r#"<script>
+  window.setTimeout(() => window.location.replace(window.location.href), 1500);
+</script>"#
+            .to_owned()
+    } else {
+        String::new()
+    };
     let body = if let Some(preview) = stream_preview {
         let player = player_url.map_or_else(
             || {
@@ -1370,6 +1383,7 @@ fn render_focus_panel(
   <div class="tile-meta"><strong>Stream state</strong><span>{stream_label}</span></div>
   {focus_actions}
   {body}
+  {retry_script}
 </div>"#
     )
 }
@@ -1822,6 +1836,7 @@ mod tests {
             Some(&preview),
             Some("http://127.0.0.1:7171/jet/honeypot/session/session-1/stream?stream_id=stream-1&token=operator-token"),
             &test_access("operator-token", AccessScope::Wildcard),
+            false,
         );
 
         assert!(html.contains("stream-1"));
@@ -1829,5 +1844,29 @@ mod tests {
         assert!(html.contains("stream_id=stream-1&amp;token=operator-token"));
         assert!(html.contains("Refresh reconnects near the live tail"));
         assert!(html.contains("Kill session"));
+    }
+
+    #[test]
+    fn focus_panel_renders_standalone_retry_when_player_url_is_missing() {
+        let session = BootstrapSession {
+            session_id: "session-1".to_owned(),
+            vm_lease_id: Some("lease-1".to_owned()),
+            state: SessionState::Assigned,
+            last_event_id: "event-1".to_owned(),
+            last_session_seq: 2,
+            stream_state: StreamState::Pending,
+            stream_preview: None,
+        };
+
+        let html = render_focus_panel(
+            &session,
+            None,
+            None,
+            &test_access("operator-token", AccessScope::Wildcard),
+            true,
+        );
+
+        assert!(html.contains("window.location.replace(window.location.href)"));
+        assert!(html.contains("Stream unavailable"));
     }
 }
