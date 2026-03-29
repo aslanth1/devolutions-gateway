@@ -5,6 +5,7 @@ import { cleanUpStreamers, getShadowPlayer } from './streamers/index.js';
 import './ws-proxy.ts';
 import { setupI18n, t } from './i18n';
 import { OnBeforeClose as BeforeWebsocketClose } from './ws-proxy.ts';
+import { configurePlayerTelemetry, markStaticPlaybackStarted } from './telemetry';
 
 async function main() {
   const { sessionId, token, gatewayAccessUrl, isActive, activeFileType, language } = getSessionDetails();
@@ -14,6 +15,7 @@ async function main() {
     .token(token)
     .sessionId(sessionId)
     .build();
+  configurePlayerTelemetry(gatewayAccessApi, isActive);
 
   await setupI18n(gatewayAccessApi, language);
 
@@ -38,6 +40,7 @@ async function playSessionShadowing(gatewayAccessApi, activeFileType) {
 
 async function playStaticRecording(gatewayAccessApi) {
   try {
+    markStaticPlaybackStarted();
     const recordingInfo = await gatewayAccessApi.fetchRecordingInfo();
     const fileType = getFileType(recordingInfo);
 

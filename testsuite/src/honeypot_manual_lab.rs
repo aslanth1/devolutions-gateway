@@ -1142,6 +1142,8 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub playback_ready_correlation: ManualLabSessionPlaybackReadyCorrelation,
     #[serde(default)]
+    pub player_websocket_summary: ManualLabSessionPlayerWebsocketSummary,
+    #[serde(default)]
     pub gfx_filter_summary: Option<ManualLabSessionGfxFilterSummary>,
     #[serde(default)]
     pub fastpath_warning_summary: Option<ManualLabSessionFastPathWarningSummary>,
@@ -1256,6 +1258,48 @@ pub struct ManualLabSessionPlaybackReadyCorrelation {
     pub probe_http_status: Option<u16>,
     #[serde(default)]
     pub ready_trace_events: Vec<ManualLabSessionReadyTraceEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionPlayerWebsocketSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub open_observed: bool,
+    #[serde(default)]
+    pub first_message_observed: bool,
+    #[serde(default)]
+    pub raw_close_observed: bool,
+    #[serde(default)]
+    pub transformed_close_observed: bool,
+    #[serde(default)]
+    pub opened_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub first_message_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub closed_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub capture_end_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub elapsed_ms_since_open: Option<u64>,
+    #[serde(default)]
+    pub raw_close_code: Option<u16>,
+    #[serde(default)]
+    pub raw_close_reason: Option<String>,
+    #[serde(default)]
+    pub transformed_close_code: Option<u16>,
+    #[serde(default)]
+    pub transformed_close_reason: Option<String>,
+    #[serde(default)]
+    pub delivery_kind: Option<String>,
+    #[serde(default)]
+    pub active_mode_at_close: Option<bool>,
+    #[serde(default)]
+    pub fallback_started_before_close: Option<bool>,
+    #[serde(default)]
+    pub no_close_observed_by_teardown: bool,
+    #[serde(default)]
+    pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4375,6 +4419,7 @@ fn parse_http_status_code(status: &str) -> Option<u16> {
 
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_FASTPATH_WARNING_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_PLAYER_WEBSOCKET_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS: [&str; 11] = [
     "playback.bootstrap.requested",
     "playback.bootstrap.request_result",
@@ -4399,6 +4444,179 @@ struct ManualLabFastPathWarningEvent {
     session_id: Option<String>,
     warn_code: String,
     observed_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct ManualLabPlayerWebsocketEvent {
+    #[serde(default)]
+    schema_version: u32,
+    #[serde(default)]
+    session_id: String,
+    #[serde(default)]
+    observed_at_unix_ms: u64,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    websocket_url: Option<String>,
+    #[serde(default)]
+    opened_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    first_message_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    closed_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    elapsed_ms_since_open: Option<u64>,
+    #[serde(default)]
+    raw_close_code: Option<u16>,
+    #[serde(default)]
+    raw_close_reason: Option<String>,
+    #[serde(default)]
+    transformed_close_code: Option<u16>,
+    #[serde(default)]
+    transformed_close_reason: Option<String>,
+    #[serde(default)]
+    delivery_kind: Option<String>,
+    #[serde(default)]
+    active_mode: Option<bool>,
+    #[serde(default)]
+    fallback_started: Option<bool>,
+    #[serde(default)]
+    was_clean: Option<bool>,
+    #[serde(default)]
+    detail: Option<String>,
+}
+
+fn parse_manual_lab_player_websocket_events(
+    recordings_root: &Path,
+    session_id: &str,
+) -> anyhow::Result<Vec<ManualLabPlayerWebsocketEvent>> {
+    let log_path = recordings_root.join(session_id).join("player-websocket.ndjson");
+    if !log_path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let log = fs::read_to_string(&log_path).with_context(|| format!("read {}", log_path.display()))?;
+    let mut events = Vec::new();
+    for (index, line) in log.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let event = serde_json::from_str::<ManualLabPlayerWebsocketEvent>(line)
+            .with_context(|| format!("parse {} line {}", log_path.display(), index + 1))?;
+        if event.session_id == session_id {
+            events.push(event);
+        }
+    }
+    events.sort_by_key(|event| event.observed_at_unix_ms);
+
+    Ok(events)
+}
+
+fn build_manual_lab_player_websocket_summary(
+    events: &[ManualLabPlayerWebsocketEvent],
+    teardown_started_at_unix_ms: Option<u64>,
+) -> ManualLabSessionPlayerWebsocketSummary {
+    let mut summary = ManualLabSessionPlayerWebsocketSummary {
+        schema_version: MANUAL_LAB_PLAYER_WEBSOCKET_SCHEMA_VERSION,
+        capture_end_at_unix_ms: teardown_started_at_unix_ms,
+        ..Default::default()
+    };
+
+    for event in events {
+        match event.kind.as_str() {
+            "websocket_open" => {
+                summary.open_observed = true;
+                summary.opened_at_unix_ms = summary.opened_at_unix_ms.or(event.opened_at_unix_ms);
+            }
+            "websocket_first_message" => {
+                summary.first_message_observed = true;
+                summary.first_message_at_unix_ms = summary.first_message_at_unix_ms.or(event.first_message_at_unix_ms);
+            }
+            "websocket_close_raw" => {
+                summary.raw_close_observed = true;
+                summary.closed_at_unix_ms = summary.closed_at_unix_ms.or(event.closed_at_unix_ms);
+                summary.elapsed_ms_since_open = summary.elapsed_ms_since_open.or(event.elapsed_ms_since_open);
+                summary.raw_close_code = summary.raw_close_code.or(event.raw_close_code);
+                summary.raw_close_reason = summary
+                    .raw_close_reason
+                    .clone()
+                    .or_else(|| event.raw_close_reason.clone());
+                summary.active_mode_at_close = summary.active_mode_at_close.or(event.active_mode);
+                summary.fallback_started_before_close =
+                    summary.fallback_started_before_close.or(event.fallback_started);
+            }
+            "websocket_close_transformed" => {
+                summary.transformed_close_observed = true;
+                summary.closed_at_unix_ms = summary.closed_at_unix_ms.or(event.closed_at_unix_ms);
+                summary.elapsed_ms_since_open = summary.elapsed_ms_since_open.or(event.elapsed_ms_since_open);
+                summary.transformed_close_code = summary.transformed_close_code.or(event.transformed_close_code);
+                summary.transformed_close_reason = summary
+                    .transformed_close_reason
+                    .clone()
+                    .or_else(|| event.transformed_close_reason.clone());
+                summary.delivery_kind = summary.delivery_kind.clone().or_else(|| event.delivery_kind.clone());
+                summary.active_mode_at_close = summary.active_mode_at_close.or(event.active_mode);
+                summary.fallback_started_before_close =
+                    summary.fallback_started_before_close.or(event.fallback_started);
+            }
+            _ => {}
+        }
+    }
+
+    if summary.open_observed && !summary.raw_close_observed && !summary.transformed_close_observed {
+        summary.no_close_observed_by_teardown = teardown_started_at_unix_ms.is_some();
+    }
+
+    summary.detail = if summary.raw_close_observed || summary.transformed_close_observed {
+        let close_code = summary
+            .raw_close_code
+            .or(summary.transformed_close_code)
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        let elapsed = summary
+            .elapsed_ms_since_open
+            .map(|elapsed_ms| format!("{elapsed_ms}ms"))
+            .unwrap_or_else(|| "<unknown>".to_owned());
+        Some(format!(
+            "websocket close observed code={close_code} elapsed_since_open={elapsed}"
+        ))
+    } else if summary.no_close_observed_by_teardown {
+        Some("no websocket close was observed before teardown".to_owned())
+    } else if summary.open_observed {
+        Some("websocket opened, but no close was observed during the active capture window".to_owned())
+    } else if events.is_empty() {
+        Some("no player websocket telemetry was captured".to_owned())
+    } else {
+        Some("player websocket telemetry was captured without an open or close marker".to_owned())
+    };
+
+    summary
+}
+
+fn write_manual_lab_player_websocket_artifact(
+    output_path: &Path,
+    events: &[ManualLabPlayerWebsocketEvent],
+) -> anyhow::Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+
+    let mut ordered_events = events.to_vec();
+    ordered_events.sort_by_key(|event| event.observed_at_unix_ms);
+
+    let mut body = String::new();
+    for event in &ordered_events {
+        body.push_str(&serde_json::to_string(event).context("serialize aggregated player websocket event")?);
+        body.push('\n');
+    }
+
+    fs::write(output_path, body).with_context(|| format!("write {}", output_path.display()))
 }
 
 fn parse_manual_lab_fastpath_warning_line(line: &str) -> Option<ManualLabFastPathWarningEvent> {
@@ -5267,6 +5485,7 @@ fn persist_black_screen_evidence(
     if evidence.teardown_started_at_unix_ms.is_none() {
         evidence.teardown_started_at_unix_ms = teardown_started_at_unix_ms;
     }
+    evidence.artifacts = build_black_screen_artifact_paths(state);
     let playback_bootstrap_timelines = parse_manual_lab_playback_bootstrap_timelines(&state.proxy.stdout_log)?;
     let ready_trace_events = parse_manual_lab_ready_trace_events(&state.proxy.stdout_log)?;
     let gfx_filter_summaries = parse_manual_lab_gfx_filter_summaries(&state.proxy.stdout_log)?;
@@ -5281,7 +5500,7 @@ fn persist_black_screen_evidence(
     let session_evidence = state
         .sessions
         .iter()
-        .map(|session| {
+        .map(|session| -> anyhow::Result<_> {
             let playback_bootstrap_timeline = playback_bootstrap_timelines
                 .get(&session.session_id)
                 .cloned()
@@ -5301,25 +5520,28 @@ fn persist_black_screen_evidence(
                 .cloned()
                 .collect::<Vec<_>>();
             let gfx_warning_summary = gfx_warning_summaries.get(&session.session_id).cloned();
+            let player_websocket_events =
+                parse_manual_lab_player_websocket_events(&evidence.artifacts.recordings_root, &session.session_id)?;
 
-            (
+            Ok((
                 session,
                 playback_bootstrap_timeline,
                 playback_ready_correlation,
+                player_websocket_events,
                 gfx_filter_summary,
                 fastpath_warnings,
                 gfx_warning_summary,
-            )
+            ))
         })
-        .collect::<Vec<_>>();
+        .collect::<anyhow::Result<Vec<_>>>()?;
     let aligned_ready_fastpath_warn_codes = session_evidence
         .iter()
-        .filter(|(_, _, correlation, _, _, _)| correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
-        .flat_map(|(_, _, _, _, fastpath_warnings, _)| fastpath_warnings.iter().map(|event| event.warn_code.clone()))
+        .filter(|(_, _, correlation, _, _, _, _)| correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
+        .flat_map(|(_, _, _, _, _, fastpath_warnings, _)| fastpath_warnings.iter().map(|event| event.warn_code.clone()))
         .collect::<BTreeSet<_>>();
     let aligned_ready_warning_summaries = session_evidence
         .iter()
-        .filter_map(|(_, _, correlation, _, _, gfx_warning_summary)| {
+        .filter_map(|(_, _, correlation, _, _, _, gfx_warning_summary)| {
             (correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
                 .then_some(gfx_warning_summary.clone())
                 .flatten()
@@ -5327,7 +5549,14 @@ fn persist_black_screen_evidence(
         .collect::<Vec<_>>();
     let aligned_ready_warning_baseline = build_manual_lab_gfx_warning_baseline(&aligned_ready_warning_summaries);
     let aligned_ready_baseline_session_count = aligned_ready_warning_summaries.len();
-    evidence.artifacts = build_black_screen_artifact_paths(state);
+    let aggregated_player_websocket_events = session_evidence
+        .iter()
+        .flat_map(|(_, _, _, player_websocket_events, _, _, _)| player_websocket_events.clone())
+        .collect::<Vec<_>>();
+    write_manual_lab_player_websocket_artifact(
+        &evidence.artifacts.player_websocket_log,
+        &aggregated_player_websocket_events,
+    )?;
     evidence.session_invocations = session_evidence
         .into_iter()
         .map(
@@ -5335,10 +5564,15 @@ fn persist_black_screen_evidence(
                 session,
                 playback_bootstrap_timeline,
                 playback_ready_correlation,
+                player_websocket_events,
                 gfx_filter_summary,
                 fastpath_warnings,
                 gfx_warning_summary,
             )| {
+                let player_websocket_summary = build_manual_lab_player_websocket_summary(
+                    &player_websocket_events,
+                    evidence.teardown_started_at_unix_ms,
+                );
                 let fastpath_warning_summary = build_manual_lab_fastpath_warning_summary(
                     &fastpath_warnings,
                     unattributed_fastpath_warning_count,
@@ -5371,6 +5605,7 @@ fn persist_black_screen_evidence(
                     stream_probe_observed_at_unix_ms: session.stream_probe_observed_at_unix_ms,
                     playback_bootstrap_timeline,
                     playback_ready_correlation,
+                    player_websocket_summary,
                     gfx_filter_summary,
                     fastpath_warning_summary: Some(fastpath_warning_summary),
                     gfx_warning_summary,
@@ -5537,17 +5772,18 @@ mod tests {
     use super::{
         ManualLabBlackScreenBranchVerdict, ManualLabDriverKind, ManualLabEvidenceConfidence,
         ManualLabFastPathWarningEvent, ManualLabFastPathWarningEvidence, ManualLabPlaybackBootstrapVerdict,
-        ManualLabPlaybackReadyVerdict, ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary,
-        ManualLabSessionPlaybackBootstrapEvent, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
+        ManualLabPlaybackReadyVerdict, ManualLabPlayerWebsocketEvent, ManualLabSessionGfxFilterSummary,
+        ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
+        ManualLabSessionPlayerWebsocketSummary, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
         association_token, build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
         build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_bootstrap_timeline,
-        build_manual_lab_playback_ready_correlation, build_session_records,
+        build_manual_lab_playback_ready_correlation, build_manual_lab_player_websocket_summary, build_session_records,
         discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, ironrdp_no_gfx_driver_args, manual_lab_manifest_path,
         manual_lab_service_ready_timeout, parse_manual_lab_fastpath_warning_line,
         parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
-        parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_ready_trace_line,
-        parse_proc_stat_process_state, xfreerdp_driver_args,
+        parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_player_websocket_events,
+        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, xfreerdp_driver_args,
     };
 
     fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
@@ -5566,6 +5802,16 @@ mod tests {
             source: "test".to_owned(),
             byte_len: 0,
             error: None,
+        }
+    }
+
+    fn player_websocket_event(session_id: &str, kind: &str, observed_at_unix_ms: u64) -> ManualLabPlayerWebsocketEvent {
+        ManualLabPlayerWebsocketEvent {
+            schema_version: 1,
+            session_id: session_id.to_owned(),
+            observed_at_unix_ms,
+            kind: kind.to_owned(),
+            ..Default::default()
         }
     }
 
@@ -5790,6 +6036,102 @@ mod tests {
                 warn_code: "fastpath_process_server_frame_error".to_owned(),
                 observed_at_unix_ms: Some(1_774_735_202_000),
             })
+        );
+    }
+
+    #[test]
+    fn manual_lab_parses_player_websocket_events_from_recording_dir() {
+        let temp = tempdir().expect("tempdir");
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let session_dir = temp.path().join(session_id);
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        let log_path = session_dir.join("player-websocket.ndjson");
+        fs::write(
+            &log_path,
+            concat!(
+                "{\"schemaVersion\":1,\"sessionId\":\"11111111-2222-3333-4444-555555555555\",\"observedAtUnixMs\":10,\"kind\":\"websocket_open\",\"openedAtUnixMs\":10}\n",
+                "{\"schemaVersion\":1,\"sessionId\":\"11111111-2222-3333-4444-555555555555\",\"observedAtUnixMs\":20,\"kind\":\"websocket_close_raw\",\"closedAtUnixMs\":25,\"elapsedMsSinceOpen\":15,\"rawCloseCode\":4001,\"rawCloseReason\":\"streaming ended\",\"activeMode\":true,\"fallbackStarted\":false}\n"
+            ),
+        )
+        .expect("write websocket log");
+
+        let events =
+            parse_manual_lab_player_websocket_events(temp.path(), session_id).expect("parse player websocket events");
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, "websocket_open");
+        assert_eq!(events[1].raw_close_code, Some(4001));
+        assert_eq!(events[1].elapsed_ms_since_open, Some(15));
+    }
+
+    #[test]
+    fn manual_lab_builds_player_websocket_summary_with_raw_and_transformed_close() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let mut open = player_websocket_event(session_id, "websocket_open", 100);
+        open.opened_at_unix_ms = Some(100);
+        let mut raw_close = player_websocket_event(session_id, "websocket_close_raw", 160);
+        raw_close.closed_at_unix_ms = Some(160);
+        raw_close.elapsed_ms_since_open = Some(60);
+        raw_close.raw_close_code = Some(4001);
+        raw_close.raw_close_reason = Some("streaming ended".to_owned());
+        raw_close.active_mode = Some(true);
+        raw_close.fallback_started = Some(false);
+        let mut transformed_close = player_websocket_event(session_id, "websocket_close_transformed", 165);
+        transformed_close.closed_at_unix_ms = Some(165);
+        transformed_close.elapsed_ms_since_open = Some(65);
+        transformed_close.transformed_close_code = Some(1000);
+        transformed_close.delivery_kind = Some("onclose".to_owned());
+        transformed_close.active_mode = Some(false);
+        transformed_close.fallback_started = Some(true);
+
+        let summary = build_manual_lab_player_websocket_summary(&[open, raw_close, transformed_close], Some(200));
+
+        assert_eq!(
+            summary,
+            ManualLabSessionPlayerWebsocketSummary {
+                schema_version: 1,
+                open_observed: true,
+                first_message_observed: false,
+                raw_close_observed: true,
+                transformed_close_observed: true,
+                opened_at_unix_ms: Some(100),
+                first_message_at_unix_ms: None,
+                closed_at_unix_ms: Some(160),
+                capture_end_at_unix_ms: Some(200),
+                elapsed_ms_since_open: Some(60),
+                raw_close_code: Some(4001),
+                raw_close_reason: Some("streaming ended".to_owned()),
+                transformed_close_code: Some(1000),
+                transformed_close_reason: None,
+                delivery_kind: Some("onclose".to_owned()),
+                active_mode_at_close: Some(true),
+                fallback_started_before_close: Some(false),
+                no_close_observed_by_teardown: false,
+                detail: Some("websocket close observed code=4001 elapsed_since_open=60ms".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_player_websocket_summary_when_no_close_is_observed() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let mut open = player_websocket_event(session_id, "websocket_open", 100);
+        open.opened_at_unix_ms = Some(100);
+        let mut first_message = player_websocket_event(session_id, "websocket_first_message", 120);
+        first_message.first_message_at_unix_ms = Some(120);
+        first_message.elapsed_ms_since_open = Some(20);
+
+        let summary = build_manual_lab_player_websocket_summary(&[open, first_message], Some(200));
+
+        assert_eq!(summary.open_observed, true);
+        assert_eq!(summary.first_message_observed, true);
+        assert_eq!(summary.raw_close_observed, false);
+        assert_eq!(summary.transformed_close_observed, false);
+        assert_eq!(summary.no_close_observed_by_teardown, true);
+        assert_eq!(summary.capture_end_at_unix_ms, Some(200));
+        assert_eq!(
+            summary.detail.as_deref(),
+            Some("no websocket close was observed before teardown")
         );
     }
 

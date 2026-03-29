@@ -47,6 +47,10 @@ export class GatewayAccessApi {
   playerResourceUrl(path: string) {
     return `${this.gatewayAccessUrl}/jet/jrec/play/${path}`;
   }
+
+  playerTelemetryUrl() {
+    return `${this.gatewayAccessUrl}/jet/jrec/telemetry/${this.sessionId}?token=${this.token}`;
+  }
 }
 
 class GatewayAccessApiBuilder {

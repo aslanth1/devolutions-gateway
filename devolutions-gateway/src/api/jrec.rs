@@ -7,12 +7,13 @@ use anyhow::Context as _;
 use axum::extract::ws::{CloseFrame, WebSocket};
 use axum::extract::{self, ConnectInfo, Query, State, WebSocketUpgrade};
 use axum::response::Response;
-use axum::routing::{delete, get};
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use cadeau::xmf;
 use camino::{Utf8Path, Utf8PathBuf};
 use devolutions_gateway_task::ShutdownSignal;
 use hyper::StatusCode;
+use tokio::io::AsyncWriteExt as _;
 use tracing::Instrument as _;
 use uuid::Uuid;
 
@@ -29,6 +30,7 @@ pub fn make_router<S>(state: DgwState) -> Router<S> {
         .route("/delete", delete(jrec_delete_many))
         .route("/list", get(list_recordings))
         .route("/pull/{id}/{filename}", get(pull_recording_file))
+        .route("/telemetry/{id}", post(record_player_telemetry))
         .route("/play", get(get_player))
         .route("/play/", get(get_player))
         .route("/play/{*path}", get(get_player))
@@ -47,6 +49,43 @@ struct JrecPushQueryParam {
 pub(crate) struct JrecListQueryParam {
     #[serde(default)]
     active: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerTelemetryEvent {
+    schema_version: u32,
+    session_id: String,
+    observed_at_unix_ms: u64,
+    kind: String,
+    #[serde(default)]
+    websocket_url: Option<String>,
+    #[serde(default)]
+    opened_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    first_message_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    closed_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    elapsed_ms_since_open: Option<u64>,
+    #[serde(default)]
+    raw_close_code: Option<u16>,
+    #[serde(default)]
+    raw_close_reason: Option<String>,
+    #[serde(default)]
+    transformed_close_code: Option<u16>,
+    #[serde(default)]
+    transformed_close_reason: Option<String>,
+    #[serde(default)]
+    delivery_kind: Option<String>,
+    #[serde(default)]
+    active_mode: Option<bool>,
+    #[serde(default)]
+    fallback_started: Option<bool>,
+    #[serde(default)]
+    was_clean: Option<bool>,
+    #[serde(default)]
+    detail: Option<String>,
 }
 
 async fn jrec_push(
@@ -465,6 +504,48 @@ where
         .map_err(HttpError::internal().err())?;
 
     Ok(response)
+}
+
+async fn record_player_telemetry(
+    State(DgwState { conf_handle, .. }): State<DgwState>,
+    extract::Path(id): extract::Path<Uuid>,
+    JrecToken(claims): JrecToken,
+    Json(event): Json<PlayerTelemetryEvent>,
+) -> Result<StatusCode, HttpError> {
+    if id != claims.jet_aid {
+        return Err(HttpError::forbidden().msg("not allowed to write telemetry for this recording"));
+    }
+
+    if event.session_id != id.to_string() {
+        return Err(HttpError::bad_request().msg("telemetry session id does not match route session id"));
+    }
+
+    let telemetry_path = conf_handle
+        .get_conf()
+        .recording_path
+        .join(id.to_string())
+        .join("player-websocket.ndjson");
+    if let Some(parent) = telemetry_path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(HttpError::internal().with_msg("create telemetry directory").err())?;
+    }
+
+    let mut serialized =
+        serde_json::to_vec(&event).map_err(HttpError::internal().with_msg("serialize player telemetry").err())?;
+    serialized.push(b'\n');
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&telemetry_path)
+        .await
+        .map_err(HttpError::internal().with_msg("open player telemetry log").err())?;
+    file.write_all(&serialized)
+        .await
+        .map_err(HttpError::internal().with_msg("append player telemetry log").err())?;
+
+    Ok(StatusCode::ACCEPTED)
 }
 
 async fn get_player<ReqBody>(
