@@ -53,6 +53,13 @@ Detailed schemas, Docker topology, and release mechanics belong in the owning do
 - Upgrade path: a later milestone may swap in an alternate capture backend or a minimal media websocket bridge if it preserves the same proxy-owned stream metadata and event-ordering contract.
 - Owning docs: this file, [contracts.md](contracts.md), and [architecture.md](architecture.md).
 
+### BS-39 Proxy Capture Fallback Gate
+
+- `seam_ownership`: `devolutions-gateway/src/rdp_proxy.rs` plus `devolutions-gateway/src/session.rs` plus `devolutions-gateway/src/recording.rs` plus `devolutions-gateway/src/api/jrec.rs`, with `/jet/jrec/push/{session_id}` kept as the canonical producer contract.
+- `rejection_reason`: no explicit proxy-seam insufficiency has been recorded yet, so control-plane-assisted capture fallback cannot open.
+- `exhausted_lanes`: `instrumentation-first`, `non-RDPGFX`.
+- `fallback_status`: `blocked` until this same canonical row is updated with the exact blocker that proves `/jet/jrec/push/{session_id}` remained insufficient after those lanes were exhausted.
+
 ## DF-05 Windows SKU, ISO Input, Tiny11 Transformation, And Gold-Image Attestation
 
 - Winner: the gold image is based on an official Microsoft Windows 11 Pro x64 ISO, pinned to one approved language variant, with a recorded acquisition channel, acquisition date, filename, size, and SHA-256 before any derived image may enter the reusable pool.

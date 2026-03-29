@@ -83,6 +83,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 
 - `AGENTS.md` pass rows around no-parallel honeypot session, credential, and stream stacks are satisfied by the combined architecture and research crosswalks plus the current contract-tier evidence below.
 - [architecture.md](architecture.md) and [research.md](research.md) now map each approved honeypot surface directly onto `rdp_proxy.rs`, `session.rs`, `subscriber.rs`, `api/preflight.rs`, `api/sessions.rs`, `api/session.rs`, `recording.rs`, `streaming.rs`, `ws.rs`, `video-streamer`, and `terminal-streamer`.
+- `testsuite/tests/honeypot_docs.rs` now enforces the canonical `BS-39` blocker record in [decisions.md](decisions.md), so control-plane-assisted capture fallback cannot open without an explicit proxy-seam rejection after the required exhausted lanes are recorded.
 - `testsuite/tests/honeypot_visibility.rs` proves the proxy still owns session lifecycle, credential substitution, replay, and stream identity without a parallel session or credential API.
 - `testsuite/tests/cli/dgw/honeypot.rs` proves the operator control path still uses `/jet/sessions` and `/jet/session/{id}/terminate` rather than a second session-management surface.
 - `testsuite/tests/honeypot_frontend.rs` proves the browser path still consumes proxy bootstrap, event, and stream-token routes rather than a separate stream-control service.

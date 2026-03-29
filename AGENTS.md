@@ -1023,8 +1023,9 @@ Pass when: tests in `testsuite/tests/` prove both the preserved `stream unavaila
 - [x] Add a manual-lab proof that observes at least one true live-ready session.
 Pass when: a sanctioned `manual-lab` proof run records at least one `session.stream.ready` event, the active player remains attached without immediate `StreamingEnded` for that session, and any still-unavailable sessions remain explicitly truthful instead of regressing to fake live behavior.
 
-- [ ] Bound any control-plane-assisted capture fallback behind an explicit rejection gate.
+- [x] Bound any control-plane-assisted capture fallback behind an explicit rejection gate.
 Pass when: if the proxy-owned producer seam cannot be made to emit JREC bytes, the repo records the exact blocker first and only then opens a follow-up fallback task for control-plane-assisted capture that still feeds the same `/jet/jrec/push/{session_id}` contract without adding a fourth runtime service.
+Current evidence after the canonical fallback gate: `docs/honeypot/decisions.md` now carries a single `BS-39` blocker record with explicit `seam_ownership`, `rejection_reason`, `exhausted_lanes`, and `fallback_status`, and `testsuite/tests/honeypot_docs.rs` now fails closed if that proxy-seam gate is reduced to generic prose or loses the `/jet/jrec/push/{session_id}` contract, the required exhausted lanes, or the blocked fallback state.
 
 ### Milestone 6v: Black-Screen Forensics Matrix (Instrumentation-First Non-RDPGFX)
 
@@ -1180,8 +1181,9 @@ Current evidence after the do-not-retry ledger reducer: `testsuite/src/honeypot_
 Pass when: no variant result is treated as meaningful unless a same-day control run with the same artifact contract exists beside it.
 Current evidence after the control-comparison reducer: `testsuite/src/honeypot_manual_lab.rs` now persists JSON-owned `artifact_contract_summary` and `control_run_comparison_summary` inside `ManualLabBlackScreenEvidence`, keyed off explicit `DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT` input plus `run_started_at_unix_ms`. Variant lanes now fail closed unless a sibling `artifacts/black-screen-evidence.json` loads successfully, proves `is_control_lane`, carries a current run verdict, lands on the same UTC day, and matches the same persisted artifact contract, and `testsuite/tests/honeypot_manual_lab.rs` now proves same-day accepted, missing control JSON rejected, stale control rejected, and contract mismatch rejected through the real `integration_tests` harness.
 
-- [ ] `BS-39` Block any control-plane-assisted capture fallback until the proxy seam is explicitly rejected.
+- [x] `BS-39` Block any control-plane-assisted capture fallback until the proxy seam is explicitly rejected.
 Pass when: fallback capture work cannot open until the repo records why the proxy-owned `/jet/jrec/push/{session_id}` seam was insufficient even after the instrumentation-first and non-RDPGFX lanes were exhausted.
+Current evidence after the blocker-record lock: `docs/honeypot/decisions.md` now holds the single canonical `BS-39` gate, with the proxy-owned `/jet/jrec/push/{session_id}` seam recorded separately from the current fallback rejection reason and the required exhausted lanes `instrumentation-first` plus `non-RDPGFX`. `docs/honeypot/testing.md` points at that record as enforcement evidence, and `testsuite/tests/honeypot_docs.rs` now proves the row fails closed if any one of those fields or the `fallback_status=blocked` state disappears.
 
 - [ ] `BS-40` Add a short runbook for black-screen experiment order and artifact naming.
 Pass when: AGENTS or the linked docs name the command order, lane naming, artifact filenames, and verdict format that each row expects so future runs do not improvise new layouts.

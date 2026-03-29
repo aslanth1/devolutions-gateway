@@ -1068,3 +1068,38 @@ fn honeypot_docs_keep_canonical_tiny11_lab_gate_fail_closed() {
         "repopulate it only through `honeypot-control-plane consume-image --config <control-plane.toml> --source-manifest <bundle-manifest.json>`",
     );
 }
+
+#[test]
+fn honeypot_docs_keep_proxy_capture_fallback_gate_canonical() {
+    let decisions_path = "docs/honeypot/decisions.md";
+    let decisions = read_repo_text(decisions_path);
+    assert_contains(decisions_path, &decisions, "### BS-39 Proxy Capture Fallback Gate");
+    assert_contains(
+        decisions_path,
+        &decisions,
+        "- `seam_ownership`: `devolutions-gateway/src/rdp_proxy.rs` plus `devolutions-gateway/src/session.rs` plus `devolutions-gateway/src/recording.rs` plus `devolutions-gateway/src/api/jrec.rs`, with `/jet/jrec/push/{session_id}` kept as the canonical producer contract.",
+    );
+    assert_contains(
+        decisions_path,
+        &decisions,
+        "- `rejection_reason`: no explicit proxy-seam insufficiency has been recorded yet, so control-plane-assisted capture fallback cannot open.",
+    );
+    assert_contains(
+        decisions_path,
+        &decisions,
+        "- `exhausted_lanes`: `instrumentation-first`, `non-RDPGFX`.",
+    );
+    assert_contains(
+        decisions_path,
+        &decisions,
+        "- `fallback_status`: `blocked` until this same canonical row is updated with the exact blocker that proves `/jet/jrec/push/{session_id}` remained insufficient after those lanes were exhausted.",
+    );
+
+    let testing_path = "docs/honeypot/testing.md";
+    let testing = read_repo_text(testing_path);
+    assert_contains(
+        testing_path,
+        &testing,
+        "`testsuite/tests/honeypot_docs.rs` now enforces the canonical `BS-39` blocker record in [decisions.md](decisions.md), so control-plane-assisted capture fallback cannot open without an explicit proxy-seam rejection after the required exhausted lanes are recorded.",
+    );
+}
