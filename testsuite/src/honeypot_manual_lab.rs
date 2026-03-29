@@ -15,6 +15,7 @@ use anyhow::{Context as _, bail, ensure};
 use base64::prelude::*;
 use honeypot_contracts::Versioned as _;
 use honeypot_contracts::control_plane::{RecycleVmRequest, ReleaseVmRequest};
+use honeypot_contracts::events::{EventEnvelope, EventPayload};
 use honeypot_contracts::frontend::BootstrapResponse;
 use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse};
 use honeypot_control_plane::config::ControlPlaneConfig;
@@ -1146,6 +1147,8 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub player_playback_path_summary: ManualLabSessionPlayerPlaybackPathSummary,
     #[serde(default)]
+    pub playback_artifact_timeline_summary: ManualLabSessionPlaybackArtifactTimelineSummary,
+    #[serde(default)]
     pub gfx_filter_summary: Option<ManualLabSessionGfxFilterSummary>,
     #[serde(default)]
     pub fastpath_warning_summary: Option<ManualLabSessionFastPathWarningSummary>,
@@ -1345,6 +1348,55 @@ pub struct ManualLabSessionPlayerPlaybackPathSummary {
     pub missing_artifact_while_active: bool,
     #[serde(default)]
     pub telemetry_gap: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabPlaybackArtifactTimelineVerdict {
+    CorrelatedReadyPlayback,
+    MissingRecordingArtifact,
+    StreamFailedBeforeRecording,
+    WebsocketAttachedWithoutReady,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionPlaybackArtifactTimelineSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabPlaybackArtifactTimelineVerdict,
+    #[serde(default)]
+    pub confidence: ManualLabEvidenceConfidence,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub session_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub session_assigned_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub session_stream_ready_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub session_stream_failed_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub websocket_open_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub websocket_first_message_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub recording_first_chunk_appended_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub recording_connected_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub recording_artifact_present: bool,
+    #[serde(default)]
+    pub recording_artifact_count: u64,
+    #[serde(default)]
+    pub recording_artifact_max_size_bytes: Option<u64>,
+    #[serde(default)]
+    pub recording_artifact_latest_modified_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub timeline_gaps: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4186,6 +4238,161 @@ fn parse_content_length(headers: &str) -> anyhow::Result<Option<usize>> {
     Ok(None)
 }
 
+fn parse_transfer_encoding_chunked(headers: &str) -> bool {
+    headers.lines().any(|line| {
+        line.split_once(':').is_some_and(|(name, value)| {
+            name.trim().eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked")
+        })
+    })
+}
+
+fn find_crlf_offset(buffer: &[u8], start: usize) -> Option<usize> {
+    buffer[start..]
+        .windows(2)
+        .position(|window| window == b"\r\n")
+        .map(|offset| start + offset)
+}
+
+fn decode_chunked_http_body(body: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let mut decoded = Vec::new();
+    let mut cursor = 0usize;
+
+    while cursor < body.len() {
+        let Some(line_end) = find_crlf_offset(body, cursor) else {
+            break;
+        };
+        let size_line = std::str::from_utf8(&body[cursor..line_end]).context("decode HTTP chunk size line")?;
+        let size_token = size_line.split(';').next().unwrap_or_default().trim();
+        if size_token.is_empty() {
+            break;
+        }
+        let chunk_size =
+            usize::from_str_radix(size_token, 16).with_context(|| format!("parse HTTP chunk size {size_token}"))?;
+        cursor = line_end + 2;
+
+        if chunk_size == 0 {
+            break;
+        }
+
+        if cursor + chunk_size > body.len() {
+            break;
+        }
+
+        decoded.extend_from_slice(&body[cursor..cursor + chunk_size]);
+        cursor += chunk_size;
+
+        if cursor + 2 > body.len() || &body[cursor..cursor + 2] != b"\r\n" {
+            break;
+        }
+        cursor += 2;
+    }
+
+    Ok(decoded)
+}
+
+fn send_http_request_stream_snapshot(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+    idle_timeout: Duration,
+) -> anyhow::Result<(String, Vec<u8>)> {
+    let mut stream =
+        TcpStream::connect((Ipv4Addr::LOCALHOST, port)).with_context(|| format!("connect to 127.0.0.1:{port}"))?;
+    stream
+        .set_read_timeout(Some(idle_timeout))
+        .context("set streaming HTTP read timeout")?;
+    stream
+        .set_write_timeout(Some(MANUAL_LAB_HTTP_TIMEOUT))
+        .context("set streaming HTTP write timeout")?;
+
+    let mut request = format!("{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n");
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    match body {
+        Some(body) => {
+            request.push_str("Content-Type: application/json\r\n");
+            request.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
+        }
+        None => request.push_str("\r\n"),
+    }
+    stream
+        .write_all(request.as_bytes())
+        .with_context(|| format!("write streaming HTTP request to {path} on port {port}"))?;
+    if let Some(body) = body {
+        stream
+            .write_all(body)
+            .with_context(|| format!("write streaming HTTP request body to {path} on port {port}"))?;
+    }
+
+    let mut response = Vec::new();
+    let mut header_end = None;
+    let mut content_length = None;
+
+    loop {
+        let mut chunk = [0u8; 8192];
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read_len) => {
+                response.extend_from_slice(&chunk[..read_len]);
+                if header_end.is_none()
+                    && let Some(found_header_end) = response.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    header_end = Some(found_header_end);
+                    let headers =
+                        std::str::from_utf8(&response[..found_header_end]).context("decode streaming HTTP headers")?;
+                    content_length = parse_content_length(headers)?;
+                }
+
+                if let (Some(found_header_end), Some(expected_body_len)) = (header_end, content_length)
+                    && response.len() >= found_header_end + 4 + expected_body_len
+                {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                if header_end.is_some() {
+                    break;
+                }
+                return Err(error)
+                    .with_context(|| format!("read streaming HTTP response headers from {path} on port {port}"));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| format!("read streaming HTTP response from {path} on port {port}"));
+            }
+        }
+    }
+
+    let header_end = header_end.context("split streaming HTTP response headers and body")?;
+    let headers = std::str::from_utf8(&response[..header_end]).context("decode streaming HTTP response headers")?;
+    let status_line = headers
+        .lines()
+        .next()
+        .context("extract streaming HTTP status line")?
+        .to_owned();
+    let body_start = header_end + 4;
+    let raw_body = match content_length {
+        Some(expected_body_len) if response.len() >= body_start + expected_body_len => {
+            response[body_start..(body_start + expected_body_len)].to_vec()
+        }
+        Some(_) | None => response[body_start..].to_vec(),
+    };
+    let body = if parse_transfer_encoding_chunked(headers) {
+        decode_chunked_http_body(&raw_body)?
+    } else {
+        raw_body
+    };
+
+    Ok((status_line, body))
+}
+
 fn display_socket_path(display: &str) -> Option<PathBuf> {
     let display = display.strip_prefix(':')?;
     let display_number = display.split('.').next()?;
@@ -4466,6 +4673,7 @@ const MANUAL_LAB_PLAYBACK_BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_FASTPATH_WARNING_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYER_WEBSOCKET_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYER_PLAYBACK_PATH_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_PLAYBACK_ARTIFACT_TIMELINE_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS: [&str; 11] = [
     "playback.bootstrap.requested",
     "playback.bootstrap.request_result",
@@ -4535,6 +4743,13 @@ struct ManualLabPlayerWebsocketEvent {
     was_clean: Option<bool>,
     #[serde(default)]
     detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManualLabRecordingArtifactSample {
+    path: PathBuf,
+    size_bytes: u64,
+    modified_at_unix_ms: Option<u64>,
 }
 
 fn parse_manual_lab_player_websocket_events(
@@ -4759,6 +4974,156 @@ fn build_manual_lab_player_playback_path_summary(
     });
 
     summary
+}
+
+fn event_payload_timestamp_unix_ms(event: &EventEnvelope) -> Option<u64> {
+    let payload_time = match &event.payload {
+        EventPayload::SessionStarted { started_at, .. } => Some(started_at.as_str()),
+        EventPayload::SessionAssigned { assigned_at, .. } => Some(assigned_at.as_str()),
+        EventPayload::SessionStreamReady { ready_at, .. } => Some(ready_at.as_str()),
+        EventPayload::SessionEnded { ended_at, .. } => Some(ended_at.as_str()),
+        EventPayload::SessionKilled { killed_at, .. } => Some(killed_at.as_str()),
+        EventPayload::SessionRecycleRequested { requested_at, .. } => Some(requested_at.as_str()),
+        EventPayload::HostRecycled { completed_at, .. } => Some(completed_at.as_str()),
+        EventPayload::SessionStreamFailed { failed_at, .. } => Some(failed_at.as_str()),
+        EventPayload::ProxyStatusDegraded { degraded_at, .. } => Some(degraded_at.as_str()),
+    };
+
+    payload_time
+        .and_then(parse_rfc3339_timestamp_unix_ms)
+        .or_else(|| parse_rfc3339_timestamp_unix_ms(&event.emitted_at))
+}
+
+fn build_manual_lab_playback_artifact_timeline_summary(
+    session_events: &[EventEnvelope],
+    playback_ready_correlation: &ManualLabSessionPlaybackReadyCorrelation,
+    player_websocket_summary: &ManualLabSessionPlayerWebsocketSummary,
+    recordings_root: &Path,
+    session_id: &str,
+) -> ManualLabSessionPlaybackArtifactTimelineSummary {
+    let session_started_at_unix_ms = session_events.iter().find_map(|event| match event.payload {
+        EventPayload::SessionStarted { .. } => event_payload_timestamp_unix_ms(event),
+        _ => None,
+    });
+    let session_assigned_at_unix_ms = session_events.iter().find_map(|event| match event.payload {
+        EventPayload::SessionAssigned { .. } => event_payload_timestamp_unix_ms(event),
+        _ => None,
+    });
+    let session_stream_ready_at_unix_ms = session_events.iter().find_map(|event| match event.payload {
+        EventPayload::SessionStreamReady { .. } => event_payload_timestamp_unix_ms(event),
+        _ => None,
+    });
+    let session_stream_failed_at_unix_ms = session_events.iter().find_map(|event| match event.payload {
+        EventPayload::SessionStreamFailed { .. } => event_payload_timestamp_unix_ms(event),
+        _ => None,
+    });
+    let websocket_open_at_unix_ms = player_websocket_summary.opened_at_unix_ms;
+    let websocket_first_message_at_unix_ms = player_websocket_summary.first_message_at_unix_ms;
+    let recording_first_chunk_appended_at_unix_ms = playback_ready_correlation.first_chunk_appended_at_unix_ms;
+    let recording_connected_at_unix_ms = playback_ready_correlation.recording_connected_at_unix_ms;
+    let recording_artifacts =
+        collect_manual_lab_recording_artifact_samples(recordings_root, session_id).unwrap_or_default();
+    let recording_artifact_present = !recording_artifacts.is_empty();
+    let recording_artifact_count = recording_artifacts
+        .len()
+        .try_into()
+        .expect("recording artifact count should fit in u64");
+    let recording_artifact_max_size_bytes = recording_artifacts.iter().map(|sample| sample.size_bytes).max();
+    let recording_artifact_latest_modified_at_unix_ms = recording_artifacts
+        .iter()
+        .filter_map(|sample| sample.modified_at_unix_ms)
+        .max();
+
+    let mut timeline_gaps = Vec::new();
+    if session_started_at_unix_ms.is_none() {
+        timeline_gaps.push("missing session.started".to_owned());
+    }
+    if session_assigned_at_unix_ms.is_none() {
+        timeline_gaps.push("missing session.assigned".to_owned());
+    }
+    if session_stream_ready_at_unix_ms.is_none() && session_stream_failed_at_unix_ms.is_none() {
+        timeline_gaps.push("missing session.stream.ready and session.stream.failed".to_owned());
+    }
+    if session_stream_ready_at_unix_ms.is_some() && websocket_open_at_unix_ms.is_none() {
+        timeline_gaps.push("missing websocket_open for ready session".to_owned());
+    }
+    if !recording_artifact_present {
+        timeline_gaps.push("missing recording-*.webm artifact".to_owned());
+    }
+    if recording_first_chunk_appended_at_unix_ms.is_none() {
+        timeline_gaps.push("missing playback.chunk.appended.first".to_owned());
+    }
+
+    let (verdict, confidence, detail) = if session_stream_failed_at_unix_ms.is_some()
+        && recording_first_chunk_appended_at_unix_ms.is_none()
+        && !recording_artifact_present
+    {
+        (
+            ManualLabPlaybackArtifactTimelineVerdict::StreamFailedBeforeRecording,
+            ManualLabEvidenceConfidence::High,
+            Some("session.stream.failed landed before any recording artifact or first-chunk signal".to_owned()),
+        )
+    } else if session_stream_ready_at_unix_ms.is_some()
+        && websocket_open_at_unix_ms.is_some()
+        && recording_first_chunk_appended_at_unix_ms.is_some()
+        && recording_artifact_present
+    {
+        (
+            ManualLabPlaybackArtifactTimelineVerdict::CorrelatedReadyPlayback,
+            if session_started_at_unix_ms.is_some() && session_assigned_at_unix_ms.is_some() {
+                ManualLabEvidenceConfidence::High
+            } else {
+                ManualLabEvidenceConfidence::Medium
+            },
+            Some(
+                "session lifecycle, websocket attach, and recording artifact signals aligned on one ready path"
+                    .to_owned(),
+            ),
+        )
+    } else if websocket_open_at_unix_ms.is_some() && session_stream_ready_at_unix_ms.is_none() {
+        (
+            ManualLabPlaybackArtifactTimelineVerdict::WebsocketAttachedWithoutReady,
+            ManualLabEvidenceConfidence::Medium,
+            Some("websocket attached without a correlated session.stream.ready event".to_owned()),
+        )
+    } else if session_stream_ready_at_unix_ms.is_some()
+        && (!recording_artifact_present || recording_first_chunk_appended_at_unix_ms.is_none())
+    {
+        (
+            ManualLabPlaybackArtifactTimelineVerdict::MissingRecordingArtifact,
+            ManualLabEvidenceConfidence::Medium,
+            Some("session.stream.ready was emitted without a correlated recording artifact growth signal".to_owned()),
+        )
+    } else {
+        (
+            ManualLabPlaybackArtifactTimelineVerdict::Inconclusive,
+            ManualLabEvidenceConfidence::Low,
+            Some(
+                "the available session, websocket, and recording signals did not satisfy a tighter BS-31 verdict"
+                    .to_owned(),
+            ),
+        )
+    };
+
+    ManualLabSessionPlaybackArtifactTimelineSummary {
+        schema_version: MANUAL_LAB_PLAYBACK_ARTIFACT_TIMELINE_SCHEMA_VERSION,
+        verdict,
+        confidence,
+        detail,
+        session_started_at_unix_ms,
+        session_assigned_at_unix_ms,
+        session_stream_ready_at_unix_ms,
+        session_stream_failed_at_unix_ms,
+        websocket_open_at_unix_ms,
+        websocket_first_message_at_unix_ms,
+        recording_first_chunk_appended_at_unix_ms,
+        recording_connected_at_unix_ms,
+        recording_artifact_present,
+        recording_artifact_count,
+        recording_artifact_max_size_bytes,
+        recording_artifact_latest_modified_at_unix_ms,
+        timeline_gaps,
+    }
 }
 
 fn write_manual_lab_player_websocket_artifact(
@@ -5168,6 +5533,160 @@ fn parse_manual_lab_ready_trace_events(
     }
 
     Ok(events)
+}
+
+fn parse_rfc3339_timestamp_unix_ms(value: &str) -> Option<u64> {
+    let parsed = OffsetDateTime::parse(value, &Rfc3339).ok()?;
+    let unix_ms = parsed.unix_timestamp_nanos().div_euclid(1_000_000);
+    u64::try_from(unix_ms).ok()
+}
+
+fn parse_manual_lab_session_events_sse_body(body: &[u8]) -> anyhow::Result<Vec<EventEnvelope>> {
+    let text = String::from_utf8(body.to_vec()).context("decode honeypot SSE body as UTF-8")?;
+    let mut events = Vec::new();
+    let mut data_lines = Vec::<String>::new();
+
+    for line in text.lines() {
+        if line.is_empty() {
+            if !data_lines.is_empty() {
+                let payload = data_lines.join("\n");
+                if let Ok(event) = serde_json::from_str::<EventEnvelope>(&payload) {
+                    events.push(event);
+                }
+                data_lines.clear();
+            }
+            continue;
+        }
+
+        if line.starts_with(':') {
+            continue;
+        }
+
+        if let Some(data_line) = line.strip_prefix("data:") {
+            data_lines.push(data_line.trim_start().to_owned());
+        }
+    }
+
+    if !data_lines.is_empty() {
+        let payload = data_lines.join("\n");
+        if let Ok(event) = serde_json::from_str::<EventEnvelope>(&payload) {
+            events.push(event);
+        }
+    }
+
+    Ok(events)
+}
+
+fn write_manual_lab_session_events_artifact(path: &Path, events: &[EventEnvelope]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    fs::write(
+        path,
+        serde_json::to_vec_pretty(events).context("serialize manual lab session events")?,
+    )
+    .with_context(|| format!("write {}", path.display()))
+}
+
+fn refresh_manual_lab_session_events_artifact(state: &ManualLabState, session_events_log: &Path) -> anyhow::Result<()> {
+    if !process_is_running(state.proxy.pid) {
+        return Ok(());
+    }
+
+    let headers = [
+        authorization_header(scope_token(MANUAL_LAB_WILDCARD_SCOPE)),
+        ("Accept".to_owned(), "text/event-stream".to_owned()),
+        ("Cache-Control".to_owned(), "no-cache".to_owned()),
+    ];
+    let (status, body) = send_http_request_stream_snapshot(
+        state.ports.proxy_http,
+        "GET",
+        "/jet/honeypot/events?cursor=0",
+        &headers,
+        None,
+        Duration::from_secs(2),
+    )?;
+    ensure!(
+        status.contains("200"),
+        "unexpected HTTP status for GET /jet/honeypot/events on port {}: {status}",
+        state.ports.proxy_http,
+    );
+    let events = parse_manual_lab_session_events_sse_body(&body)?;
+    write_manual_lab_session_events_artifact(session_events_log, &events)
+}
+
+fn parse_manual_lab_session_event_log(
+    session_events_log: &Path,
+) -> anyhow::Result<BTreeMap<String, Vec<EventEnvelope>>> {
+    if !session_events_log.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let events = serde_json::from_slice::<Vec<EventEnvelope>>(
+        &fs::read(session_events_log).with_context(|| format!("read {}", session_events_log.display()))?,
+    )
+    .with_context(|| format!("decode {}", session_events_log.display()))?;
+
+    let mut grouped = BTreeMap::<String, Vec<EventEnvelope>>::new();
+    for event in events {
+        let Some(session_id) = event.session_id.clone() else {
+            continue;
+        };
+        grouped.entry(session_id).or_default().push(event);
+    }
+
+    for session_events in grouped.values_mut() {
+        session_events.sort_by_key(|event| (event.session_seq, event.global_cursor.parse::<u64>().unwrap_or(0)));
+    }
+
+    Ok(grouped)
+}
+
+fn collect_manual_lab_recording_artifact_samples(
+    recordings_root: &Path,
+    session_id: &str,
+) -> anyhow::Result<Vec<ManualLabRecordingArtifactSample>> {
+    let session_root = recordings_root.join(session_id);
+    if !session_root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut samples = Vec::new();
+    for entry in fs::read_dir(&session_root).with_context(|| format!("read {}", session_root.display()))? {
+        let entry = entry.with_context(|| format!("read {}", session_root.display()))?;
+        let path = entry.path();
+        if !entry
+            .file_type()
+            .with_context(|| format!("inspect {}", path.display()))?
+            .is_file()
+        {
+            continue;
+        }
+
+        let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !(file_name.starts_with("recording-") && file_name.ends_with(".webm")) {
+            continue;
+        }
+
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("read metadata for {}", path.display()))?;
+        let modified_at_unix_ms = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+        samples.push(ManualLabRecordingArtifactSample {
+            path,
+            size_bytes: metadata.len(),
+            modified_at_unix_ms,
+        });
+    }
+
+    samples.sort_by_key(|sample| (sample.modified_at_unix_ms.unwrap_or(0), sample.size_bytes));
+    Ok(samples)
 }
 
 fn ready_trace_event_timestamp(event: &ManualLabSessionReadyTraceEvent) -> Option<u64> {
@@ -5651,9 +6170,12 @@ fn persist_black_screen_evidence(
     if evidence.teardown_started_at_unix_ms.is_none() {
         evidence.teardown_started_at_unix_ms = teardown_started_at_unix_ms;
     }
-    evidence.artifacts = build_black_screen_artifact_paths(state);
+    let artifacts = build_black_screen_artifact_paths(state);
+    let _ = refresh_manual_lab_session_events_artifact(state, &artifacts.session_events_log);
+    evidence.artifacts = artifacts;
     let playback_bootstrap_timelines = parse_manual_lab_playback_bootstrap_timelines(&state.proxy.stdout_log)?;
     let ready_trace_events = parse_manual_lab_ready_trace_events(&state.proxy.stdout_log)?;
+    let session_events = parse_manual_lab_session_event_log(&evidence.artifacts.session_events_log)?;
     let gfx_filter_summaries = parse_manual_lab_gfx_filter_summaries(&state.proxy.stdout_log)?;
     let fastpath_warning_events = parse_manual_lab_fastpath_warning_events(&state.proxy.stdout_log)?;
     let gfx_warning_summaries = parse_manual_lab_gfx_warning_summaries(&state.proxy.stdout_log)?;
@@ -5688,9 +6210,11 @@ fn persist_black_screen_evidence(
             let gfx_warning_summary = gfx_warning_summaries.get(&session.session_id).cloned();
             let player_websocket_events =
                 parse_manual_lab_player_websocket_events(&evidence.artifacts.recordings_root, &session.session_id)?;
+            let session_events = session_events.get(&session.session_id).cloned().unwrap_or_default();
 
             Ok((
                 session,
+                session_events,
                 playback_bootstrap_timeline,
                 playback_ready_correlation,
                 player_websocket_events,
@@ -5702,12 +6226,14 @@ fn persist_black_screen_evidence(
         .collect::<anyhow::Result<Vec<_>>>()?;
     let aligned_ready_fastpath_warn_codes = session_evidence
         .iter()
-        .filter(|(_, _, correlation, _, _, _, _)| correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
-        .flat_map(|(_, _, _, _, _, fastpath_warnings, _)| fastpath_warnings.iter().map(|event| event.warn_code.clone()))
+        .filter(|(_, _, _, correlation, _, _, _, _)| correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
+        .flat_map(|(_, _, _, _, _, _, fastpath_warnings, _)| {
+            fastpath_warnings.iter().map(|event| event.warn_code.clone())
+        })
         .collect::<BTreeSet<_>>();
     let aligned_ready_warning_summaries = session_evidence
         .iter()
-        .filter_map(|(_, _, correlation, _, _, _, gfx_warning_summary)| {
+        .filter_map(|(_, _, _, correlation, _, _, _, gfx_warning_summary)| {
             (correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
                 .then_some(gfx_warning_summary.clone())
                 .flatten()
@@ -5717,7 +6243,7 @@ fn persist_black_screen_evidence(
     let aligned_ready_baseline_session_count = aligned_ready_warning_summaries.len();
     let aggregated_player_websocket_events = session_evidence
         .iter()
-        .flat_map(|(_, _, _, player_websocket_events, _, _, _)| player_websocket_events.clone())
+        .flat_map(|(_, _, _, _, player_websocket_events, _, _, _)| player_websocket_events.clone())
         .collect::<Vec<_>>();
     write_manual_lab_player_websocket_artifact(
         &evidence.artifacts.player_websocket_log,
@@ -5728,6 +6254,7 @@ fn persist_black_screen_evidence(
         .map(
             |(
                 session,
+                session_events,
                 playback_bootstrap_timeline,
                 playback_ready_correlation,
                 player_websocket_events,
@@ -5741,6 +6268,13 @@ fn persist_black_screen_evidence(
                 );
                 let player_playback_path_summary =
                     build_manual_lab_player_playback_path_summary(&player_websocket_events);
+                let playback_artifact_timeline_summary = build_manual_lab_playback_artifact_timeline_summary(
+                    &session_events,
+                    &playback_ready_correlation,
+                    &player_websocket_summary,
+                    &evidence.artifacts.recordings_root,
+                    &session.session_id,
+                );
                 let fastpath_warning_summary = build_manual_lab_fastpath_warning_summary(
                     &fastpath_warnings,
                     unattributed_fastpath_warning_count,
@@ -5775,6 +6309,7 @@ fn persist_black_screen_evidence(
                     playback_ready_correlation,
                     player_websocket_summary,
                     player_playback_path_summary,
+                    playback_artifact_timeline_summary,
                     gfx_filter_summary,
                     fastpath_warning_summary: Some(fastpath_warning_summary),
                     gfx_warning_summary,
@@ -5934,22 +6469,24 @@ mod tests {
     use std::time::Duration;
 
     use base64::Engine as _;
+    use honeypot_contracts::events::{EventEnvelope, EventPayload, SessionState, StreamState};
+    use honeypot_contracts::stream::StreamTransport;
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
     use super::{
         ManualLabBlackScreenBranchVerdict, ManualLabDriverKind, ManualLabEvidenceConfidence,
-        ManualLabFastPathWarningEvent, ManualLabFastPathWarningEvidence, ManualLabPlaybackBootstrapVerdict,
-        ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict, ManualLabPlayerWebsocketEvent,
-        ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
-        ManualLabSessionPlayerPlaybackPathSummary, ManualLabSessionPlayerWebsocketSummary,
-        ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode, association_token,
-        build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
-        build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_bootstrap_timeline,
-        build_manual_lab_playback_ready_correlation, build_manual_lab_player_playback_path_summary,
-        build_manual_lab_player_websocket_summary, build_session_records,
-        discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
+        ManualLabFastPathWarningEvent, ManualLabFastPathWarningEvidence, ManualLabPlaybackArtifactTimelineVerdict,
+        ManualLabPlaybackBootstrapVerdict, ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict,
+        ManualLabPlayerWebsocketEvent, ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary,
+        ManualLabSessionPlaybackBootstrapEvent, ManualLabSessionPlayerPlaybackPathSummary,
+        ManualLabSessionPlayerWebsocketSummary, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
+        association_token, build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
+        build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_artifact_timeline_summary,
+        build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
+        build_manual_lab_player_playback_path_summary, build_manual_lab_player_websocket_summary,
+        build_session_records, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, ironrdp_no_gfx_driver_args, manual_lab_manifest_path,
         manual_lab_service_ready_timeout, parse_manual_lab_fastpath_warning_line,
         parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
@@ -5983,6 +6520,21 @@ mod tests {
             observed_at_unix_ms,
             kind: kind.to_owned(),
             ..Default::default()
+        }
+    }
+
+    fn session_event(session_id: &str, session_seq: u64, emitted_at: &str, payload: EventPayload) -> EventEnvelope {
+        EventEnvelope {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            event_id: format!("honeypot-event-{session_seq}"),
+            correlation_id: format!("honeypot-correlation-{session_seq}"),
+            emitted_at: emitted_at.to_owned(),
+            session_id: Some(session_id.to_owned()),
+            vm_lease_id: Some("lease-00000001".to_owned()),
+            stream_id: Some("stream-00000001".to_owned()),
+            global_cursor: session_seq.to_string(),
+            session_seq,
+            payload,
         }
     }
 
@@ -6420,6 +6972,294 @@ mod tests {
                 telemetry_gap: false,
             }
         );
+    }
+
+    #[test]
+    fn manual_lab_builds_correlated_ready_playback_artifact_timeline_summary() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let ready = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "recording.connected.first".to_owned(),
+                source: "recording-manager".to_owned(),
+                ts_unix_ms: 1_700_000_000_040,
+                observed_at_unix_ms: Some(1_700_000_000_040),
+            }],
+            Some("ready"),
+            Some(200),
+            Some(1_700_000_000_060),
+        );
+        let player = ManualLabSessionPlayerWebsocketSummary {
+            schema_version: 1,
+            open_observed: true,
+            first_message_observed: true,
+            opened_at_unix_ms: Some(1_700_000_000_060),
+            first_message_at_unix_ms: Some(1_700_000_000_065),
+            ..Default::default()
+        };
+        let events = vec![
+            session_event(
+                session_id,
+                1,
+                "2026-03-29T01:00:00Z",
+                EventPayload::SessionStarted {
+                    attacker_addr: "127.0.0.1:40000".to_owned(),
+                    listener_id: "gateway".to_owned(),
+                    started_at: "2026-03-29T01:00:00Z".to_owned(),
+                    session_state: SessionState::Connected,
+                },
+            ),
+            session_event(
+                session_id,
+                2,
+                "2026-03-29T01:00:01Z",
+                EventPayload::SessionAssigned {
+                    assigned_at: "2026-03-29T01:00:01Z".to_owned(),
+                    vm_name: "manual-deck-01".to_owned(),
+                    guest_rdp_addr: "127.0.0.1:3391".to_owned(),
+                    attestation_ref: "attestation:test".to_owned(),
+                },
+            ),
+            session_event(
+                session_id,
+                3,
+                "2026-03-29T01:00:02Z",
+                EventPayload::SessionStreamReady {
+                    ready_at: "2026-03-29T01:00:02Z".to_owned(),
+                    transport: StreamTransport::Websocket,
+                    stream_endpoint: "/jet/honeypot/session/test/stream".to_owned(),
+                    token_expires_at: "2026-03-29T01:05:02Z".to_owned(),
+                    stream_state: StreamState::Ready,
+                },
+            ),
+        ];
+        let temp = tempdir().expect("tempdir");
+        let session_root = temp.path().join(session_id);
+        fs::create_dir_all(&session_root).expect("create session recording root");
+        fs::write(session_root.join("recording-0.webm"), vec![0u8; 64]).expect("write recording");
+
+        let summary =
+            build_manual_lab_playback_artifact_timeline_summary(&events, &ready, &player, temp.path(), session_id);
+
+        assert_eq!(
+            summary.verdict,
+            ManualLabPlaybackArtifactTimelineVerdict::CorrelatedReadyPlayback
+        );
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::High);
+        assert!(summary.recording_artifact_present);
+        assert_eq!(summary.recording_artifact_count, 1);
+        assert!(summary.timeline_gaps.is_empty());
+    }
+
+    #[test]
+    fn manual_lab_builds_missing_recording_artifact_timeline_summary() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+        ]);
+        let ready = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![ManualLabSessionReadyTraceEvent {
+                schema_version: 1,
+                event: "session.stream.ready.emitted".to_owned(),
+                source: "honeypot".to_owned(),
+                ts_unix_ms: 1_700_000_000_050,
+                observed_at_unix_ms: Some(1_700_000_000_050),
+            }],
+            Some("ready"),
+            Some(200),
+            Some(1_700_000_000_060),
+        );
+        let player = ManualLabSessionPlayerWebsocketSummary {
+            schema_version: 1,
+            open_observed: true,
+            opened_at_unix_ms: Some(1_700_000_000_060),
+            ..Default::default()
+        };
+        let events = vec![
+            session_event(
+                session_id,
+                1,
+                "2026-03-29T01:00:00Z",
+                EventPayload::SessionStarted {
+                    attacker_addr: "127.0.0.1:40000".to_owned(),
+                    listener_id: "gateway".to_owned(),
+                    started_at: "2026-03-29T01:00:00Z".to_owned(),
+                    session_state: SessionState::Connected,
+                },
+            ),
+            session_event(
+                session_id,
+                2,
+                "2026-03-29T01:00:01Z",
+                EventPayload::SessionAssigned {
+                    assigned_at: "2026-03-29T01:00:01Z".to_owned(),
+                    vm_name: "manual-deck-01".to_owned(),
+                    guest_rdp_addr: "127.0.0.1:3391".to_owned(),
+                    attestation_ref: "attestation:test".to_owned(),
+                },
+            ),
+            session_event(
+                session_id,
+                3,
+                "2026-03-29T01:00:02Z",
+                EventPayload::SessionStreamReady {
+                    ready_at: "2026-03-29T01:00:02Z".to_owned(),
+                    transport: StreamTransport::Websocket,
+                    stream_endpoint: "/jet/honeypot/session/test/stream".to_owned(),
+                    token_expires_at: "2026-03-29T01:05:02Z".to_owned(),
+                    stream_state: StreamState::Ready,
+                },
+            ),
+        ];
+        let temp = tempdir().expect("tempdir");
+
+        let summary =
+            build_manual_lab_playback_artifact_timeline_summary(&events, &ready, &player, temp.path(), session_id);
+
+        assert_eq!(
+            summary.verdict,
+            ManualLabPlaybackArtifactTimelineVerdict::MissingRecordingArtifact
+        );
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::Medium);
+        assert!(!summary.recording_artifact_present);
+        assert!(
+            summary
+                .timeline_gaps
+                .iter()
+                .any(|gap| gap == "missing recording-*.webm artifact")
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_stream_failed_before_recording_timeline_summary() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![bootstrap_event(
+            1,
+            "playback.bootstrap.requested",
+            "ok",
+        )]);
+        let ready = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            Vec::new(),
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_060),
+        );
+        let events = vec![
+            session_event(
+                session_id,
+                1,
+                "2026-03-29T01:00:00Z",
+                EventPayload::SessionStarted {
+                    attacker_addr: "127.0.0.1:40000".to_owned(),
+                    listener_id: "gateway".to_owned(),
+                    started_at: "2026-03-29T01:00:00Z".to_owned(),
+                    session_state: SessionState::Connected,
+                },
+            ),
+            session_event(
+                session_id,
+                2,
+                "2026-03-29T01:00:01Z",
+                EventPayload::SessionAssigned {
+                    assigned_at: "2026-03-29T01:00:01Z".to_owned(),
+                    vm_name: "manual-deck-01".to_owned(),
+                    guest_rdp_addr: "127.0.0.1:3391".to_owned(),
+                    attestation_ref: "attestation:test".to_owned(),
+                },
+            ),
+            session_event(
+                session_id,
+                3,
+                "2026-03-29T01:00:02Z",
+                EventPayload::SessionStreamFailed {
+                    failed_at: "2026-03-29T01:00:02Z".to_owned(),
+                    failure_code: honeypot_contracts::error::ErrorCode::StreamUnavailable,
+                    retryable: true,
+                    stream_state: StreamState::Failed,
+                },
+            ),
+        ];
+        let temp = tempdir().expect("tempdir");
+
+        let summary = build_manual_lab_playback_artifact_timeline_summary(
+            &events,
+            &ready,
+            &ManualLabSessionPlayerWebsocketSummary::default(),
+            temp.path(),
+            session_id,
+        );
+
+        assert_eq!(
+            summary.verdict,
+            ManualLabPlaybackArtifactTimelineVerdict::StreamFailedBeforeRecording
+        );
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::High);
+    }
+
+    #[test]
+    fn manual_lab_builds_websocket_attached_without_ready_timeline_summary() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![bootstrap_event(
+            1,
+            "playback.bootstrap.requested",
+            "ok",
+        )]);
+        let ready = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            Vec::new(),
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_060),
+        );
+        let events = vec![
+            session_event(
+                session_id,
+                1,
+                "2026-03-29T01:00:00Z",
+                EventPayload::SessionStarted {
+                    attacker_addr: "127.0.0.1:40000".to_owned(),
+                    listener_id: "gateway".to_owned(),
+                    started_at: "2026-03-29T01:00:00Z".to_owned(),
+                    session_state: SessionState::Connected,
+                },
+            ),
+            session_event(
+                session_id,
+                2,
+                "2026-03-29T01:00:01Z",
+                EventPayload::SessionAssigned {
+                    assigned_at: "2026-03-29T01:00:01Z".to_owned(),
+                    vm_name: "manual-deck-01".to_owned(),
+                    guest_rdp_addr: "127.0.0.1:3391".to_owned(),
+                    attestation_ref: "attestation:test".to_owned(),
+                },
+            ),
+        ];
+        let player = ManualLabSessionPlayerWebsocketSummary {
+            schema_version: 1,
+            open_observed: true,
+            opened_at_unix_ms: Some(1_700_000_000_060),
+            ..Default::default()
+        };
+        let temp = tempdir().expect("tempdir");
+
+        let summary =
+            build_manual_lab_playback_artifact_timeline_summary(&events, &ready, &player, temp.path(), session_id);
+
+        assert_eq!(
+            summary.verdict,
+            ManualLabPlaybackArtifactTimelineVerdict::WebsocketAttachedWithoutReady
+        );
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::Medium);
     }
 
     #[test]
