@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read as _, Write as _};
-use std::net::{Ipv4Addr, TcpStream};
+use std::net::{Ipv4Addr, SocketAddrV4, TcpStream};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
@@ -20,6 +20,8 @@ use honeypot_contracts::frontend::BootstrapResponse;
 use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse};
 use honeypot_control_plane::config::ControlPlaneConfig;
 use honeypot_control_plane::{ConsumeTrustedImageState, ConsumeTrustedImageValidationMode, ConsumedTrustedImage};
+use ironrdp_core::{decode, encode_vec};
+use ironrdp_pdu::{nego, x224};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
@@ -87,10 +89,13 @@ const MANUAL_LAB_SOURCE_MANIFEST_DISCOVERY_PATHS: [&str; 2] = [
 const MANUAL_LAB_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const MANUAL_LAB_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 const MANUAL_LAB_SERVICE_READY_TIMEOUT_FLOOR_SECS: u16 = 60;
+const MANUAL_LAB_GUEST_RDP_READY_TIMEOUT: Duration = Duration::from_secs(300);
+const MANUAL_LAB_GUEST_RDP_IO_TIMEOUT: Duration = Duration::from_secs(5);
 const MANUAL_LAB_STREAM_READY_TIMEOUT: Duration = Duration::from_secs(45);
 const MANUAL_LAB_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(30);
 const MANUAL_LAB_CONTROL_PLANE_DRAIN_TIMEOUT: Duration = Duration::from_secs(90);
 const MANUAL_LAB_DISPLAY_READY_TIMEOUT: Duration = Duration::from_secs(5);
+const MANUAL_LAB_GUEST_RDP_PROBE_COOKIE: &str = "manual-lab-rdp-probe";
 
 static GATEWAY_BIN_PATH: LazyLock<PathBuf> = LazyLock::new(|| {
     escargot::CargoBuild::new()
@@ -2504,6 +2509,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
                 state.sessions[index].session_id,
                 bootstrap_session.vm_lease_id.as_deref().unwrap_or("<pending>")
             );
+            wait_for_guest_rdp_ready(&state.run_id, &state.sessions[index])?;
         }
 
         for index in 0..state.sessions.len() {
@@ -3474,6 +3480,107 @@ fn wait_for_bootstrap_session(
         },
         &format!("bootstrap session {session_id}"),
     )
+}
+
+fn wait_for_guest_rdp_ready(run_id: &str, session: &ManualLabSessionRecord) -> anyhow::Result<()> {
+    let detail = wait_for_condition(
+        MANUAL_LAB_GUEST_RDP_READY_TIMEOUT,
+        || {
+            ensure_driver_is_live(
+                &session.session_id,
+                session.xfreerdp_pid.unwrap_or_default(),
+                &session.stdout_log,
+                &session.stderr_log,
+            )?;
+            probe_guest_rdp_endpoint(session.expected_guest_rdp_port)
+        },
+        &format!("guest RDP ready for session {}", session.session_id),
+    )?;
+
+    eprintln!(
+        "manual lab phase=session.guest.rdp.ready run_id={} slot={} session_id={} detail={}",
+        run_id, session.slot, session.session_id, detail
+    );
+
+    Ok(())
+}
+
+fn probe_guest_rdp_endpoint(guest_rdp_port: u16) -> anyhow::Result<String> {
+    let guest_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, guest_rdp_port);
+    let mut stream = TcpStream::connect_timeout(&guest_addr.into(), MANUAL_LAB_GUEST_RDP_IO_TIMEOUT)
+        .with_context(|| format!("connect guest RDP probe to {guest_addr}"))?;
+    stream
+        .set_read_timeout(Some(MANUAL_LAB_GUEST_RDP_IO_TIMEOUT))
+        .context("set guest RDP probe read timeout")?;
+    stream
+        .set_write_timeout(Some(MANUAL_LAB_GUEST_RDP_IO_TIMEOUT))
+        .context("set guest RDP probe write timeout")?;
+
+    let request = build_guest_rdp_probe_request()?;
+    stream
+        .write_all(&request)
+        .with_context(|| format!("write guest RDP probe request to {guest_addr}"))?;
+    stream
+        .flush()
+        .with_context(|| format!("flush guest RDP probe request to {guest_addr}"))?;
+
+    let response = read_guest_rdp_probe_response(&mut stream)
+        .with_context(|| format!("read guest RDP probe response from {guest_addr}"))?;
+
+    summarize_guest_rdp_probe_response(&response)
+}
+
+fn build_guest_rdp_probe_request() -> anyhow::Result<Vec<u8>> {
+    encode_vec(&x224::X224(nego::ConnectionRequest {
+        nego_data: Some(nego::NegoRequestData::cookie(
+            MANUAL_LAB_GUEST_RDP_PROBE_COOKIE.to_owned(),
+        )),
+        flags: nego::RequestFlags::empty(),
+        protocol: nego::SecurityProtocol::SSL | nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
+    }))
+    .context("encode guest RDP probe request")
+}
+
+fn read_guest_rdp_probe_response(stream: &mut TcpStream) -> anyhow::Result<Vec<u8>> {
+    const INITIAL_SIZE: usize = 19;
+    const MAX_READ_SIZE: usize = 512;
+
+    let mut buf = vec![0; INITIAL_SIZE];
+    let mut filled_end = 0;
+
+    loop {
+        if let Some(info) = ironrdp_pdu::find_size(&buf[..filled_end]).context("find guest RDP probe PDU size")? {
+            if filled_end >= info.length {
+                buf.truncate(info.length);
+                return Ok(buf);
+            }
+        }
+
+        if filled_end == buf.len() {
+            ensure!(
+                buf.len() < MAX_READ_SIZE,
+                "guest RDP probe response exceeded {} bytes",
+                MAX_READ_SIZE
+            );
+            buf.resize(MAX_READ_SIZE, 0);
+        }
+
+        let read = stream
+            .read(&mut buf[filled_end..])
+            .context("read guest RDP probe response")?;
+        ensure!(read > 0, "EOF while reading guest RDP probe response");
+        filled_end += read;
+    }
+}
+
+fn summarize_guest_rdp_probe_response(response: &[u8]) -> anyhow::Result<String> {
+    let confirm: x224::X224<nego::ConnectionConfirm> =
+        decode(response).context("decode guest RDP probe connection confirm")?;
+
+    Ok(match confirm.0 {
+        nego::ConnectionConfirm::Response { protocol, .. } => format!("response protocol={protocol}"),
+        nego::ConnectionConfirm::Failure { code } => format!("failure code={code:?}"),
+    })
 }
 
 fn probe_stream_token(
@@ -8678,30 +8785,35 @@ mod tests {
     use base64::Engine as _;
     use honeypot_contracts::events::{EventEnvelope, EventPayload, SessionState, StreamState};
     use honeypot_contracts::stream::StreamTransport;
+    use ironrdp_core::{decode, encode_vec};
+    use ironrdp_pdu::{nego, x224};
     use serde_json::json;
     use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
     use super::{
-        ManualLabBlackScreenBranchVerdict, ManualLabBrowserArtifactCorrelationVerdict, ManualLabBrowserPlayerMode,
-        ManualLabBrowserVisibilityDataStatus, ManualLabDriverKind, ManualLabEvidenceConfidence,
-        ManualLabFastPathWarningEvent, ManualLabFastPathWarningEvidence, ManualLabPlaybackArtifactTimelineVerdict,
-        ManualLabPlaybackBootstrapVerdict, ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict,
-        ManualLabPlayerWebsocketEvent, ManualLabRecordingVisibilityVerdict, ManualLabSessionBrowserVisibilitySummary,
+        MANUAL_LAB_GUEST_RDP_PROBE_COOKIE, MANUAL_LAB_IRONRDP_RDPGFX_DRIVER_FLAG, ManualLabBlackScreenBranchVerdict,
+        ManualLabBrowserArtifactCorrelationVerdict, ManualLabBrowserPlayerMode, ManualLabBrowserVisibilityDataStatus,
+        ManualLabDriverKind, ManualLabEvidenceConfidence, ManualLabFastPathWarningEvent,
+        ManualLabFastPathWarningEvidence, ManualLabPlaybackArtifactTimelineVerdict, ManualLabPlaybackBootstrapVerdict,
+        ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict, ManualLabPlayerWebsocketEvent,
+        ManualLabRecordingVisibilityVerdict, ManualLabSessionBrowserVisibilitySummary,
         ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
         ManualLabSessionPlayerPlaybackPathSummary, ManualLabSessionPlayerWebsocketSummary,
         ManualLabSessionReadyTraceEvent, ManualLabSessionRecordingVisibilitySummary, ManualLabXfreerdpGraphicsMode,
-        association_token, build_manual_lab_black_screen_branch, build_manual_lab_browser_artifact_correlation_summary,
-        build_manual_lab_browser_visibility_summary, build_manual_lab_fastpath_warning_summary,
-        build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_artifact_timeline_summary,
-        build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
-        build_manual_lab_player_playback_path_summary, build_manual_lab_player_websocket_summary,
-        build_session_records, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
+        association_token, build_guest_rdp_probe_request, build_manual_lab_black_screen_branch,
+        build_manual_lab_browser_artifact_correlation_summary, build_manual_lab_browser_visibility_summary,
+        build_manual_lab_fastpath_warning_summary, build_manual_lab_gfx_warning_baseline,
+        build_manual_lab_playback_artifact_timeline_summary, build_manual_lab_playback_bootstrap_timeline,
+        build_manual_lab_playback_ready_correlation, build_manual_lab_player_playback_path_summary,
+        build_manual_lab_player_websocket_summary, build_session_records,
+        discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, ironrdp_driver_args, manual_lab_manifest_path,
         manual_lab_service_ready_timeout, parse_manual_lab_fastpath_warning_line,
         parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
         parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_player_websocket_events,
-        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, xfreerdp_driver_args,
+        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, summarize_guest_rdp_probe_response,
+        xfreerdp_driver_args,
     };
 
     fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
@@ -10368,6 +10480,42 @@ mod tests {
         );
 
         assert!(args.iter().any(|arg| arg == MANUAL_LAB_IRONRDP_RDPGFX_DRIVER_FLAG));
+    }
+
+    #[test]
+    fn manual_lab_guest_rdp_probe_request_offers_expected_protocols() {
+        let request = build_guest_rdp_probe_request().expect("build guest RDP probe request");
+        let decoded: x224::X224<nego::ConnectionRequest> = decode(&request).expect("decode guest RDP probe request");
+
+        assert_eq!(decoded.0.flags, nego::RequestFlags::empty());
+        assert!(decoded.0.protocol.contains(nego::SecurityProtocol::SSL));
+        assert!(decoded.0.protocol.contains(nego::SecurityProtocol::HYBRID));
+        assert!(decoded.0.protocol.contains(nego::SecurityProtocol::HYBRID_EX));
+        match decoded.0.nego_data {
+            Some(nego::NegoRequestData::Cookie(cookie)) => {
+                assert_eq!(cookie.0, MANUAL_LAB_GUEST_RDP_PROBE_COOKIE);
+            }
+            other => panic!("expected Cookie probe data, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn manual_lab_guest_rdp_probe_response_summary_accepts_success_and_failure() {
+        let response = encode_vec(&x224::X224(nego::ConnectionConfirm::Response {
+            flags: nego::ResponseFlags::empty(),
+            protocol: nego::SecurityProtocol::HYBRID_EX,
+        }))
+        .expect("encode connection confirm response");
+        let summary = summarize_guest_rdp_probe_response(&response).expect("summarize success response");
+        assert!(summary.contains("response protocol="));
+        assert!(summary.contains("HYBRID_EX"));
+
+        let failure = encode_vec(&x224::X224(nego::ConnectionConfirm::Failure {
+            code: nego::FailureCode::HYBRID_REQUIRED_BY_SERVER,
+        }))
+        .expect("encode connection confirm failure");
+        let summary = summarize_guest_rdp_probe_response(&failure).expect("summarize failure response");
+        assert!(summary.contains("failure code="));
     }
 
     #[test]
