@@ -1078,7 +1078,7 @@ Pass when: the evidence set includes explicit `rdpgfx` open counts and channel i
 - [x] `BS-13` Count wrapped graphics PDUs and payload bytes per session.
 Pass when: every probe run records `rdpegfx_pdu_count`, payload counts, or equivalent summary fields per session so black-screen runs can be sorted into "no graphics data" and "graphics data present" branches.
 
-- [ ] `BS-14` Count corruption-signaling warnings in `rdp_gfx`.
+- [x] `BS-14` Count corruption-signaling warnings in `rdp_gfx`.
 Pass when: unknown-surface, unknown-cache-slot, `WireToSurface1` size mismatch, and related warning classes are counted per session instead of being treated as unstructured log noise.
 
 - [ ] `BS-15` Prove producer bootstrap ordering around the handshake seam.

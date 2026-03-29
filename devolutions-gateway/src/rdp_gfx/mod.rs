@@ -70,6 +70,39 @@ struct CachedSurfaceTile {
     rgba_data: Vec<u8>,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct GfxWarningSummary {
+    wire_to_surface1_unknown_surface_count: u64,
+    wire_to_surface2_metadata_unknown_surface_count: u64,
+    wire_to_surface2_update_unknown_surface_count: u64,
+    delete_encoding_context_unknown_surface_or_context_count: u64,
+    surface_to_cache_unknown_surface_count: u64,
+    cache_to_surface_unknown_cache_slot_count: u64,
+    cache_to_surface_unknown_surface_count: u64,
+    wire_to_surface1_update_failed_count: u64,
+    wire_to_surface1_decode_skipped_count: u64,
+    wire_to_surface2_decode_skipped_count: u64,
+    surface_to_cache_capture_skipped_count: u64,
+    cache_to_surface_replay_skipped_count: u64,
+}
+
+impl GfxWarningSummary {
+    fn total_warning_count(self) -> u64 {
+        self.wire_to_surface1_unknown_surface_count
+            .saturating_add(self.wire_to_surface2_metadata_unknown_surface_count)
+            .saturating_add(self.wire_to_surface2_update_unknown_surface_count)
+            .saturating_add(self.delete_encoding_context_unknown_surface_or_context_count)
+            .saturating_add(self.surface_to_cache_unknown_surface_count)
+            .saturating_add(self.cache_to_surface_unknown_cache_slot_count)
+            .saturating_add(self.cache_to_surface_unknown_surface_count)
+            .saturating_add(self.wire_to_surface1_update_failed_count)
+            .saturating_add(self.wire_to_surface1_decode_skipped_count)
+            .saturating_add(self.wire_to_surface2_decode_skipped_count)
+            .saturating_add(self.surface_to_cache_capture_skipped_count)
+            .saturating_add(self.cache_to_surface_replay_skipped_count)
+    }
+}
+
 /// RDPEGFX filter for visual manipulation
 pub struct GfxFilter {
     config: GfxConfig,
@@ -85,6 +118,8 @@ pub struct GfxFilter {
     server_chunk_count: u64,
     rdpegfx_pdu_count: u64,
     surface_update_count: u64,
+    warning_summary: GfxWarningSummary,
+    warning_summary_emitted: bool,
     parse_miss_log_budget: u8,
     rgba_coverage_log_budget: u8,
 }
@@ -119,6 +154,8 @@ impl GfxFilter {
             server_chunk_count: 0,
             rdpegfx_pdu_count: 0,
             surface_update_count: 0,
+            warning_summary: GfxWarningSummary::default(),
+            warning_summary_emitted: false,
             parse_miss_log_budget: 5,
             rgba_coverage_log_budget: 12,
         }
@@ -156,7 +193,8 @@ impl GfxFilter {
         }))
     }
 
-    pub fn log_summary(&self, session_id: uuid::Uuid) {
+    pub fn log_summary(&mut self, session_id: uuid::Uuid) {
+        let session_id = session_id.to_string();
         let emitted_surface_update_count = self
             .surface_update_count
             .saturating_add(u64::try_from(self.pending_surface_updates.len()).unwrap_or(u64::MAX));
@@ -171,6 +209,40 @@ impl GfxFilter {
             codec_context_surface_count = self.surface_codec_contexts.len(),
             "GFX filter summary"
         );
+        self.emit_warning_summary(&session_id);
+    }
+
+    fn increment_warning(counter: &mut u64) {
+        *counter = counter.saturating_add(1);
+    }
+
+    fn emit_warning_summary(&mut self, session_id: &str) {
+        if self.warning_summary_emitted {
+            return;
+        }
+
+        let summary = self.warning_summary;
+        info!(
+            session_id = %session_id,
+            total_warning_count = summary.total_warning_count(),
+            wire_to_surface1_unknown_surface_count = summary.wire_to_surface1_unknown_surface_count,
+            wire_to_surface2_metadata_unknown_surface_count =
+                summary.wire_to_surface2_metadata_unknown_surface_count,
+            wire_to_surface2_update_unknown_surface_count = summary.wire_to_surface2_update_unknown_surface_count,
+            delete_encoding_context_unknown_surface_or_context_count =
+                summary.delete_encoding_context_unknown_surface_or_context_count,
+            surface_to_cache_unknown_surface_count = summary.surface_to_cache_unknown_surface_count,
+            cache_to_surface_unknown_cache_slot_count = summary.cache_to_surface_unknown_cache_slot_count,
+            cache_to_surface_unknown_surface_count = summary.cache_to_surface_unknown_surface_count,
+            wire_to_surface1_update_failed_count = summary.wire_to_surface1_update_failed_count,
+            wire_to_surface1_decode_skipped_count = summary.wire_to_surface1_decode_skipped_count,
+            wire_to_surface2_decode_skipped_count = summary.wire_to_surface2_decode_skipped_count,
+            surface_to_cache_capture_skipped_count = summary.surface_to_cache_capture_skipped_count,
+            cache_to_surface_replay_skipped_count = summary.cache_to_surface_replay_skipped_count,
+            "GFX warning summary"
+        );
+
+        self.warning_summary_emitted = true;
     }
 
     fn queue_surface_update(
@@ -309,6 +381,7 @@ impl GfxFilter {
         bitmap_data_len: usize,
     ) {
         if !self.surfaces.contains_key(&surface_id) {
+            Self::increment_warning(&mut self.warning_summary.wire_to_surface2_metadata_unknown_surface_count);
             warn!(
                 session_id = %self.session_id,
                 surface_id,
@@ -340,6 +413,11 @@ impl GfxFilter {
     fn handle_delete_encoding_context(&mut self, surface_id: u16, codec_context_id: u32) {
         self.rfx_decoders.remove_context(surface_id, codec_context_id);
         let Some(contexts) = self.surface_codec_contexts.get_mut(&surface_id) else {
+            Self::increment_warning(
+                &mut self
+                    .warning_summary
+                    .delete_encoding_context_unknown_surface_or_context_count,
+            );
             debug!(
                 session_id = %self.session_id,
                 surface_id,
@@ -376,6 +454,7 @@ impl GfxFilter {
         let height = u32::from(source_rectangle.bottom.saturating_sub(source_rectangle.top)) + 1;
         let rgba_data = {
             let Some(framebuffer) = self.surfaces.get(&surface_id) else {
+                Self::increment_warning(&mut self.warning_summary.surface_to_cache_unknown_surface_count);
                 warn!(
                     session_id = %self.session_id,
                     surface_id,
@@ -430,6 +509,7 @@ impl GfxFilter {
         destination_points: &[Point],
     ) -> Result<()> {
         let Some(cached_tile) = self.surface_cache.get(&cache_slot).cloned() else {
+            Self::increment_warning(&mut self.warning_summary.cache_to_surface_unknown_cache_slot_count);
             warn!(
                 session_id = %self.session_id,
                 surface_id,
@@ -440,6 +520,7 @@ impl GfxFilter {
         };
 
         if !self.surfaces.contains_key(&surface_id) {
+            Self::increment_warning(&mut self.warning_summary.cache_to_surface_unknown_surface_count);
             warn!(
                 session_id = %self.session_id,
                 surface_id,
@@ -625,6 +706,7 @@ impl GfxFilter {
                     destination_rectangle,
                     &bitmap_data,
                 ) {
+                    Self::increment_warning(&mut self.warning_summary.wire_to_surface1_update_failed_count);
                     warn!(error = ?e, "Failed to update framebuffer from WireToSurface1");
                 }
                 if allow_wire_rewrite && (self.config.overlay || self.config.stego) {
@@ -661,6 +743,7 @@ impl GfxFilter {
                 if let Err(error) =
                     self.update_surface_from_wire_to_surface_2(surface_id, codec_id, codec_context_id, &bitmap_data)
                 {
+                    Self::increment_warning(&mut self.warning_summary.wire_to_surface2_decode_skipped_count);
                     debug!(
                         session_id = %self.session_id,
                         surface_id,
@@ -686,6 +769,7 @@ impl GfxFilter {
                 ..
             } => {
                 if let Err(error) = self.handle_surface_to_cache(surface_id, cache_key, cache_slot, &source_rectangle) {
+                    Self::increment_warning(&mut self.warning_summary.surface_to_cache_capture_skipped_count);
                     debug!(
                         session_id = %self.session_id,
                         surface_id,
@@ -704,6 +788,7 @@ impl GfxFilter {
                 ..
             } => {
                 if let Err(error) = self.handle_cache_to_surface(cache_slot, surface_id, &destination_points) {
+                    Self::increment_warning(&mut self.warning_summary.cache_to_surface_replay_skipped_count);
                     debug!(
                         session_id = %self.session_id,
                         surface_id,
@@ -763,6 +848,7 @@ impl GfxFilter {
         bitmap_data: &[u8],
     ) -> Result<()> {
         if !self.surfaces.contains_key(&surface_id) {
+            Self::increment_warning(&mut self.warning_summary.wire_to_surface1_unknown_surface_count);
             warn!(
                 session_id = %self.session_id,
                 surface_id = surface_id,
@@ -881,6 +967,7 @@ impl GfxFilter {
                         }
                     }
                     Err(error) => {
+                        Self::increment_warning(&mut self.warning_summary.wire_to_surface1_decode_skipped_count);
                         debug!(
                             session_id = %self.session_id,
                             surface_id = surface_id,
@@ -935,6 +1022,7 @@ impl GfxFilter {
                         }
                     }
                     Err(error) => {
+                        Self::increment_warning(&mut self.warning_summary.wire_to_surface1_decode_skipped_count);
                         debug!(
                             session_id = %self.session_id,
                             surface_id = surface_id,
@@ -978,6 +1066,7 @@ impl GfxFilter {
                         }
                     }
                     Err(error) => {
+                        Self::increment_warning(&mut self.warning_summary.wire_to_surface1_decode_skipped_count);
                         debug!(
                             session_id = %self.session_id,
                             surface_id = surface_id,
@@ -1002,6 +1091,7 @@ impl GfxFilter {
         bitmap_data: &[u8],
     ) -> Result<()> {
         if !self.surfaces.contains_key(&surface_id) {
+            Self::increment_warning(&mut self.warning_summary.wire_to_surface2_update_unknown_surface_count);
             warn!(
                 session_id = %self.session_id,
                 surface_id = surface_id,
@@ -1099,6 +1189,9 @@ impl Drop for GfxFilter {
                 "GFX filter session summary",
             );
         }
+
+        let session_id = self.session_id.clone();
+        self.emit_warning_summary(&session_id);
     }
 }
 
@@ -1659,6 +1752,230 @@ mod tests {
             filter.surface_codec_contexts.get(&7),
             Some(&HashSet::from([0x0506_0708]))
         );
+    }
+
+    #[tokio::test]
+    async fn test_warning_summary_tracks_missing_surface_and_cache_events() {
+        let config = GfxConfig::default();
+        let mut filter = GfxFilter::new(config, "test".to_string());
+
+        filter.handle_create_surface(1, 8, 8).unwrap();
+        {
+            let surface = filter.surfaces.get_mut(&1).expect("surface");
+            surface.set_pixel(0, 0, 1, 2, 3, 255).unwrap();
+        }
+
+        let surface_to_cache_unknown = Bytes::from(
+            encode_vec(&ServerPdu::SurfaceToCache(SurfaceToCachePdu {
+                surface_id: 99,
+                cache_key: 0xAA,
+                cache_slot: 1,
+                source_rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+            }))
+            .expect("encode unknown-surface surface-to-cache"),
+        );
+        filter.process_server_to_client(surface_to_cache_unknown).await.unwrap();
+
+        let cache_to_surface_unknown_slot = Bytes::from(
+            encode_vec(&ServerPdu::CacheToSurface(CacheToSurfacePdu {
+                cache_slot: 7,
+                surface_id: 1,
+                destination_points: vec![Point { x: 0, y: 0 }],
+            }))
+            .expect("encode unknown cache slot replay"),
+        );
+        filter
+            .process_server_to_client(cache_to_surface_unknown_slot)
+            .await
+            .unwrap();
+
+        let cache_seed = Bytes::from(
+            encode_vec(&ServerPdu::SurfaceToCache(SurfaceToCachePdu {
+                surface_id: 1,
+                cache_key: 0xBB,
+                cache_slot: 2,
+                source_rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+            }))
+            .expect("encode cache seed"),
+        );
+        filter.process_server_to_client(cache_seed).await.unwrap();
+
+        let cache_to_surface_unknown_surface = Bytes::from(
+            encode_vec(&ServerPdu::CacheToSurface(CacheToSurfacePdu {
+                cache_slot: 2,
+                surface_id: 77,
+                destination_points: vec![Point { x: 1, y: 1 }],
+            }))
+            .expect("encode unknown destination surface replay"),
+        );
+        filter
+            .process_server_to_client(cache_to_surface_unknown_surface)
+            .await
+            .unwrap();
+
+        let wire_to_surface1_unknown_surface = Bytes::from(
+            encode_vec(&ServerPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id: 55,
+                codec_id: Codec1Type::Uncompressed,
+                pixel_format: PixelFormat::ARgb,
+                destination_rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                bitmap_data: vec![0xFF, 0x01, 0x02, 0x03],
+            }))
+            .expect("encode unknown-surface wire-to-surface1"),
+        );
+        filter
+            .process_server_to_client(wire_to_surface1_unknown_surface)
+            .await
+            .unwrap();
+
+        let wire_to_surface2_unknown_surface = Bytes::from(
+            encode_vec(&ServerPdu::WireToSurface2(WireToSurface2Pdu {
+                surface_id: 88,
+                codec_id: Codec2Type::RemoteFxProgressive,
+                codec_context_id: 0x0102_0304,
+                pixel_format: PixelFormat::ARgb,
+                bitmap_data: vec![0xAA],
+            }))
+            .expect("encode unknown-surface wire-to-surface2"),
+        );
+        filter
+            .process_server_to_client(wire_to_surface2_unknown_surface)
+            .await
+            .unwrap();
+
+        let summary = filter.warning_summary;
+        assert_eq!(summary.surface_to_cache_unknown_surface_count, 1);
+        assert_eq!(summary.cache_to_surface_unknown_cache_slot_count, 1);
+        assert_eq!(summary.cache_to_surface_unknown_surface_count, 1);
+        assert_eq!(summary.wire_to_surface1_unknown_surface_count, 1);
+        assert_eq!(summary.wire_to_surface2_metadata_unknown_surface_count, 1);
+        assert_eq!(summary.wire_to_surface2_update_unknown_surface_count, 1);
+        assert_eq!(summary.total_warning_count(), 6);
+    }
+
+    #[tokio::test]
+    async fn test_warning_summary_tracks_decode_and_replay_failures() {
+        let config = GfxConfig::default();
+        let mut filter = GfxFilter::new(config, "test".to_string());
+
+        filter.handle_create_surface(1, 4, 4).unwrap();
+        filter.handle_create_surface(2, 4, 4).unwrap();
+
+        let wire_to_surface1_invalid_uncompressed = Bytes::from(
+            encode_vec(&ServerPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id: 1,
+                codec_id: Codec1Type::Uncompressed,
+                pixel_format: PixelFormat::ARgb,
+                destination_rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 1,
+                    bottom: 0,
+                },
+                bitmap_data: vec![0xFF, 0x01, 0x02, 0x03],
+            }))
+            .expect("encode invalid uncompressed wire-to-surface1"),
+        );
+        filter
+            .process_server_to_client(wire_to_surface1_invalid_uncompressed)
+            .await
+            .unwrap();
+
+        let wire_to_surface1_invalid_clearcodec = Bytes::from(
+            encode_vec(&ServerPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id: 1,
+                codec_id: Codec1Type::ClearCodec,
+                pixel_format: PixelFormat::XRgb,
+                destination_rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 0,
+                    bottom: 0,
+                },
+                bitmap_data: vec![0x00],
+            }))
+            .expect("encode invalid clearcodec wire-to-surface1"),
+        );
+        filter
+            .process_server_to_client(wire_to_surface1_invalid_clearcodec)
+            .await
+            .unwrap();
+
+        let wire_to_surface2_invalid = Bytes::from(
+            encode_vec(&ServerPdu::WireToSurface2(WireToSurface2Pdu {
+                surface_id: 2,
+                codec_id: Codec2Type::RemoteFxProgressive,
+                codec_context_id: 0x0506_0708,
+                pixel_format: PixelFormat::ARgb,
+                bitmap_data: vec![0x00],
+            }))
+            .expect("encode invalid wire-to-surface2"),
+        );
+        filter.process_server_to_client(wire_to_surface2_invalid).await.unwrap();
+
+        let surface_to_cache_capture_skipped = Bytes::from(
+            encode_vec(&ServerPdu::SurfaceToCache(SurfaceToCachePdu {
+                surface_id: 1,
+                cache_key: 0xCC,
+                cache_slot: 3,
+                source_rectangle: InclusiveRectangle {
+                    left: 0,
+                    top: 0,
+                    right: 4,
+                    bottom: 0,
+                },
+            }))
+            .expect("encode surface-to-cache capture skip"),
+        );
+        filter
+            .process_server_to_client(surface_to_cache_capture_skipped)
+            .await
+            .unwrap();
+
+        filter.surface_cache.insert(
+            9,
+            CachedSurfaceTile {
+                cache_key: 0xDD,
+                width: 2,
+                height: 2,
+                rgba_data: vec![0x01, 0x02, 0x03],
+            },
+        );
+        let cache_to_surface_replay_skipped = Bytes::from(
+            encode_vec(&ServerPdu::CacheToSurface(CacheToSurfacePdu {
+                cache_slot: 9,
+                surface_id: 1,
+                destination_points: vec![Point { x: 0, y: 0 }],
+            }))
+            .expect("encode cache-to-surface replay skip"),
+        );
+        filter
+            .process_server_to_client(cache_to_surface_replay_skipped)
+            .await
+            .unwrap();
+
+        let summary = filter.warning_summary;
+        assert_eq!(summary.wire_to_surface1_update_failed_count, 1);
+        assert_eq!(summary.wire_to_surface1_decode_skipped_count, 1);
+        assert_eq!(summary.wire_to_surface2_decode_skipped_count, 1);
+        assert_eq!(summary.surface_to_cache_capture_skipped_count, 1);
+        assert_eq!(summary.cache_to_surface_replay_skipped_count, 1);
+        assert_eq!(summary.total_warning_count(), 5);
     }
 
     #[tokio::test]

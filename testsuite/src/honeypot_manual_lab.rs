@@ -1056,6 +1056,38 @@ pub struct ManualLabSessionDriverEvidence {
     pub stream_probe_status: Option<String>,
     #[serde(default)]
     pub stream_probe_detail: Option<String>,
+    #[serde(default)]
+    pub gfx_warning_summary: Option<ManualLabSessionGfxWarningSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionGfxWarningSummary {
+    #[serde(default)]
+    pub total_warning_count: u64,
+    #[serde(default)]
+    pub wire_to_surface1_unknown_surface_count: u64,
+    #[serde(default)]
+    pub wire_to_surface2_metadata_unknown_surface_count: u64,
+    #[serde(default)]
+    pub wire_to_surface2_update_unknown_surface_count: u64,
+    #[serde(default)]
+    pub delete_encoding_context_unknown_surface_or_context_count: u64,
+    #[serde(default)]
+    pub surface_to_cache_unknown_surface_count: u64,
+    #[serde(default)]
+    pub cache_to_surface_unknown_cache_slot_count: u64,
+    #[serde(default)]
+    pub cache_to_surface_unknown_surface_count: u64,
+    #[serde(default)]
+    pub wire_to_surface1_update_failed_count: u64,
+    #[serde(default)]
+    pub wire_to_surface1_decode_skipped_count: u64,
+    #[serde(default)]
+    pub wire_to_surface2_decode_skipped_count: u64,
+    #[serde(default)]
+    pub surface_to_cache_capture_skipped_count: u64,
+    #[serde(default)]
+    pub cache_to_surface_replay_skipped_count: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1817,6 +1849,10 @@ fn teardown_internal(state: &ManualLabState) -> ManualLabTeardownReport {
         {
             notes.push(format!("{label} pid {pid}: {error:#}"));
         }
+    }
+
+    if let Err(error) = persist_black_screen_evidence(state) {
+        notes.push(format!("persist black-screen evidence after teardown: {error:#}"));
     }
 
     let removed_active_state = match fs::remove_file(active_state_path()) {
@@ -3844,9 +3880,108 @@ fn build_black_screen_artifact_paths(state: &ManualLabState) -> ManualLabBlackSc
     }
 }
 
+fn parse_manual_lab_log_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let needle = format!("{key}=");
+    let start = line.find(&needle)? + needle.len();
+    let remainder = &line[start..];
+
+    if let Some(quoted) = remainder.strip_prefix('"') {
+        let end = quoted.find('"')?;
+        return Some(&quoted[..end]);
+    }
+
+    let end = remainder.find(|ch: char| ch.is_whitespace()).unwrap_or(remainder.len());
+    let token = &remainder[..end];
+    Some(token.trim_matches(|ch: char| ch == '"' || ch == ','))
+}
+
+fn parse_manual_lab_log_u64(line: &str, key: &str) -> Option<u64> {
+    parse_manual_lab_log_field(line, key)?.parse::<u64>().ok()
+}
+
+fn parse_manual_lab_gfx_warning_summary_line(line: &str) -> Option<(String, ManualLabSessionGfxWarningSummary)> {
+    if !line.contains("GFX warning summary") {
+        return None;
+    }
+
+    let session_id = parse_manual_lab_log_field(line, "session_id")?.to_owned();
+    let summary = ManualLabSessionGfxWarningSummary {
+        total_warning_count: parse_manual_lab_log_u64(line, "total_warning_count").unwrap_or(0),
+        wire_to_surface1_unknown_surface_count: parse_manual_lab_log_u64(
+            line,
+            "wire_to_surface1_unknown_surface_count",
+        )
+        .unwrap_or(0),
+        wire_to_surface2_metadata_unknown_surface_count: parse_manual_lab_log_u64(
+            line,
+            "wire_to_surface2_metadata_unknown_surface_count",
+        )
+        .unwrap_or(0),
+        wire_to_surface2_update_unknown_surface_count: parse_manual_lab_log_u64(
+            line,
+            "wire_to_surface2_update_unknown_surface_count",
+        )
+        .unwrap_or(0),
+        delete_encoding_context_unknown_surface_or_context_count: parse_manual_lab_log_u64(
+            line,
+            "delete_encoding_context_unknown_surface_or_context_count",
+        )
+        .unwrap_or(0),
+        surface_to_cache_unknown_surface_count: parse_manual_lab_log_u64(
+            line,
+            "surface_to_cache_unknown_surface_count",
+        )
+        .unwrap_or(0),
+        cache_to_surface_unknown_cache_slot_count: parse_manual_lab_log_u64(
+            line,
+            "cache_to_surface_unknown_cache_slot_count",
+        )
+        .unwrap_or(0),
+        cache_to_surface_unknown_surface_count: parse_manual_lab_log_u64(
+            line,
+            "cache_to_surface_unknown_surface_count",
+        )
+        .unwrap_or(0),
+        wire_to_surface1_update_failed_count: parse_manual_lab_log_u64(line, "wire_to_surface1_update_failed_count")
+            .unwrap_or(0),
+        wire_to_surface1_decode_skipped_count: parse_manual_lab_log_u64(line, "wire_to_surface1_decode_skipped_count")
+            .unwrap_or(0),
+        wire_to_surface2_decode_skipped_count: parse_manual_lab_log_u64(line, "wire_to_surface2_decode_skipped_count")
+            .unwrap_or(0),
+        surface_to_cache_capture_skipped_count: parse_manual_lab_log_u64(
+            line,
+            "surface_to_cache_capture_skipped_count",
+        )
+        .unwrap_or(0),
+        cache_to_surface_replay_skipped_count: parse_manual_lab_log_u64(line, "cache_to_surface_replay_skipped_count")
+            .unwrap_or(0),
+    };
+
+    Some((session_id, summary))
+}
+
+fn parse_manual_lab_gfx_warning_summaries(
+    proxy_stdout_log: &Path,
+) -> anyhow::Result<BTreeMap<String, ManualLabSessionGfxWarningSummary>> {
+    if !proxy_stdout_log.exists() {
+        return Ok(BTreeMap::new());
+    }
+
+    let log = fs::read_to_string(proxy_stdout_log).with_context(|| format!("read {}", proxy_stdout_log.display()))?;
+    let mut summaries = BTreeMap::new();
+    for line in log.lines() {
+        if let Some((session_id, summary)) = parse_manual_lab_gfx_warning_summary_line(line) {
+            summaries.insert(session_id, summary);
+        }
+    }
+
+    Ok(summaries)
+}
+
 fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
     let evidence_path = state.run_root.join("artifacts/black-screen-evidence.json");
     let mut evidence = state.black_screen_evidence.clone();
+    let gfx_warning_summaries = parse_manual_lab_gfx_warning_summaries(&state.proxy.stdout_log)?;
     evidence.artifacts = build_black_screen_artifact_paths(state);
     evidence.session_invocations = state
         .sessions
@@ -3863,6 +3998,7 @@ fn persist_black_screen_evidence(state: &ManualLabState) -> anyhow::Result<()> {
             stream_id: session.stream_id.clone(),
             stream_probe_status: session.stream_probe_status.clone(),
             stream_probe_detail: session.stream_probe_detail.clone(),
+            gfx_warning_summary: gfx_warning_summaries.get(&session.session_id).cloned(),
         })
         .collect();
     if let Some(parent) = evidence_path.parent() {
@@ -4011,10 +4147,10 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ManualLabXfreerdpGraphicsMode, association_token, build_session_records,
+        ManualLabSessionGfxWarningSummary, ManualLabXfreerdpGraphicsMode, association_token, build_session_records,
         discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, manual_lab_manifest_path, manual_lab_service_ready_timeout,
-        parse_proc_stat_process_state, xfreerdp_driver_args,
+        parse_manual_lab_gfx_warning_summary_line, parse_proc_stat_process_state, xfreerdp_driver_args,
     };
 
     #[test]
@@ -4114,6 +4250,37 @@ mod tests {
         );
         assert_eq!(parse_proc_stat_process_state("5678 (xfreerdp) Z 1 2 3 4"), Some('Z'));
         assert_eq!(parse_proc_stat_process_state("malformed"), None);
+    }
+
+    #[test]
+    fn manual_lab_parses_gfx_warning_summary_lines() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let line = format!(
+            "2026-03-28T22:00:00.000000Z  INFO ThreadId(42) session_id={session_id} total_warning_count=9 wire_to_surface1_unknown_surface_count=1 wire_to_surface2_metadata_unknown_surface_count=2 wire_to_surface2_update_unknown_surface_count=3 delete_encoding_context_unknown_surface_or_context_count=4 surface_to_cache_unknown_surface_count=5 cache_to_surface_unknown_cache_slot_count=6 cache_to_surface_unknown_surface_count=7 wire_to_surface1_update_failed_count=8 wire_to_surface1_decode_skipped_count=9 wire_to_surface2_decode_skipped_count=10 surface_to_cache_capture_skipped_count=11 cache_to_surface_replay_skipped_count=12 GFX warning summary"
+        );
+
+        let parsed = parse_manual_lab_gfx_warning_summary_line(&line);
+        assert_eq!(
+            parsed,
+            Some((
+                session_id.to_owned(),
+                ManualLabSessionGfxWarningSummary {
+                    total_warning_count: 9,
+                    wire_to_surface1_unknown_surface_count: 1,
+                    wire_to_surface2_metadata_unknown_surface_count: 2,
+                    wire_to_surface2_update_unknown_surface_count: 3,
+                    delete_encoding_context_unknown_surface_or_context_count: 4,
+                    surface_to_cache_unknown_surface_count: 5,
+                    cache_to_surface_unknown_cache_slot_count: 6,
+                    cache_to_surface_unknown_surface_count: 7,
+                    wire_to_surface1_update_failed_count: 8,
+                    wire_to_surface1_decode_skipped_count: 9,
+                    wire_to_surface2_decode_skipped_count: 10,
+                    surface_to_cache_capture_skipped_count: 11,
+                    cache_to_surface_replay_skipped_count: 12,
+                }
+            ))
+        );
     }
 
     #[test]
