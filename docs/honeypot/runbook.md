@@ -175,19 +175,20 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
   `DGW_HONEYPOT_INTEROP_KVM_PATH`,
   and `DGW_HONEYPOT_INTEROP_XFREERDP_PATH`.
 - The live manual deck also requires a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
-- By default the launcher expects a built bundle root under `webapp/dist/recording-player` in this repo checkout.
+- By default the launcher expects a built bundle root under `honeypot/frontend/webplayer-workspace/dist/recording-player` in this repo checkout.
 - A valid prebuilt bundle root contains `index.html` and a non-empty `assets/` directory from the Vite production build.
 - Override that source bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the player build lives elsewhere.
-- Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the webapp sources, container-runtime availability, and private-registry scope plus auth readiness.
+- Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the owned webplayer workspace sources, container-runtime availability, the selected `recording-player` build scope, and whether that narrowed build graph actually needs private-registry auth.
 - Run `make manual-lab-webplayer-validate-bundle` when you want a read-only pass or fail check for that selected bundle root before launch.
-- Run `make manual-lab-webplayer-auth-check` when you want the same private-registry scope and auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.
+- Run `make manual-lab-webplayer-auth-check` when you want the same selected-build auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.
 - Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.
+- That builder now installs and builds only the selected workspace closure `recording-player`, `@devolutions/multi-video-player`, and `@devolutions/shadow-player` from `honeypot/frontend/webplayer-workspace` instead of the legacy `webapp/` workspace.
 - `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` already run that containerized builder automatically.
 - The host only needs the selected container runtime for that builder; it does not need host `pnpm`.
 - Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.
-- If `webapp/pnpm-lock.yaml` references private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
+- If the selected build graph ever introduces private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
 - That `.npmrc` must both map `@devolutions:registry` to `devolutions.jfrog.io` and include credentials for that host, otherwise the containerized build falls back to `registry.npmjs.org` for private packages such as `@devolutions/icons`.
-- `make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs.
+- `make manual-lab-webplayer-auth-check` now fails early only when the selected build graph would otherwise fall back to npmjs for a private `@devolutions/*` package, and it keeps the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors.
 - If the player bundle is still missing or invalid after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` to a built bundle root with `index.html` and `assets/`, then rerun `make manual-lab-preflight`.
 - `DGW_HONEYPOT_INTEROP_IMAGE_STORE` and `DGW_HONEYPOT_INTEROP_MANIFEST_DIR` are optional if the canonical sealed store under `/srv/honeypot/images` is already present and trusted.
 - `DGW_HONEYPOT_INTEROP_RDP_DOMAIN`, `DGW_HONEYPOT_INTEROP_RDP_SECURITY`, and `DGW_HONEYPOT_INTEROP_READY_TIMEOUT_SECS` remain optional overrides for unusual lab hosts.
@@ -227,7 +228,9 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - The expected post-import state is a trusted-image store under `/srv/honeypot/images`, a manifest set under `/srv/honeypot/images/manifests`, and a `preflight` result of `ready` before the operator launches `up`.
 - Treat a blocked `preflight` result as `blocked_prereq` only.
 - It is a prerequisite signal, not runtime proof and not Milestone 6b completion evidence by itself.
-- `up` opens Chrome by default after the frontend reports three ready tiles.
+- `up` opens Chrome by default after the frontend reports three live tiles.
+- When a recording producer is present, those same live tiles may also become ready tiles with active previews.
+- When no recording producer is present yet, the dashboard must stay truthful and show stream-unavailable state instead of a broken live player fallback.
 - Set `DGW_HONEYPOT_MANUAL_LAB_CHROME` if Chrome is not on `PATH`.
 - Pass `--no-browser` when you want the deck live without opening a window.
 - The hidden `xfreerdp` drivers prefer `Xvfb` when available.

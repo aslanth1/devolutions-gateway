@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use axum::body::Body;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::extract::{Path, Query, State};
-use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, LOCATION};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE};
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -29,7 +29,7 @@ use honeypot_contracts::control_plane::{
 use honeypot_contracts::error::{ErrorCode, ErrorResponse};
 use honeypot_contracts::events::{EventEnvelope, EventPayload, KillScope, SessionState, StreamState};
 use honeypot_contracts::frontend::{BootstrapResponse, BootstrapSession};
-use honeypot_contracts::stream::{StreamTokenRequest, StreamTokenResponse, StreamTransport};
+use honeypot_contracts::stream::{StreamTokenRequest, StreamTransport};
 use http_body_util::BodyExt as _;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -835,9 +835,7 @@ async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result
         )?)
         .await
         .context("request stream token through honeypot proxy route")?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let stream_token: StreamTokenResponse =
-        serde_json::from_slice(&collect_response_body(response).await?).context("decode stream token response")?;
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let response = app
         .clone()
@@ -852,22 +850,16 @@ async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result
         .and_then(|entries| {
             entries
                 .iter()
-                .find(|entry| entry["association_id"].as_str() == Some(stream_token.session_id.as_str()))
+                .find(|entry| entry["association_id"].as_str() == Some(session_id.to_string().as_str()))
         })
         .context("find running session in /jet/sessions")?;
 
-    assert_eq!(session_entry["honeypot"]["state"], "ready");
+    assert_eq!(session_entry["honeypot"]["state"], "assigned");
     assert_eq!(session_entry["honeypot"]["assignment"]["vm_lease_id"], LEASE_ID);
     assert_eq!(session_entry["honeypot"]["assignment"]["vm_name"], VM_NAME);
-    assert_eq!(session_entry["honeypot"]["stream"]["state"], "ready");
-    assert_eq!(
-        session_entry["honeypot"]["stream"]["stream_id"],
-        Value::String(stream_token.stream_id.clone())
-    );
-    assert_eq!(
-        session_entry["honeypot"]["stream"]["stream_endpoint"],
-        Value::String(stream_token.stream_endpoint.clone())
-    );
+    assert_eq!(session_entry["honeypot"]["stream"]["state"], "failed");
+    assert!(session_entry["honeypot"]["stream"]["stream_id"].is_null());
+    assert!(session_entry["honeypot"]["stream"]["stream_endpoint"].is_null());
 
     let response = app
         .clone()
@@ -877,19 +869,12 @@ async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result
     assert_eq!(response.status(), StatusCode::OK);
     let bootstrap: BootstrapResponse =
         serde_json::from_slice(&collect_response_body(response).await?).context("decode honeypot bootstrap")?;
-    let bootstrap_session = find_bootstrap_session(&bootstrap, &stream_token.session_id)?;
-    let preview = bootstrap_session
-        .stream_preview
-        .as_ref()
-        .context("stream preview should be present in bootstrap")?;
+    let bootstrap_session = find_bootstrap_session(&bootstrap, &session_id.to_string())?;
 
-    assert_eq!(bootstrap_session.state, SessionState::Ready);
-    assert_eq!(bootstrap_session.stream_state, StreamState::Ready);
+    assert_eq!(bootstrap_session.state, SessionState::Assigned);
+    assert_eq!(bootstrap_session.stream_state, StreamState::Failed);
     assert_eq!(bootstrap_session.vm_lease_id.as_deref(), Some(LEASE_ID));
-    assert_eq!(preview.stream_id, stream_token.stream_id);
-    assert_eq!(preview.transport, stream_token.transport);
-    assert_eq!(preview.stream_endpoint, stream_token.stream_endpoint);
-    assert_eq!(preview.token_expires_at, stream_token.expires_at);
+    assert!(bootstrap_session.stream_preview.is_none());
 
     let response = app
         .oneshot(get_request("/jet/honeypot/events?cursor=0")?)
@@ -914,7 +899,7 @@ async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result
     assert!(
         replay
             .iter()
-            .all(|event| event.session_id.as_deref() == Some(stream_token.session_id.as_str()))
+            .all(|event| event.session_id.as_deref() == Some(session_id.to_string().as_str()))
     );
 
     match &replay[0].payload {
@@ -940,19 +925,19 @@ async fn honeypot_session_visibility_and_replay_are_coherent() -> anyhow::Result
     }
 
     match &replay[2].payload {
-        EventPayload::SessionStreamReady {
-            transport,
-            stream_endpoint,
+        EventPayload::SessionStreamFailed {
+            failure_code,
+            retryable,
             stream_state,
             ..
         } => {
             assert_eq!(replay[2].vm_lease_id.as_deref(), Some(LEASE_ID));
-            assert_eq!(replay[2].stream_id.as_deref(), Some(stream_token.stream_id.as_str()));
-            assert_eq!(*transport, stream_token.transport);
-            assert_eq!(stream_endpoint, &stream_token.stream_endpoint);
-            assert_eq!(*stream_state, StreamState::Ready);
+            assert!(replay[2].stream_id.is_none());
+            assert_eq!(*failure_code, ErrorCode::StreamUnavailable);
+            assert!(*retryable);
+            assert_eq!(*stream_state, StreamState::Failed);
         }
-        payload => panic!("expected session.stream.ready payload, got {payload:?}"),
+        payload => panic!("expected session.stream.failed payload, got {payload:?}"),
     }
 
     control_plane.shutdown().await;
@@ -1290,25 +1275,7 @@ async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow:
         )?)
         .await
         .context("request stream token before terminate")?;
-    assert_eq!(response.status(), StatusCode::OK);
-    let stream_token: StreamTokenResponse = serde_json::from_slice(&collect_response_body(response).await?)
-        .context("decode stream token before terminate")?;
-    assert_eq!(stream_token.session_id, session_id.to_string());
-    assert_eq!(stream_token.vm_lease_id, LEASE_ID);
-
-    let response = app
-        .clone()
-        .oneshot(get_request(&stream_token.stream_endpoint)?)
-        .await
-        .context("request active honeypot stream route before terminate")?;
-    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
-    let location = response
-        .headers()
-        .get(LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .context("stream redirect location should be present before terminate")?;
-    assert!(location.starts_with("/jet/jrec/play?"), "{location}");
-    assert!(location.contains(&format!("sessionId={session_id}")), "{location}");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     let response = app
         .clone()
@@ -1341,7 +1308,7 @@ async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow:
     }
     assert!(
         session_removed,
-        "stream-bound session should be removed from /jet/sessions after recycle"
+        "failed-stream session should be removed from /jet/sessions after recycle"
     );
 
     let response = app
@@ -1371,13 +1338,6 @@ async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow:
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let response = app
-        .clone()
-        .oneshot(get_request(&stream_token.stream_endpoint)?)
-        .await
-        .context("request stream route after recycle")?;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-
-    let response = app
         .oneshot(get_request("/jet/honeypot/events?cursor=0")?)
         .await
         .context("request replay after stream terminate")?;
@@ -1394,19 +1354,19 @@ async fn honeypot_stream_binding_is_revoked_after_terminate_recycle() -> anyhow:
     assert!(matches!(replay[0].payload, EventPayload::SessionStarted { .. }));
     assert!(matches!(replay[1].payload, EventPayload::SessionAssigned { .. }));
     match &replay[2].payload {
-        EventPayload::SessionStreamReady {
-            transport,
-            stream_endpoint,
+        EventPayload::SessionStreamFailed {
+            failure_code,
+            retryable,
             stream_state,
             ..
         } => {
             assert_eq!(replay[2].vm_lease_id.as_deref(), Some(LEASE_ID));
-            assert_eq!(replay[2].stream_id.as_deref(), Some(stream_token.stream_id.as_str()));
-            assert_eq!(*transport, stream_token.transport);
-            assert_eq!(stream_endpoint, &stream_token.stream_endpoint);
-            assert_eq!(*stream_state, StreamState::Ready);
+            assert!(replay[2].stream_id.is_none());
+            assert_eq!(*failure_code, ErrorCode::StreamUnavailable);
+            assert!(*retryable);
+            assert_eq!(*stream_state, StreamState::Failed);
         }
-        payload => panic!("expected session.stream.ready payload, got {payload:?}"),
+        payload => panic!("expected session.stream.failed payload, got {payload:?}"),
     }
     match &replay[3].payload {
         EventPayload::SessionKilled {

@@ -237,8 +237,10 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Stream tokens are short-lived and must not exceed `60` seconds.
 - The frontend may renew a stream token while the session is live without reconnecting the attacker.
 - The MVP stream source of truth is Gateway recording and streaming reuse because it preserves the existing streamer seam and avoids introducing a fourth runtime service.
+- For the Gateway recording-backed MVP, the proxy must prove an active JREC producer before it returns `200` from `POST /jet/honeypot/session/{session_id}/stream-token` or redirects `/jet/honeypot/session/{session_id}/stream` into the player.
+- If no active producer is present yet, the proxy returns `503 honeypot stream is unavailable`, records `session.stream.failed`, and clears any stale preview metadata instead of advertising a phantom live stream.
 - The proxy-owned `stream_endpoint` is a browser-facing route such as `/jet/honeypot/session/{session_id}/stream?stream_id={stream_id}` rather than a raw capture-source reference.
-- That route must mint a just-in-time JREC pull token and redirect into `/jet/jrec/play?isActive=true`, which then connects to `/jet/jrec/shadow/{session_id}` for live observation.
+- That route must mint a just-in-time JREC pull token and redirect into `/jet/jrec/play/?isActive=true`, which then connects to `/jet/jrec/shadow/{session_id}` for live observation.
 - For the Gateway recording-backed MVP, `transport = websocket` because the JREC player reaches live media through the existing shadow websocket seam while SSE remains only the session-state update transport.
 - Opening or refreshing the frontend focus view while the attacker session is still active should reconnect near the live tail rather than replaying the full recording from the beginning.
 - The tradeoff is higher latency and less capture flexibility than direct QEMU display capture, which is acceptable for the MVP freeze.
@@ -267,7 +269,7 @@ It must not be read as permission to add a fourth runtime service or a parallel 
 - Proxy or control-plane partition before lease assignment behaves like `no_lease` with an operator-visible degraded reason.
 - Proxy or control-plane partition after lease assignment leaves the attacker session in its current state when possible, marks the operator surface degraded, and queues recycle or kill work until connectivity returns or a timeout forces quarantine.
 - Stream-start failure does not disconnect the attacker session.
-- Stream-start failure emits `session.stream.failed`, keeps the session visible in bootstrap, and allows stream recovery by requesting a fresh stream token without reconnecting the attacker.
+- Stream-start failure emits `session.stream.failed`, keeps the session visible in bootstrap, clears stale preview metadata, and allows stream recovery by requesting a fresh stream token after a producer becomes available without reconnecting the attacker.
 - Single-session kill or quarantine emits `session.killed`, revokes session-bound credentials, tears down active stream tokens, and requests `recycle_vm`.
 - Global kill first halts new intake, then emits `session.killed` for each live session, revokes all live stream and credential material, and requests recycle for every assigned lease.
 

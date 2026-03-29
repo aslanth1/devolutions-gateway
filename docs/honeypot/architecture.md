@@ -58,7 +58,7 @@ This document must not be read as permission to introduce a fourth runtime servi
 4. The `proxy` provisions short-lived backend credentials through the existing `/jet/preflight` `provision-credentials` seam instead of inventing a second credential API.
 5. The `proxy` completes the attacker-to-guest RDP path by swapping attacker-facing credentials for the backend guest credentials before traffic reaches the Windows VM.
 6. The `proxy` publishes session state and frontend events through `devolutions-gateway/src/subscriber.rs`, `devolutions-gateway/src/api/sessions.rs`, and future honeypot extensions to the same seam family.
-7. The `frontend` bootstraps running sessions, subscribes to live updates, and opens stream views using proxy-issued metadata and short-lived stream tokens.
+7. The `frontend` bootstraps running sessions, subscribes to live updates, and opens stream views only after the `proxy` proves a live recording producer and issues short-lived stream tokens.
 8. When the attacker disconnects or an operator kills the session, the `proxy` revokes session-bound credentials, marks the session terminal outcome, and asks `control-plane` to recycle or quarantine the lease.
 9. The `control-plane` stops the guest, removes lease-scoped overlays and sockets, revalidates the base image before reuse, or quarantines the affected artifacts on failure, and the `frontend` removes or updates the tile from the resulting terminal event.
 
@@ -120,7 +120,7 @@ disconnect / kill / timeout
 - Every browser stream must be bound to `session_id`, `vm_lease_id`, and a short-lived token.
 - `frontend` never reaches into host files, QMP, or guest display sockets directly.
 - The stream source of truth is a design-freeze decision, but the browser control plane is not.
-- The frontend focus view uses a proxy-owned bridge such as `/jet/honeypot/session/{session_id}/stream?stream_id={stream_id}`, and that bridge redirects into `/jet/jrec/play?isActive=true` so live refresh reconnects near the active tail through the existing shadow websocket path.
+- The frontend focus view uses a proxy-owned bridge such as `/jet/honeypot/session/{session_id}/stream?stream_id={stream_id}`, and that bridge redirects into `/jet/jrec/play/?isActive=true` only when the proxy has proven an active recording producer so live refresh reconnects near the active tail through the existing shadow websocket path.
 
 ## Kill Switch And Recycle
 

@@ -655,7 +655,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the webapp sources, container-runtime availability, and private-registry scope plus auth readiness.",
+        "Run `make manual-lab-webplayer-status` when you want a read-only report for the selected bundle path, staleness against the owned webplayer workspace sources, container-runtime availability, the selected `recording-player` build scope, and whether that narrowed build graph actually needs private-registry auth.",
     );
     assert_contains(
         runbook_path,
@@ -665,12 +665,17 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "Run `make manual-lab-webplayer-auth-check` when you want the same private-registry scope and auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.",
+        "Run `make manual-lab-webplayer-auth-check` when you want the same selected-build auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.",
     );
     assert_contains(
         runbook_path,
         &runbook,
         "Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "That builder now installs and builds only the selected workspace closure `recording-player`, `@devolutions/multi-video-player`, and `@devolutions/shadow-player` from `honeypot/frontend/webplayer-workspace` instead of the legacy `webapp/` workspace.",
     );
     assert_contains(
         runbook_path,
@@ -685,12 +690,12 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
-        "set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
+        "If the selected build graph ever introduces private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
     );
     assert_contains(
         runbook_path,
         &runbook,
-        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs",
+        "`make manual-lab-webplayer-auth-check` now fails early only when the selected build graph would otherwise fall back to npmjs for a private `@devolutions/*` package, and it keeps the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors.",
     );
     assert_contains(
         runbook_path,
@@ -846,7 +851,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, and private-registry scope plus auth readiness.",
+        "Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, the selected `recording-player` build scope, and whether that narrowed build graph actually needs private-registry auth against the owned webplayer workspace.",
     );
     assert_contains(
         testing_path,
@@ -856,12 +861,17 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "Run `make manual-lab-webplayer-auth-check` when you want to exercise the same scoped-registry and auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.",
+        "Run `make manual-lab-webplayer-auth-check` when you want to exercise the same selected-build auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.",
     );
     assert_contains(
         testing_path,
         &testing,
         "Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "That builder now installs and builds only the selected workspace closure `recording-player`, `@devolutions/multi-video-player`, and `@devolutions/shadow-player` from `honeypot/frontend/webplayer-workspace` instead of the legacy `webapp/` workspace.",
     );
     assert_contains(
         testing_path,
@@ -876,12 +886,12 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
-        "set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
+        "If the selected build graph ever introduces private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`",
     );
     assert_contains(
         testing_path,
         &testing,
-        "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs",
+        "`make manual-lab-webplayer-auth-check` now fails early only when the selected build graph would otherwise fall back to npmjs for a private `@devolutions/*` package, and it keeps the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors.",
     );
     assert_contains(
         testing_path,

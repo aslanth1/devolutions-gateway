@@ -17,6 +17,7 @@ use crate::DgwState;
 use crate::extract::{HoneypotStreamReadScope, HoneypotWatchScope};
 use crate::honeypot::{HoneypotControlPlaneRequestError, HoneypotCursorError, HoneypotMode, HoneypotStreamError};
 use crate::http::{HttpError, HttpErrorBuilder};
+use crate::token::{ApplicationProtocol, Protocol};
 
 pub fn make_router<S>(state: DgwState) -> axum::Router<S> {
     let Some(runtime) = state.honeypot.runtime() else {
@@ -112,6 +113,19 @@ pub(crate) async fn post_stream_token(
         .map_err(HttpError::internal().err())?
         .ok_or_else(|| HttpError::not_found().msg("session not found"))?;
 
+    if session_has_honeypot_assignment(&session)
+        && !honeypot_recording_producer_ready(&state.recordings, session_id).await
+    {
+        runtime.record_stream_failed(
+            session_id,
+            session_vm_lease_id(&session),
+            ErrorCode::StreamUnavailable,
+            true,
+        );
+        let _ = state.sessions.sync_honeypot_metadata(session_id).await;
+        return Err(HttpErrorBuilder::new(StatusCode::SERVICE_UNAVAILABLE).msg("honeypot stream is unavailable"));
+    }
+
     match runtime.issue_stream_token(&session).await {
         Ok(response) => {
             let _ = state.sessions.sync_honeypot_metadata(session_id).await;
@@ -136,7 +150,7 @@ pub(crate) async fn get_stream(
     _watch_scope: HoneypotWatchScope,
     _stream_scope: HoneypotStreamReadScope,
 ) -> Result<Redirect, HttpError> {
-    let HoneypotMode::Enabled(_) = &state.honeypot else {
+    let HoneypotMode::Enabled(runtime) = &state.honeypot else {
         return Err(HttpError::not_found().msg("honeypot mode is disabled"));
     };
 
@@ -175,6 +189,17 @@ pub(crate) async fn get_stream(
         return Err(HttpError::not_found().msg("honeypot stream not found"));
     }
 
+    if !honeypot_recording_producer_ready(&state.recordings, session_id).await {
+        runtime.record_stream_failed(
+            session_id,
+            session_vm_lease_id(&session),
+            ErrorCode::StreamUnavailable,
+            true,
+        );
+        let _ = state.sessions.sync_honeypot_metadata(session_id).await;
+        return Err(HttpErrorBuilder::new(StatusCode::SERVICE_UNAVAILABLE).msg("honeypot stream is unavailable"));
+    }
+
     let token_expires_at = stream
         .token_expires_at
         .as_deref()
@@ -198,11 +223,51 @@ pub(crate) async fn get_stream(
     query_string.append_pair("sessionId", &session_id.to_string());
     query_string.append_pair("token", &jrec_token);
     query_string.append_pair("isActive", "true");
+    if let Some(active_file_type) = active_recording_file_type(&session.application_protocol) {
+        query_string.append_pair("activeFileType", active_file_type);
+    }
 
     Ok(Redirect::temporary(&format!(
-        "/jet/jrec/play?{}",
+        "/jet/jrec/play/?{}",
         query_string.finish()
     )))
+}
+
+fn active_recording_file_type(application_protocol: &ApplicationProtocol) -> Option<&'static str> {
+    match application_protocol {
+        ApplicationProtocol::Known(Protocol::Rdp) => Some("webm"),
+        _ => None,
+    }
+}
+
+async fn honeypot_recording_producer_ready(
+    recordings: &crate::recording::RecordingMessageSender,
+    session_id: Uuid,
+) -> bool {
+    if !recordings.active_recordings.contains(session_id) {
+        return false;
+    }
+
+    matches!(
+        recordings.get_state(session_id).await,
+        Ok(Some(crate::recording::OnGoingRecordingState::Connected))
+    )
+}
+
+fn session_has_honeypot_assignment(session: &crate::session::SessionInfo) -> bool {
+    session
+        .honeypot
+        .as_ref()
+        .and_then(|metadata| metadata.assignment.as_ref())
+        .is_some()
+}
+
+fn session_vm_lease_id(session: &crate::session::SessionInfo) -> Option<&str> {
+    session
+        .honeypot
+        .as_ref()
+        .and_then(|metadata| metadata.assignment.as_ref())
+        .map(|assignment| assignment.vm_lease_id.as_str())
 }
 
 fn map_cursor_error(_: HoneypotCursorError) -> HttpError {

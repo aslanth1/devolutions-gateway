@@ -43,6 +43,40 @@ fn create_fake_manual_lab_webplayer_index_only_bundle(root: &Path) -> PathBuf {
     player_root
 }
 
+fn write_fake_manual_lab_webplayer_build_root_with_selected_packages(
+    build_root: &Path,
+    recording_player_private_dep: Option<&str>,
+) {
+    let recording_player_root = build_root.join("apps/recording-player");
+    let multi_video_player_root = build_root.join("packages/multi-video-player");
+    let shadow_player_root = build_root.join("packages/shadow-player");
+
+    fs::create_dir_all(&recording_player_root).expect("create fake recording-player root");
+    fs::create_dir_all(&multi_video_player_root).expect("create fake multi-video-player root");
+    fs::create_dir_all(&shadow_player_root).expect("create fake shadow-player root");
+
+    let private_dep_line = recording_player_private_dep
+        .map(|value| format!(",\n    \"@devolutions/icons\": \"{value}\""))
+        .unwrap_or_default();
+    fs::write(
+        recording_player_root.join("package.json"),
+        format!(
+            "{{\n  \"name\": \"recording-player\",\n  \"dependencies\": {{\n    \"@devolutions/multi-video-player\": \"workspace:*\",\n    \"@devolutions/shadow-player\": \"workspace:*\"{private_dep_line}\n  }}\n}}\n"
+        ),
+    )
+    .expect("write fake recording-player package");
+    fs::write(
+        multi_video_player_root.join("package.json"),
+        "{\n  \"name\": \"@devolutions/multi-video-player\",\n  \"dependencies\": {\n    \"@devolutions/shadow-player\": \"workspace:*\"\n  }\n}\n",
+    )
+    .expect("write fake multi-video-player package");
+    fs::write(
+        shadow_player_root.join("package.json"),
+        "{\n  \"name\": \"@devolutions/shadow-player\"\n}\n",
+    )
+    .expect("write fake shadow-player package");
+}
+
 #[test]
 fn manual_lab_trusted_image_manifest_preserves_lineage_and_rebinds_identity() {
     let source_manifest = json!({
@@ -276,11 +310,7 @@ fn make_manual_lab_webplayer_auth_check_rejects_npmrc_without_devolutions_scope_
     let tempdir = tempdir().expect("create tempdir");
     let build_root = tempdir.path().join("webapp");
     fs::create_dir_all(&build_root).expect("create fake webapp root");
-    fs::write(
-        build_root.join("pnpm-lock.yaml"),
-        "packages:\n  '@devolutions/iron-remote-desktop@0.0.1':\n    resolution:\n      tarball: https://devolutions.jfrog.io/artifactory/api/npm/npm/@devolutions/iron-remote-desktop/-/iron-remote-desktop-0.0.1.tgz\n  '@devolutions/icons@5.0.11':\n    resolution:\n      integrity: sha512-demo\n",
-    )
-    .expect("write fake pnpm lockfile");
+    write_fake_manual_lab_webplayer_build_root_with_selected_packages(&build_root, Some("^5.0.11"));
     let npmrc_path = tempdir.path().join(".npmrc");
     fs::write(&npmrc_path, "registry=https://registry.npmjs.org/\n").expect("write fake npmrc");
 
@@ -320,11 +350,7 @@ fn make_manual_lab_webplayer_auth_check_accepts_scope_mapping_with_matching_host
     let tempdir = tempdir().expect("create tempdir");
     let build_root = tempdir.path().join("webapp");
     fs::create_dir_all(&build_root).expect("create fake webapp root");
-    fs::write(
-        build_root.join("pnpm-lock.yaml"),
-        "packages:\n  '@devolutions/iron-remote-desktop@0.0.1':\n    resolution:\n      tarball: https://devolutions.jfrog.io/artifactory/api/npm/npm/@devolutions/iron-remote-desktop/-/iron-remote-desktop-0.0.1.tgz\n  '@devolutions/icons@5.0.11':\n    resolution:\n      integrity: sha512-demo\n",
-    )
-    .expect("write fake pnpm lockfile");
+    write_fake_manual_lab_webplayer_build_root_with_selected_packages(&build_root, Some("^5.0.11"));
     let npmrc_path = tempdir.path().join(".npmrc");
     fs::write(
         &npmrc_path,
@@ -351,6 +377,61 @@ fn make_manual_lab_webplayer_auth_check_accepts_scope_mapping_with_matching_host
     assert!(
         rendered.contains("@devolutions:registry=https://devolutions.jfrog.io/artifactory/api/npm/npm/"),
         "auth-check should echo the effective scoped registry on success:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_webplayer_auth_check_skips_npmrc_for_workspace_only_graph() {
+    let tempdir = tempdir().expect("create tempdir");
+    let build_root = tempdir.path().join("webapp");
+    fs::create_dir_all(&build_root).expect("create fake webapp root");
+    write_fake_manual_lab_webplayer_build_root_with_selected_packages(&build_root, None);
+
+    let output = Command::new("make")
+        .arg("manual-lab-webplayer-auth-check")
+        .env("MANUAL_LAB_WEBPLAYER_BUILD_ROOT", &build_root)
+        .env("MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME", "sh")
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make manual-lab-webplayer-auth-check");
+    assert!(
+        output.status.success(),
+        "auth-check should skip npm auth when the selected build graph is workspace-only:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("no private npm auth is required"),
+        "auth-check should explain why workspace-only builds skip npm auth:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_ensure_webplayer_runs_the_builder_in_the_owned_workspace() {
+    let tempdir = tempdir().expect("create tempdir");
+    let webplayer_path = create_fake_manual_lab_webplayer_bundle(tempdir.path());
+
+    let output = Command::new("make")
+        .arg("-n")
+        .arg("manual-lab-ensure-webplayer")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make -n manual-lab-ensure-webplayer");
+    assert!(
+        output.status.success(),
+        "make -n manual-lab-ensure-webplayer failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = String::from_utf8(output.stdout).expect("utf8 stdout");
+
+    assert!(
+        rendered.contains("-w \"/workspace/honeypot/frontend/webplayer-workspace\""),
+        "ensure-webplayer should run the containerized build in the owned webplayer workspace:\n{rendered}"
     );
 }
 

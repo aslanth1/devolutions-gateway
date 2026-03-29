@@ -553,7 +553,7 @@ Pass when: compose and Rust tests can detect successful startup, bootstrap API r
 ## Milestone 4: Stream Delivery Path
 
 - Live-stream note: the MVP media path reuses the existing Gateway JREC player and shadow websocket seam rather than WebRTC.
-Pass when: active observation uses `/jet/jrec/play?isActive=true` plus `/jet/jrec/shadow/{session_id}`, browser refresh during an active session reconnects near the live tail instead of replaying the full recording from the beginning, and only the post-disconnect fallback may return to static playback from the start.
+Pass when: active observation uses `/jet/jrec/play/?isActive=true` plus `/jet/jrec/shadow/{session_id}`, browser refresh during an active session reconnects near the live tail instead of replaying the full recording from the beginning, and only the post-disconnect fallback may return to static playback from the start.
 
 - [x] Implement the chosen live-stream source adapter for the frontend.
 Pass when: the MVP stream source is wired into the stack without inventing an unreviewed second capture path.
@@ -761,7 +761,7 @@ Pass when: `honeypot-manual-lab` exists as a Rust testsuite binary, `help`, `sta
 Pass when: one attested Tiny11 manifest lineage can be cloned into three trusted-image identities with unique `vm_name` and guest RDP ports for one run without copying the base qcow2 artifact, and focused tests lock that transform.
 
 - [x] Add real proxy-backed session priming for the manual deck.
-Pass when: the launcher code creates proxy-backed RDP session attempts, resolves `session_id` to `vm_lease_id`, requests stream tokens, and refuses success until the frontend reports three ready tiles.
+Pass when: the launcher code creates proxy-backed RDP session attempts, resolves `session_id` to `vm_lease_id`, probes stream readiness once per session, records either a `stream_id` or an explicit stream-unavailable signal, and refuses success until the frontend reports three live tiles.
 
 - [x] Add idempotent active-state tracking and teardown for the manual deck.
 Pass when: the launcher records one active state file for the current run, `status` and `down` report the inactive case cleanly, and the teardown path best-effort terminates helper clients and sessions, requests release plus recycle for known leases, stops service processes, and removes the active state file after partial startup failures.
@@ -770,7 +770,7 @@ Pass when: the launcher records one active state file for the current run, `stat
 Pass when: the runbook and testing docs explain the required `DGW_HONEYPOT_INTEROP_*` inputs, the `cargo run -p testsuite --bin honeypot-manual-lab -- up|status|down` commands, the Chrome and `Xvfb` assumptions, and why the live deck uses host processes while compose remains the validated readiness and rollback path.
 
 - [x] Add a live operator proof run for the three-host manual deck.
-Pass when: on a host with isolated helper-display support such as `Xvfb`, one sanctioned `honeypot-manual-lab up` run creates three distinct Tiny11-backed live sessions, the frontend reaches three ready tiles, and `honeypot-manual-lab down` drains the active lease count back to zero without orphaned helper processes.
+Pass when: on a host with isolated helper-display support such as `Xvfb`, one sanctioned `honeypot-manual-lab up` run creates three distinct Tiny11-backed live sessions, the frontend reaches three live tiles, any missing recording producer is surfaced as explicit stream-unavailable state instead of a broken live-player fallback, and `honeypot-manual-lab down` drains the active lease count back to zero without orphaned helper processes.
 
 ### Milestone 6c: Manual Deck Preflight And Interop-Store Readiness
 
@@ -961,7 +961,7 @@ Pass when: the runbook and testing docs explain `make test-host-smoke-ensure-ima
 ### Milestone 6r: Containerized Manual-Deck Webplayer Build Lane
 
 - [x] Add an explicit containerized webplayer ensure lane for manual-lab operator flows.
-Pass when: the repo root `Makefile` exposes `manual-lab-ensure-webplayer` and `manual-lab-selftest-ensure-webplayer`, the lane reuses a dedicated non-runtime Docker builder image instead of host pnpm, honors explicit `DGATEWAY_WEBPLAYER_PATH` overrides, and writes the default bundle back to `webapp/dist/recording-player` for the existing Rust staging path.
+Pass when: the repo root `Makefile` exposes `manual-lab-ensure-webplayer` and `manual-lab-selftest-ensure-webplayer`, the lane reuses a dedicated non-runtime Docker builder image instead of host pnpm, honors explicit `DGATEWAY_WEBPLAYER_PATH` overrides, and writes the default bundle into the owned `honeypot/frontend/webplayer-workspace/dist/recording-player` path for the existing Rust staging flow.
 
 - [x] Route the self-test quick paths through the webplayer ensure lane by default while keeping an explicit opt-out.
 Pass when: `make manual-lab-selftest`, `make manual-lab-selftest-no-browser`, `make manual-lab-selftest-up`, and `make manual-lab-selftest-up-no-browser` call `make manual-lab-selftest-ensure-webplayer` before the existing artifact or launch flow, and `MANUAL_LAB_WEBPLAYER_PRECHECK=0` preserves the older raw local launch ordering.
@@ -972,10 +972,13 @@ Pass when: the Rust missing-bundle remediation points at `make manual-lab-ensure
 ### Milestone 6s: Manual-Deck Webplayer Auth And Status Helpers
 
 - [x] Add explicit read-only auth and status helpers for the containerized manual-lab webplayer lane.
-Pass when: the repo root `Makefile` exposes `manual-lab-webplayer-auth-check` and `manual-lab-webplayer-status`, those helpers stay read-only, and they report against the same canonical default bundle path `webapp/dist/recording-player` unless `DGATEWAY_WEBPLAYER_PATH` is explicitly set.
+Pass when: the repo root `Makefile` exposes `manual-lab-webplayer-auth-check` and `manual-lab-webplayer-status`, those helpers stay read-only, and they report against the same canonical default bundle path `honeypot/frontend/webplayer-workspace/dist/recording-player` unless `DGATEWAY_WEBPLAYER_PATH` is explicitly set.
 
 - [x] Keep the webplayer auth helper aligned with the existing containerized build contract.
-Pass when: the auth helper uses the same `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME`, `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and private-lockfile detection rules as `manual-lab-ensure-webplayer`, and missing private-registry auth fails fast with the same remediation anchors instead of introducing a second secret path.
+Pass when: the auth helper uses the same `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME`, `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and selected-build detection rules as `manual-lab-ensure-webplayer`, and missing private-registry auth fails fast with the same remediation anchors instead of introducing a second secret path.
+
+- [x] Narrow the manual-lab webplayer builder to the `recording-player` workspace closure instead of the full `webapp/` install.
+Pass when: `manual-lab-ensure-webplayer` installs and builds only `recording-player`, `@devolutions/multi-video-player`, and `@devolutions/shadow-player` in the containerized builder, unrelated private `gateway-ui` dependencies no longer block `make manual-lab-selftest`, and docs or contract tests pin the selected build graph contract.
 
 - [x] Make the webplayer auth helper reject readable-but-wrong private-registry config before `pnpm install`.
 Pass when: a readable `.npmrc` that omits `@devolutions:registry`, points that scope at npmjs, or lacks credentials for `devolutions.jfrog.io` fails early with a message that names the npmjs fallback risk, while the status helper reports the scoped-registry state separately from the auth-host state.
@@ -989,7 +992,7 @@ Pass when: the runbook and testing docs explain when to run `make manual-lab-web
 Pass when: the repo root `Makefile` exposes a read-only `manual-lab-webplayer-validate-bundle` helper, explicit or default bundle roots must include `index.html` plus a non-empty `assets/` directory, and the containerized build lane still remains the default remediation for missing or invalid local bundles.
 
 - [x] Keep Rust preflight aligned with the stronger bundle contract.
-Pass when: the manual-lab readiness gate checks both `webapp/dist/recording-player/index.html` and the sibling `assets/` directory, so Make and Rust reject the same invalid prebuilt bundle shapes before launch.
+Pass when: the manual-lab readiness gate checks both `honeypot/frontend/webplayer-workspace/dist/recording-player/index.html` and the sibling `assets/` directory, so Make and Rust reject the same invalid prebuilt bundle shapes before launch.
 
 - [x] Add docs and contract tests for the stronger prebuilt bundle contract.
 Pass when: the runbook and testing docs explain the `index.html` plus `assets/` requirement, `make manual-lab-webplayer-validate-bundle`, and the updated `DGATEWAY_WEBPLAYER_PATH` remediation path, while tests pin the new command surface and invalid-bundle failure mode.

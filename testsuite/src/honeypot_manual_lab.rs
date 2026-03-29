@@ -894,6 +894,12 @@ pub struct ManualLabSessionRecord {
     pub stream_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ManualLabStreamProbeOutcome {
+    Ready(StreamTokenResponse),
+    Unavailable { detail: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManualLabState {
     pub schema_version: u32,
@@ -1212,23 +1218,33 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         }
 
         for index in 0..state.sessions.len() {
-            let token = wait_for_stream_token(
+            match probe_stream_token(
                 state.ports.proxy_http,
                 &state.sessions[index].session_id,
                 &wildcard_token,
-            )?;
-            state.sessions[index].stream_id = Some(token.stream_id);
-            if state.sessions[index].vm_lease_id.is_none() {
-                state.sessions[index].vm_lease_id = Some(token.vm_lease_id);
+            )? {
+                ManualLabStreamProbeOutcome::Ready(token) => {
+                    state.sessions[index].stream_id = Some(token.stream_id);
+                    if state.sessions[index].vm_lease_id.is_none() {
+                        state.sessions[index].vm_lease_id = Some(token.vm_lease_id);
+                    }
+                    persist_active_state(&state)?;
+                    eprintln!(
+                        "manual lab phase=session.stream.ready run_id={} slot={} session_id={} stream_id={}",
+                        state.run_id,
+                        state.sessions[index].slot,
+                        state.sessions[index].session_id,
+                        state.sessions[index].stream_id.as_deref().unwrap_or("<pending>")
+                    );
+                }
+                ManualLabStreamProbeOutcome::Unavailable { detail } => {
+                    persist_active_state(&state)?;
+                    eprintln!(
+                        "manual lab phase=session.stream.unavailable run_id={} slot={} session_id={} detail={}",
+                        state.run_id, state.sessions[index].slot, state.sessions[index].session_id, detail
+                    );
+                }
             }
-            persist_active_state(&state)?;
-            eprintln!(
-                "manual lab phase=session.stream.ready run_id={} slot={} session_id={} stream_id={}",
-                state.run_id,
-                state.sessions[index].slot,
-                state.sessions[index].session_id,
-                state.sessions[index].stream_id.as_deref().unwrap_or("<pending>")
-            );
         }
 
         wait_for_frontend_tiles(state.ports.frontend_http, MANUAL_LAB_HOST_COUNT)?;
@@ -2075,32 +2091,46 @@ fn wait_for_bootstrap_session(
     )
 }
 
-fn wait_for_stream_token(
+fn probe_stream_token(
     proxy_http_port: u16,
     session_id: &str,
     wildcard_token: &str,
-) -> anyhow::Result<StreamTokenResponse> {
-    wait_for_condition(
-        MANUAL_LAB_STREAM_READY_TIMEOUT,
-        || {
-            let request = StreamTokenRequest {
-                schema_version: honeypot_contracts::SCHEMA_VERSION,
-                request_id: format!("manual-lab-stream-token-{session_id}"),
-                session_id: session_id.to_owned(),
-            };
-            let response: StreamTokenResponse = post_json_typed(
-                proxy_http_port,
-                &format!("/jet/honeypot/session/{session_id}/stream-token"),
-                &[authorization_header(wildcard_token.to_owned())],
-                &request,
-            )?;
-            response
-                .ensure_supported_schema()
-                .context("manual lab stream token response uses unsupported schema version")?;
-            Ok(response)
-        },
-        &format!("stream token for session {session_id}"),
-    )
+) -> anyhow::Result<ManualLabStreamProbeOutcome> {
+    let request = StreamTokenRequest {
+        schema_version: honeypot_contracts::SCHEMA_VERSION,
+        request_id: format!("manual-lab-stream-token-{session_id}"),
+        session_id: session_id.to_owned(),
+    };
+    let body = serde_json::to_vec(&request).context("serialize manual lab stream token request")?;
+    let path = format!("/jet/honeypot/session/{session_id}/stream-token");
+    let (status, response_body) = send_http_request(
+        proxy_http_port,
+        "POST",
+        &path,
+        &[authorization_header(wildcard_token.to_owned())],
+        Some(&body),
+    )?;
+
+    if status.contains("200") {
+        let response: StreamTokenResponse = serde_json::from_slice(&response_body)
+            .with_context(|| format!("decode typed JSON response from POST {path} on port {proxy_http_port}"))?;
+        response
+            .ensure_supported_schema()
+            .context("manual lab stream token response uses unsupported schema version")?;
+        return Ok(ManualLabStreamProbeOutcome::Ready(response));
+    }
+
+    if status.contains("503") {
+        let detail = String::from_utf8_lossy(&response_body).trim().to_owned();
+        let detail = if detail.is_empty() {
+            status
+        } else {
+            format!("{status} {detail}")
+        };
+        return Ok(ManualLabStreamProbeOutcome::Unavailable { detail });
+    }
+
+    anyhow::bail!("unexpected HTTP status for POST {path} on port {proxy_http_port}: {status}")
 }
 
 fn wait_for_frontend_tiles(frontend_http_port: u16, expected_tiles: usize) -> anyhow::Result<()> {
@@ -2108,11 +2138,6 @@ fn wait_for_frontend_tiles(frontend_http_port: u16, expected_tiles: usize) -> an
         MANUAL_LAB_STREAM_READY_TIMEOUT,
         || {
             let body = get_json(frontend_http_port, "/health", &[])?;
-            ensure!(
-                body.get("ready_tile_count").and_then(Value::as_u64) == Some(expected_tiles as u64),
-                "frontend ready_tile_count has not reached {expected_tiles}: {}",
-                body
-            );
             ensure!(
                 body.get("live_session_count").and_then(Value::as_u64) == Some(expected_tiles as u64),
                 "frontend live_session_count has not reached {expected_tiles}: {}",
@@ -2377,7 +2402,7 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
     let manifest_dir =
         optional_env_path(HONEYPOT_INTEROP_MANIFEST_DIR_ENV).unwrap_or_else(|| image_store.join("manifests"));
     let web_player_root = optional_env_path(GATEWAY_WEBPLAYER_PATH_ENV)
-        .unwrap_or_else(|| repo_relative_path("webapp/dist/recording-player"));
+        .unwrap_or_else(|| repo_relative_path("honeypot/frontend/webplayer-workspace/dist/recording-player"));
     let qemu_binary_path = optional_env_path(HONEYPOT_INTEROP_QEMU_BINARY_ENV)
         .unwrap_or_else(|| PathBuf::from("/usr/bin/qemu-system-x86_64"));
     let kvm_path = optional_env_path(HONEYPOT_INTEROP_KVM_PATH_ENV).unwrap_or_else(|| PathBuf::from("/dev/kvm"));
@@ -3233,26 +3258,6 @@ where
     }
     serde_json::from_slice(&response_body)
         .with_context(|| format!("decode JSON response from POST {path} on port {port}"))
-}
-
-fn post_json_typed<Request, Response>(
-    port: u16,
-    path: &str,
-    headers: &[(String, String)],
-    request: &Request,
-) -> anyhow::Result<Response>
-where
-    Request: Serialize,
-    Response: for<'de> Deserialize<'de>,
-{
-    let body = serde_json::to_vec(request).context("serialize JSON request body")?;
-    let (status, response_body) = send_http_request(port, "POST", path, headers, Some(&body))?;
-    ensure!(
-        status.contains("200"),
-        "unexpected HTTP status for POST {path} on port {port}: {status}",
-    );
-    serde_json::from_slice(&response_body)
-        .with_context(|| format!("decode typed JSON response from POST {path} on port {port}"))
 }
 
 fn send_http_request(

@@ -318,6 +318,21 @@ impl HoneypotRuntime {
         self.events.lock().session_metadata_patch(&session_id.to_string())
     }
 
+    pub fn record_stream_failed(
+        &self,
+        session_id: uuid::Uuid,
+        vm_lease_id: Option<&str>,
+        failure_code: ErrorCode,
+        retryable: bool,
+    ) {
+        self.events.lock().push_session_stream_failed(
+            &session_id.to_string(),
+            vm_lease_id.map(ToOwned::to_owned),
+            failure_code,
+            retryable,
+        );
+    }
+
     pub async fn prepare_rdp_session(
         &self,
         session_id: uuid::Uuid,
@@ -998,6 +1013,10 @@ impl HoneypotEventJournal {
                         token_expires_at: None,
                     });
                     stream.state = *stream_state;
+                    stream.stream_id = None;
+                    stream.transport = None;
+                    stream.stream_endpoint = None;
+                    stream.token_expires_at = None;
                     patch.stream = Some(stream);
                 }
                 EventPayload::ProxyStatusDegraded { .. } => {}
@@ -1122,6 +1141,7 @@ impl HoneypotEventJournal {
                     stream_state = metadata
                         .and_then(|metadata| metadata.stream.as_ref().map(|stream| stream.state))
                         .unwrap_or(*failed_state);
+                    stream_preview = None;
                 }
                 EventPayload::ProxyStatusDegraded { .. } => {}
                 EventPayload::SessionStarted { .. }
@@ -2583,6 +2603,17 @@ mod tests {
         assert_eq!(
             patch.stream.as_ref().map(|stream| stream.state),
             Some(StreamState::Failed)
+        );
+        assert_eq!(
+            patch.stream.as_ref().and_then(|stream| stream.stream_id.as_deref()),
+            None
+        );
+        assert_eq!(
+            patch
+                .stream
+                .as_ref()
+                .and_then(|stream| stream.stream_endpoint.as_deref()),
+            None
         );
 
         harness.shutdown().await;

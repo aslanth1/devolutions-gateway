@@ -30,6 +30,7 @@ pub fn make_router<S>(state: DgwState) -> Router<S> {
         .route("/list", get(list_recordings))
         .route("/pull/{id}/{filename}", get(pull_recording_file))
         .route("/play", get(get_player))
+        .route("/play/", get(get_player))
         .route("/play/{*path}", get(get_player))
         .route("/shadow/{id}", get(shadow_recording))
         .with_state(state)
@@ -479,7 +480,16 @@ where
 
     let conf = conf_handle.get_conf();
 
-    let path = path.map(|path| path.0).unwrap_or_else(|| "/".to_owned());
+    let path = path
+        .map(|path| {
+            let path = path.0;
+            if path.starts_with('/') {
+                path
+            } else {
+                format!("/{path}")
+            }
+        })
+        .unwrap_or_else(|| "/".to_owned());
 
     debug!(path, "Requested player ressource");
 

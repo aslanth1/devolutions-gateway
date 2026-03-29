@@ -1275,7 +1275,12 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
             )
         })
         .unwrap_or_else(|| {
-            "<div class=\"tile-meta\"><strong>Stream</strong><span>Awaiting preview.</span></div>".to_owned()
+            let message = if session.stream_state == StreamState::Failed {
+                "No live source is available."
+            } else {
+                "Awaiting preview."
+            };
+            format!("<div class=\"tile-meta\"><strong>Stream</strong><span>{message}</span></div>")
         });
 
     format!(
@@ -1344,13 +1349,18 @@ fn render_focus_panel(
             token_expires_at = escape_html(&preview.token_expires_at),
         )
     } else {
+        let focus_note = if session.stream_state == StreamState::Failed {
+            "The proxy has not observed an active recording producer for this session."
+        } else {
+            "The frontend could not resolve a stream preview for this session yet."
+        };
         r#"<div class="stream-stage">
   <div>
     <h2>Stream unavailable</h2>
-    <p class="focus-note">The frontend could not resolve a stream preview for this session yet.</p>
+    <p class="focus-note">{focus_note}</p>
   </div>
 </div>"#
-            .to_owned()
+            .replace("{focus_note}", focus_note)
     };
 
     format!(

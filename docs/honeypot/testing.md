@@ -209,19 +209,20 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser` now also inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!`.
 - Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses different guest credentials.
 - The same live deck also needs a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
-- By default the launcher expects the built bundle root at `webapp/dist/recording-player` and stages it into a temporary `player/` root before spawning the proxy.
+- By default the launcher expects the built bundle root at `honeypot/frontend/webplayer-workspace/dist/recording-player` and stages it into a temporary `player/` root before spawning the proxy.
 - A valid prebuilt bundle root contains `index.html` and a non-empty `assets/` directory from the Vite production build.
 - Override the source player bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the build output lives outside the repo default.
-- Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, and private-registry scope plus auth readiness.
+- Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, the selected `recording-player` build scope, and whether that narrowed build graph actually needs private-registry auth against the owned webplayer workspace.
 - Run `make manual-lab-webplayer-validate-bundle` for a read-only pass or fail check on that selected bundle root before launch.
-- Run `make manual-lab-webplayer-auth-check` when you want to exercise the same scoped-registry and auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.
+- Run `make manual-lab-webplayer-auth-check` when you want to exercise the same selected-build auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.
 - Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.
+- That builder now installs and builds only the selected workspace closure `recording-player`, `@devolutions/multi-video-player`, and `@devolutions/shadow-player` from `honeypot/frontend/webplayer-workspace` instead of the legacy `webapp/` workspace.
 - `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` already run that containerized builder automatically.
 - The host only needs the selected container runtime for that builder; it does not need host `pnpm`.
 - Set `MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME=podman` when Docker is not the chosen local runtime.
-- If `webapp/pnpm-lock.yaml` references private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
+- If the selected build graph ever introduces private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
 - That `.npmrc` must both map `@devolutions:registry` to `devolutions.jfrog.io` and include credentials for that host, otherwise the containerized build falls back to `registry.npmjs.org` for private packages such as `@devolutions/icons`.
-- `make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs.
+- `make manual-lab-webplayer-auth-check` now fails early only when the selected build graph would otherwise fall back to npmjs for a private `@devolutions/*` package, and it keeps the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors.
 - If the bundle is still missing or invalid after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` to a built bundle root with `index.html` and `assets/`, then rerun `make manual-lab-preflight`.
 - `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
 - `canonical` is the default `/srv/honeypot/...` lane.
@@ -279,7 +280,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - Self-test alias success must not be treated as canonical `/srv` readiness proof.
 - If the blocker is `missing_store_root`, the sanctioned remediation is `make manual-lab-ensure-artifacts`; when ambiguity exists, first run `make manual-lab-remember-source-manifest MANUAL_LAB_SOURCE_MANIFEST=<path>`, then rerun `make manual-lab-ensure-artifacts` and another `preflight` run.
 - The expected ready state is a trusted-image store under `/srv/honeypot/images`, a manifest set under `/srv/honeypot/images/manifests`, and a `preflight` result of `ready`.
-- `up` clones one attested Tiny11 manifest lineage into three trusted-image identities with unique `vm_name` and guest RDP ports, starts host-process `control-plane`, `proxy`, and `frontend`, creates three real proxy-backed RDP sessions, requests stream tokens, and only succeeds after the frontend reports three ready tiles.
+- `up` clones one attested Tiny11 manifest lineage into three trusted-image identities with unique `vm_name` and guest RDP ports, starts host-process `control-plane`, `proxy`, and `frontend`, creates three real proxy-backed RDP sessions, probes stream readiness once per session, records either a `stream_id` or an explicit stream-unavailable state, and only succeeds after the frontend reports three live tiles.
 - `status` reads the active state file at `target/manual-lab/active.json` and reports the bound run root, dashboard URL, process ids, health snapshots, and the known `session_id`, `vm_lease_id`, and `stream_id` values for each slot.
 - `down` uses that same active state to best-effort terminate helper clients, terminate live proxy sessions, release plus recycle known leases, stop the three services, and remove the active state file.
 - The live three-host deck uses host processes instead of `docker compose` because the current Tiny11 lease path exposes guest RDP through host-loopback forwards such as `127.0.0.1:<guest_rdp_port>`.
