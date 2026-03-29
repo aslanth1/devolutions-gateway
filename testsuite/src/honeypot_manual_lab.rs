@@ -60,6 +60,9 @@ const MANUAL_LAB_SESSION_COUNT_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_SESSION_COUN
 const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST";
 const MANUAL_LAB_FRONTEND_CONFIG_ENV: &str = "HONEYPOT_FRONTEND_CONFIG_PATH";
 const HONEYPOT_BS_ROWS_ENV: &str = "DGW_HONEYPOT_BS_ROWS";
+const HONEYPOT_BS_HYPOTHESIS_ID_ENV: &str = "DGW_HONEYPOT_BS_HYPOTHESIS_ID";
+const HONEYPOT_BS_HYPOTHESIS_TEXT_ENV: &str = "DGW_HONEYPOT_BS_HYPOTHESIS_TEXT";
+const HONEYPOT_BS_RETRY_CONDITION_ENV: &str = "DGW_HONEYPOT_BS_RETRY_CONDITION";
 const HONEYPOT_INTEROP_IMAGE_STORE_ENV: &str = "DGW_HONEYPOT_INTEROP_IMAGE_STORE";
 const HONEYPOT_INTEROP_MANIFEST_DIR_ENV: &str = "DGW_HONEYPOT_INTEROP_MANIFEST_DIR";
 const HONEYPOT_INTEROP_QEMU_BINARY_ENV: &str = "DGW_HONEYPOT_INTEROP_QEMU_BINARY";
@@ -1050,11 +1053,15 @@ pub struct ManualLabBlackScreenEvidence {
     #[serde(default)]
     pub env: BTreeMap<String, String>,
     #[serde(default)]
+    pub hypothesis: ManualLabBlackScreenHypothesisContext,
+    #[serde(default)]
     pub session_invocations: Vec<ManualLabSessionDriverEvidence>,
     #[serde(default)]
     pub multi_session_ready_path_summary: ManualLabMultiSessionReadyPathSummary,
     #[serde(default)]
     pub run_verdict_summary: ManualLabBlackScreenRunVerdictSummary,
+    #[serde(default)]
+    pub do_not_retry_ledger: ManualLabBlackScreenDoNotRetryLedger,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1744,6 +1751,86 @@ pub struct ManualLabBlackScreenRunVerdictSummary {
     pub observed_session_count: usize,
     #[serde(default)]
     pub slot_summaries: Vec<ManualLabBlackScreenRunSlotSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenHypothesisContext {
+    #[serde(default)]
+    pub hypothesis_id: String,
+    #[serde(default)]
+    pub hypothesis_text: String,
+    #[serde(default)]
+    pub retry_condition_text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBlackScreenRetryCondition {
+    NewCode,
+    NewInputs,
+    NewInstrumentation,
+    NewSameDayControlRun,
+    #[default]
+    Unspecified,
+}
+
+impl ManualLabBlackScreenRetryCondition {
+    fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "new_code" => Some(Self::NewCode),
+            "new_inputs" => Some(Self::NewInputs),
+            "new_instrumentation" => Some(Self::NewInstrumentation),
+            "new_same_day_control_run" | "new_control_run_same_contract" => Some(Self::NewSameDayControlRun),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBlackScreenDoNotRetryLedgerVerdict {
+    NotRequired,
+    EntryRecorded,
+    MissingHypothesisId,
+    MissingHypothesisText,
+    MissingRetryCondition,
+    InvalidRetryCondition,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenDoNotRetryLedgerEntry {
+    #[serde(default)]
+    pub hypothesis_id: String,
+    #[serde(default)]
+    pub hypothesis_text: String,
+    #[serde(default)]
+    pub bs_rows: Vec<String>,
+    #[serde(default)]
+    pub git_rev: String,
+    #[serde(default)]
+    pub failing_lane: String,
+    #[serde(default)]
+    pub artifact_root: PathBuf,
+    #[serde(default)]
+    pub run_verdict: ManualLabBlackScreenRunVerdict,
+    #[serde(default)]
+    pub rejection_reason_code: ManualLabBlackScreenRunReason,
+    #[serde(default)]
+    pub retry_condition: ManualLabBlackScreenRetryCondition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenDoNotRetryLedger {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabBlackScreenDoNotRetryLedgerVerdict,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub entries: Vec<ManualLabBlackScreenDoNotRetryLedgerEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4854,6 +4941,14 @@ fn parse_bs_rows_from_env() -> Vec<String> {
         .collect()
 }
 
+fn build_black_screen_hypothesis_context_from_env() -> ManualLabBlackScreenHypothesisContext {
+    ManualLabBlackScreenHypothesisContext {
+        hypothesis_id: optional_env_string(HONEYPOT_BS_HYPOTHESIS_ID_ENV).unwrap_or_default(),
+        hypothesis_text: optional_env_string(HONEYPOT_BS_HYPOTHESIS_TEXT_ENV).unwrap_or_default(),
+        retry_condition_text: optional_env_string(HONEYPOT_BS_RETRY_CONDITION_ENV).unwrap_or_default(),
+    }
+}
+
 fn collect_black_screen_env_snapshot() -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
     for name in [
@@ -4863,6 +4958,9 @@ fn collect_black_screen_env_snapshot() -> BTreeMap<String, String> {
         MANUAL_LAB_CONTROL_PLANE_CONFIG_ENV,
         MANUAL_LAB_SESSION_COUNT_ENV,
         HONEYPOT_BS_ROWS_ENV,
+        HONEYPOT_BS_HYPOTHESIS_ID_ENV,
+        HONEYPOT_BS_HYPOTHESIS_TEXT_ENV,
+        HONEYPOT_BS_RETRY_CONDITION_ENV,
         MANUAL_LAB_SELECTED_SOURCE_MANIFEST_ENV,
         HONEYPOT_INTEROP_DRIVER_KIND_ENV,
         HONEYPOT_INTEROP_IMAGE_STORE_ENV,
@@ -4937,9 +5035,11 @@ fn build_black_screen_evidence(
         artifacts: ManualLabBlackScreenArtifactPaths::default(),
         teardown_started_at_unix_ms: None,
         env,
+        hypothesis: build_black_screen_hypothesis_context_from_env(),
         session_invocations: Vec::new(),
         multi_session_ready_path_summary: ManualLabMultiSessionReadyPathSummary::default(),
         run_verdict_summary: ManualLabBlackScreenRunVerdictSummary::default(),
+        do_not_retry_ledger: ManualLabBlackScreenDoNotRetryLedger::default(),
     }
 }
 
@@ -5029,6 +5129,7 @@ const MANUAL_LAB_BROWSER_ARTIFACT_CORRELATION_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_READY_PATH_SUSTAIN_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_MULTI_SESSION_READY_PATH_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BLACK_SCREEN_RUN_VERDICT_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_BLACK_SCREEN_DO_NOT_RETRY_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_RECORDING_VISIBILITY_SUMMARY_FILENAME: &str = "recording-visibility-summary.json";
 const MANUAL_LAB_RECORDING_VISIBILITY_AT_BROWSER_TIME_SUMMARY_FILENAME: &str =
     "recording-visibility-at-browser-time-summary.json";
@@ -6578,6 +6679,71 @@ pub fn build_manual_lab_black_screen_run_verdict_summary(
     summary
 }
 
+pub fn build_manual_lab_black_screen_do_not_retry_ledger(
+    evidence: &ManualLabBlackScreenEvidence,
+) -> ManualLabBlackScreenDoNotRetryLedger {
+    let mut ledger = ManualLabBlackScreenDoNotRetryLedger {
+        schema_version: MANUAL_LAB_BLACK_SCREEN_DO_NOT_RETRY_SCHEMA_VERSION,
+        ..Default::default()
+    };
+
+    if evidence.run_verdict_summary.verdict == ManualLabBlackScreenRunVerdict::UsablePlayback {
+        ledger.verdict = ManualLabBlackScreenDoNotRetryLedgerVerdict::NotRequired;
+        ledger.detail =
+            Some("run reached usable playback, so no disproven-hypothesis ledger entry was required".to_owned());
+        return ledger;
+    }
+
+    if evidence.hypothesis.hypothesis_id.trim().is_empty() {
+        ledger.verdict = ManualLabBlackScreenDoNotRetryLedgerVerdict::MissingHypothesisId;
+        ledger.detail =
+            Some("non-green run is missing DGW_HONEYPOT_BS_HYPOTHESIS_ID for the do-not-retry ledger".to_owned());
+        return ledger;
+    }
+
+    if evidence.hypothesis.hypothesis_text.trim().is_empty() {
+        ledger.verdict = ManualLabBlackScreenDoNotRetryLedgerVerdict::MissingHypothesisText;
+        ledger.detail =
+            Some("non-green run is missing DGW_HONEYPOT_BS_HYPOTHESIS_TEXT for the do-not-retry ledger".to_owned());
+        return ledger;
+    }
+
+    if evidence.hypothesis.retry_condition_text.trim().is_empty() {
+        ledger.verdict = ManualLabBlackScreenDoNotRetryLedgerVerdict::MissingRetryCondition;
+        ledger.detail =
+            Some("non-green run is missing DGW_HONEYPOT_BS_RETRY_CONDITION for the do-not-retry ledger".to_owned());
+        return ledger;
+    }
+
+    let Some(retry_condition) = ManualLabBlackScreenRetryCondition::parse(&evidence.hypothesis.retry_condition_text)
+    else {
+        ledger.verdict = ManualLabBlackScreenDoNotRetryLedgerVerdict::InvalidRetryCondition;
+        ledger.detail = Some(format!(
+            "non-green run provided unsupported retry condition {:?}",
+            evidence.hypothesis.retry_condition_text
+        ));
+        return ledger;
+    };
+
+    ledger.verdict = ManualLabBlackScreenDoNotRetryLedgerVerdict::EntryRecorded;
+    ledger.entries.push(ManualLabBlackScreenDoNotRetryLedgerEntry {
+        hypothesis_id: evidence.hypothesis.hypothesis_id.clone(),
+        hypothesis_text: evidence.hypothesis.hypothesis_text.clone(),
+        bs_rows: evidence.bs_rows.clone(),
+        git_rev: evidence.git_rev.clone(),
+        failing_lane: evidence.driver_lane.clone(),
+        artifact_root: evidence.artifact_root.clone(),
+        run_verdict: evidence.run_verdict_summary.verdict,
+        rejection_reason_code: evidence.run_verdict_summary.primary_reason,
+        retry_condition,
+    });
+    ledger.detail = Some(format!(
+        "recorded do-not-retry ledger entry for hypothesis {} from lane {}",
+        evidence.hypothesis.hypothesis_id, evidence.driver_lane
+    ));
+    ledger
+}
+
 fn event_payload_timestamp_unix_ms(event: &EventEnvelope) -> Option<u64> {
     let payload_time = match &event.payload {
         EventPayload::SessionStarted { started_at, .. } => Some(started_at.as_str()),
@@ -7968,6 +8134,7 @@ fn persist_black_screen_evidence(
     evidence.multi_session_ready_path_summary =
         build_manual_lab_multi_session_ready_path_summary(&evidence.session_invocations, evidence.session_count);
     evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+    evidence.do_not_retry_ledger = build_manual_lab_black_screen_do_not_retry_ledger(&evidence);
     if let Some(parent) = evidence_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }

@@ -12,17 +12,19 @@ use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
 };
 use testsuite::honeypot_manual_lab::{
-    ManualLabBlackScreenBranchVerdict, ManualLabBlackScreenEvidence, ManualLabBlackScreenRunReason,
+    ManualLabBlackScreenBranchVerdict, ManualLabBlackScreenDoNotRetryLedgerVerdict, ManualLabBlackScreenEvidence,
+    ManualLabBlackScreenHypothesisContext, ManualLabBlackScreenRetryCondition, ManualLabBlackScreenRunReason,
     ManualLabBlackScreenRunVerdict, ManualLabBrowserArtifactCorrelationVerdict, ManualLabBrowserPlayerMode,
     ManualLabBrowserVisibilityDataStatus, ManualLabMultiSessionReadyPathSlotReason,
     ManualLabMultiSessionReadyPathVerdict, ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict,
     ManualLabProxyConfigOptions, ManualLabReadyPathSustainVerdict, ManualLabRecordingVisibilityVerdict,
     ManualLabSessionBrowserVisibilitySummary, ManualLabSessionBrowserVisibilityWindowSummary,
     ManualLabSessionDriverEvidence, ManualLabSessionPlaybackReadyCorrelation,
-    ManualLabSessionPlayerPlaybackPathSummary, active_state_path, build_manual_lab_black_screen_run_verdict_summary,
-    build_manual_lab_multi_session_ready_path_summary, build_manual_lab_ready_path_sustain_summary,
-    honeypot_manual_lab_assert_cmd, parse_manual_lab_recording_visibility_probe_result_from_dom,
-    render_manual_lab_proxy_config, render_three_host_trusted_image_manifest,
+    ManualLabSessionPlayerPlaybackPathSummary, active_state_path, build_manual_lab_black_screen_do_not_retry_ledger,
+    build_manual_lab_black_screen_run_verdict_summary, build_manual_lab_multi_session_ready_path_summary,
+    build_manual_lab_ready_path_sustain_summary, honeypot_manual_lab_assert_cmd,
+    parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_proxy_config,
+    render_three_host_trusted_image_manifest,
 };
 use testsuite::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path};
 
@@ -256,7 +258,16 @@ fn sample_black_screen_run_evidence(
         build_manual_lab_multi_session_ready_path_summary(&session_invocations, session_count);
 
     ManualLabBlackScreenEvidence {
+        git_rev: "test-git-rev".to_owned(),
+        bs_rows: vec!["BS-37".to_owned()],
+        driver_lane: "xfreerdp-control".to_owned(),
         session_count,
+        artifact_root: PathBuf::from("target/manual-lab/manual-lab-test"),
+        hypothesis: ManualLabBlackScreenHypothesisContext {
+            hypothesis_id: "slot-3-control-lane-fixes-playback".to_owned(),
+            hypothesis_text: "the current control lane reaches usable playback for every slot".to_owned(),
+            retry_condition_text: "new_instrumentation".to_owned(),
+        },
         session_invocations,
         multi_session_ready_path_summary,
         ..Default::default()
@@ -528,6 +539,117 @@ fn manual_lab_black_screen_run_verdict_is_red_for_browser_artifact_alignment_gap
             .reason_codes
             .contains(&ManualLabBlackScreenRunReason::BrowserArtifactAlignmentGap)
     );
+}
+
+#[test]
+fn manual_lab_do_not_retry_ledger_records_amber_disproven_hypothesis() {
+    let mut slot_two = sample_run_slot_evidence(2);
+    slot_two.browser_visibility_summary.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    for window in &mut slot_two.browser_visibility_summary.windows {
+        window.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    }
+    slot_two.artifact_visibility_at_browser_time.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    slot_two.browser_artifact_correlation_summary.verdict = ManualLabBrowserArtifactCorrelationVerdict::BothBlack;
+    slot_two.browser_artifact_correlation_summary.browser_verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    slot_two.browser_artifact_correlation_summary.artifact_verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+
+    let mut evidence = sample_black_screen_run_evidence(
+        vec![sample_run_slot_evidence(1), slot_two, sample_run_slot_evidence(3)],
+        3,
+    );
+    evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    let ledger = build_manual_lab_black_screen_do_not_retry_ledger(&evidence);
+
+    assert_eq!(
+        ledger.verdict,
+        ManualLabBlackScreenDoNotRetryLedgerVerdict::EntryRecorded
+    );
+    assert_eq!(ledger.entries.len(), 1);
+    assert_eq!(ledger.entries[0].hypothesis_id, "slot-3-control-lane-fixes-playback");
+    assert_eq!(
+        ledger.entries[0].hypothesis_text,
+        "the current control lane reaches usable playback for every slot"
+    );
+    assert_eq!(ledger.entries[0].failing_lane, "xfreerdp-control");
+    assert_eq!(
+        ledger.entries[0].artifact_root,
+        PathBuf::from("target/manual-lab/manual-lab-test")
+    );
+    assert_eq!(
+        ledger.entries[0].run_verdict,
+        ManualLabBlackScreenRunVerdict::ProducerReadyButCorruptionUnresolved
+    );
+    assert_eq!(
+        ledger.entries[0].rejection_reason_code,
+        ManualLabBlackScreenRunReason::ProducerReadyCorruptionUnresolved
+    );
+    assert_eq!(
+        ledger.entries[0].retry_condition,
+        ManualLabBlackScreenRetryCondition::NewInstrumentation
+    );
+}
+
+#[test]
+fn manual_lab_do_not_retry_ledger_is_not_required_for_green_run() {
+    let mut evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    let ledger = build_manual_lab_black_screen_do_not_retry_ledger(&evidence);
+
+    assert_eq!(ledger.verdict, ManualLabBlackScreenDoNotRetryLedgerVerdict::NotRequired);
+    assert!(ledger.entries.is_empty());
+}
+
+#[test]
+fn manual_lab_do_not_retry_ledger_records_red_disproven_hypothesis() {
+    let mut evidence =
+        sample_black_screen_run_evidence(vec![sample_run_slot_evidence(1), sample_run_slot_evidence(2)], 3);
+    evidence.hypothesis.retry_condition_text = "new_same_day_control_run".to_owned();
+    evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    let ledger = build_manual_lab_black_screen_do_not_retry_ledger(&evidence);
+
+    assert_eq!(
+        ledger.verdict,
+        ManualLabBlackScreenDoNotRetryLedgerVerdict::EntryRecorded
+    );
+    assert_eq!(ledger.entries.len(), 1);
+    assert_eq!(
+        ledger.entries[0].run_verdict,
+        ManualLabBlackScreenRunVerdict::ContractViolationOrMissingProof
+    );
+    assert_eq!(
+        ledger.entries[0].rejection_reason_code,
+        ManualLabBlackScreenRunReason::MissingSlotEvidence
+    );
+    assert_eq!(
+        ledger.entries[0].retry_condition,
+        ManualLabBlackScreenRetryCondition::NewSameDayControlRun
+    );
+}
+
+#[test]
+fn manual_lab_do_not_retry_ledger_fails_closed_without_retry_condition() {
+    let mut evidence =
+        sample_black_screen_run_evidence(vec![sample_run_slot_evidence(1), sample_run_slot_evidence(2)], 3);
+    evidence.hypothesis.retry_condition_text.clear();
+    evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    let ledger = build_manual_lab_black_screen_do_not_retry_ledger(&evidence);
+
+    assert_eq!(
+        ledger.verdict,
+        ManualLabBlackScreenDoNotRetryLedgerVerdict::MissingRetryCondition
+    );
+    assert!(ledger.entries.is_empty());
 }
 
 #[test]
