@@ -1144,6 +1144,8 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub player_websocket_summary: ManualLabSessionPlayerWebsocketSummary,
     #[serde(default)]
+    pub player_playback_path_summary: ManualLabSessionPlayerPlaybackPathSummary,
+    #[serde(default)]
     pub gfx_filter_summary: Option<ManualLabSessionGfxFilterSummary>,
     #[serde(default)]
     pub fastpath_warning_summary: Option<ManualLabSessionFastPathWarningSummary>,
@@ -1300,6 +1302,49 @@ pub struct ManualLabSessionPlayerWebsocketSummary {
     pub no_close_observed_by_teardown: bool,
     #[serde(default)]
     pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabPlayerPlaybackModeVerdict {
+    ActiveLivePath,
+    StaticFallbackDuringActive,
+    MissingArtifactProbeWhileActive,
+    StaticIntentFromStart,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionPlayerPlaybackPathSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabPlayerPlaybackModeVerdict,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub active_intent_observed: bool,
+    #[serde(default)]
+    pub active_intent_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub static_playback_started_observed: bool,
+    #[serde(default)]
+    pub static_playback_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub recording_info_fetch_attempted: bool,
+    #[serde(default)]
+    pub recording_info_fetch_succeeded: bool,
+    #[serde(default)]
+    pub recording_info_fetch_failed: bool,
+    #[serde(default)]
+    pub recording_info_fetch_failed_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub recording_info_fetch_http_status: Option<u16>,
+    #[serde(default)]
+    pub missing_artifact_while_active: bool,
+    #[serde(default)]
+    pub telemetry_gap: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4420,6 +4465,7 @@ fn parse_http_status_code(status: &str) -> Option<u16> {
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_FASTPATH_WARNING_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYER_WEBSOCKET_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_PLAYER_PLAYBACK_PATH_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS: [&str; 11] = [
     "playback.bootstrap.requested",
     "playback.bootstrap.request_result",
@@ -4459,6 +4505,10 @@ struct ManualLabPlayerWebsocketEvent {
     kind: String,
     #[serde(default)]
     websocket_url: Option<String>,
+    #[serde(default)]
+    request_url: Option<String>,
+    #[serde(default)]
+    http_status: Option<u16>,
     #[serde(default)]
     opened_at_unix_ms: Option<u64>,
     #[serde(default)]
@@ -4591,6 +4641,122 @@ fn build_manual_lab_player_websocket_summary(
     } else {
         Some("player websocket telemetry was captured without an open or close marker".to_owned())
     };
+
+    summary
+}
+
+fn build_manual_lab_player_playback_path_summary(
+    events: &[ManualLabPlayerWebsocketEvent],
+) -> ManualLabSessionPlayerPlaybackPathSummary {
+    let mut summary = ManualLabSessionPlayerPlaybackPathSummary {
+        schema_version: MANUAL_LAB_PLAYER_PLAYBACK_PATH_SCHEMA_VERSION,
+        ..Default::default()
+    };
+
+    for event in events {
+        match event.kind.as_str() {
+            "player_mode_configured" => {
+                if event.active_mode == Some(true) {
+                    summary.active_intent_observed = true;
+                    summary
+                        .active_intent_at_unix_ms
+                        .get_or_insert(event.observed_at_unix_ms);
+                }
+            }
+            "websocket_open" | "websocket_first_message" => {
+                if event.active_mode == Some(true) {
+                    summary.active_intent_observed = true;
+                    summary
+                        .active_intent_at_unix_ms
+                        .get_or_insert(event.observed_at_unix_ms);
+                }
+            }
+            "static_playback_started" => {
+                summary.static_playback_started_observed = true;
+                summary.static_playback_started_at_unix_ms = summary
+                    .static_playback_started_at_unix_ms
+                    .or(Some(event.observed_at_unix_ms));
+            }
+            "recording_info_fetch_started" => {
+                summary.recording_info_fetch_attempted = true;
+                if event.active_mode == Some(true) {
+                    summary.active_intent_observed = true;
+                    summary
+                        .active_intent_at_unix_ms
+                        .get_or_insert(event.observed_at_unix_ms);
+                }
+            }
+            "recording_info_fetch_succeeded" => {
+                summary.recording_info_fetch_attempted = true;
+                summary.recording_info_fetch_succeeded = true;
+                if event.active_mode == Some(true) {
+                    summary.active_intent_observed = true;
+                    summary
+                        .active_intent_at_unix_ms
+                        .get_or_insert(event.observed_at_unix_ms);
+                }
+            }
+            "recording_info_fetch_failed" => {
+                summary.recording_info_fetch_attempted = true;
+                summary.recording_info_fetch_failed = true;
+                summary.recording_info_fetch_failed_at_unix_ms = summary
+                    .recording_info_fetch_failed_at_unix_ms
+                    .or(Some(event.observed_at_unix_ms));
+                summary.recording_info_fetch_http_status =
+                    summary.recording_info_fetch_http_status.or(event.http_status);
+                if event.active_mode == Some(true) {
+                    summary.active_intent_observed = true;
+                    summary
+                        .active_intent_at_unix_ms
+                        .get_or_insert(event.observed_at_unix_ms);
+                    summary.missing_artifact_while_active = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    summary.verdict = if summary.missing_artifact_while_active {
+        ManualLabPlayerPlaybackModeVerdict::MissingArtifactProbeWhileActive
+    } else if summary.static_playback_started_observed && summary.active_intent_observed {
+        ManualLabPlayerPlaybackModeVerdict::StaticFallbackDuringActive
+    } else if summary.active_intent_observed {
+        ManualLabPlayerPlaybackModeVerdict::ActiveLivePath
+    } else if events
+        .iter()
+        .any(|event| event.kind == "player_mode_configured" && event.active_mode == Some(false))
+    {
+        ManualLabPlayerPlaybackModeVerdict::StaticIntentFromStart
+    } else {
+        summary.telemetry_gap = events.is_empty();
+        ManualLabPlayerPlaybackModeVerdict::Inconclusive
+    };
+
+    summary.detail = Some(match summary.verdict {
+        ManualLabPlayerPlaybackModeVerdict::MissingArtifactProbeWhileActive => {
+            let status = summary
+                .recording_info_fetch_http_status
+                .map(|status| status.to_string())
+                .unwrap_or_else(|| "<unknown>".to_owned());
+            format!("recording.json fetch failed with status {status} while active playback was still expected")
+        }
+        ManualLabPlayerPlaybackModeVerdict::StaticFallbackDuringActive => {
+            "static playback started after active playback intent was established".to_owned()
+        }
+        ManualLabPlayerPlaybackModeVerdict::ActiveLivePath => {
+            "active playback intent held and no static fallback or missing recording fetch was observed".to_owned()
+        }
+        ManualLabPlayerPlaybackModeVerdict::StaticIntentFromStart => {
+            "player was configured for static playback from the start".to_owned()
+        }
+        ManualLabPlayerPlaybackModeVerdict::Inconclusive => {
+            if summary.telemetry_gap {
+                "no player telemetry was captured for playback-path classification".to_owned()
+            } else {
+                "player telemetry did not contain enough evidence to classify playback path".to_owned()
+            }
+        }
+    });
 
     summary
 }
@@ -5573,6 +5739,8 @@ fn persist_black_screen_evidence(
                     &player_websocket_events,
                     evidence.teardown_started_at_unix_ms,
                 );
+                let player_playback_path_summary =
+                    build_manual_lab_player_playback_path_summary(&player_websocket_events);
                 let fastpath_warning_summary = build_manual_lab_fastpath_warning_summary(
                     &fastpath_warnings,
                     unattributed_fastpath_warning_count,
@@ -5606,6 +5774,7 @@ fn persist_black_screen_evidence(
                     playback_bootstrap_timeline,
                     playback_ready_correlation,
                     player_websocket_summary,
+                    player_playback_path_summary,
                     gfx_filter_summary,
                     fastpath_warning_summary: Some(fastpath_warning_summary),
                     gfx_warning_summary,
@@ -5772,12 +5941,14 @@ mod tests {
     use super::{
         ManualLabBlackScreenBranchVerdict, ManualLabDriverKind, ManualLabEvidenceConfidence,
         ManualLabFastPathWarningEvent, ManualLabFastPathWarningEvidence, ManualLabPlaybackBootstrapVerdict,
-        ManualLabPlaybackReadyVerdict, ManualLabPlayerWebsocketEvent, ManualLabSessionGfxFilterSummary,
-        ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
-        ManualLabSessionPlayerWebsocketSummary, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
-        association_token, build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
+        ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict, ManualLabPlayerWebsocketEvent,
+        ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
+        ManualLabSessionPlayerPlaybackPathSummary, ManualLabSessionPlayerWebsocketSummary,
+        ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode, association_token,
+        build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
         build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_bootstrap_timeline,
-        build_manual_lab_playback_ready_correlation, build_manual_lab_player_websocket_summary, build_session_records,
+        build_manual_lab_playback_ready_correlation, build_manual_lab_player_playback_path_summary,
+        build_manual_lab_player_websocket_summary, build_session_records,
         discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, ironrdp_no_gfx_driver_args, manual_lab_manifest_path,
         manual_lab_service_ready_timeout, parse_manual_lab_fastpath_warning_line,
@@ -6132,6 +6303,122 @@ mod tests {
         assert_eq!(
             summary.detail.as_deref(),
             Some("no websocket close was observed before teardown")
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_player_playback_path_summary_for_active_live_path() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let mut configured = player_websocket_event(session_id, "player_mode_configured", 100);
+        configured.active_mode = Some(true);
+        configured.fallback_started = Some(false);
+        let mut open = player_websocket_event(session_id, "websocket_open", 105);
+        open.active_mode = Some(true);
+        open.fallback_started = Some(false);
+        open.opened_at_unix_ms = Some(105);
+        let mut fetch_started = player_websocket_event(session_id, "recording_info_fetch_started", 110);
+        fetch_started.active_mode = Some(true);
+        fetch_started.fallback_started = Some(false);
+        fetch_started.request_url = Some("http://gateway/jet/jrec/pull/session/recording.json".to_owned());
+        let mut fetch_succeeded = player_websocket_event(session_id, "recording_info_fetch_succeeded", 120);
+        fetch_succeeded.active_mode = Some(true);
+        fetch_succeeded.fallback_started = Some(false);
+        fetch_succeeded.http_status = Some(200);
+
+        let summary =
+            build_manual_lab_player_playback_path_summary(&[configured, open, fetch_started, fetch_succeeded]);
+
+        assert_eq!(
+            summary,
+            ManualLabSessionPlayerPlaybackPathSummary {
+                schema_version: 1,
+                verdict: ManualLabPlayerPlaybackModeVerdict::ActiveLivePath,
+                detail: Some(
+                    "active playback intent held and no static fallback or missing recording fetch was observed"
+                        .to_owned(),
+                ),
+                active_intent_observed: true,
+                active_intent_at_unix_ms: Some(100),
+                static_playback_started_observed: false,
+                static_playback_started_at_unix_ms: None,
+                recording_info_fetch_attempted: true,
+                recording_info_fetch_succeeded: true,
+                recording_info_fetch_failed: false,
+                recording_info_fetch_failed_at_unix_ms: None,
+                recording_info_fetch_http_status: None,
+                missing_artifact_while_active: false,
+                telemetry_gap: false,
+            }
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_player_playback_path_summary_for_static_fallback_during_active() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let mut configured = player_websocket_event(session_id, "player_mode_configured", 100);
+        configured.active_mode = Some(true);
+        configured.fallback_started = Some(false);
+        let mut fallback = player_websocket_event(session_id, "static_playback_started", 150);
+        fallback.active_mode = Some(false);
+        fallback.fallback_started = Some(true);
+
+        let summary = build_manual_lab_player_playback_path_summary(&[configured, fallback]);
+
+        assert_eq!(
+            summary,
+            ManualLabSessionPlayerPlaybackPathSummary {
+                schema_version: 1,
+                verdict: ManualLabPlayerPlaybackModeVerdict::StaticFallbackDuringActive,
+                detail: Some("static playback started after active playback intent was established".to_owned()),
+                active_intent_observed: true,
+                active_intent_at_unix_ms: Some(100),
+                static_playback_started_observed: true,
+                static_playback_started_at_unix_ms: Some(150),
+                recording_info_fetch_attempted: false,
+                recording_info_fetch_succeeded: false,
+                recording_info_fetch_failed: false,
+                recording_info_fetch_failed_at_unix_ms: None,
+                recording_info_fetch_http_status: None,
+                missing_artifact_while_active: false,
+                telemetry_gap: false,
+            }
+        );
+    }
+
+    #[test]
+    fn manual_lab_builds_player_playback_path_summary_for_missing_artifact_while_active() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let mut configured = player_websocket_event(session_id, "player_mode_configured", 100);
+        configured.active_mode = Some(true);
+        configured.fallback_started = Some(false);
+        let mut fetch_failed = player_websocket_event(session_id, "recording_info_fetch_failed", 140);
+        fetch_failed.active_mode = Some(true);
+        fetch_failed.fallback_started = Some(false);
+        fetch_failed.http_status = Some(404);
+        fetch_failed.request_url = Some("http://gateway/jet/jrec/pull/session/recording.json".to_owned());
+
+        let summary = build_manual_lab_player_playback_path_summary(&[configured, fetch_failed]);
+
+        assert_eq!(
+            summary,
+            ManualLabSessionPlayerPlaybackPathSummary {
+                schema_version: 1,
+                verdict: ManualLabPlayerPlaybackModeVerdict::MissingArtifactProbeWhileActive,
+                detail: Some(
+                    "recording.json fetch failed with status 404 while active playback was still expected".to_owned(),
+                ),
+                active_intent_observed: true,
+                active_intent_at_unix_ms: Some(100),
+                static_playback_started_observed: false,
+                static_playback_started_at_unix_ms: None,
+                recording_info_fetch_attempted: true,
+                recording_info_fetch_succeeded: false,
+                recording_info_fetch_failed: true,
+                recording_info_fetch_failed_at_unix_ms: Some(140),
+                recording_info_fetch_http_status: Some(404),
+                missing_artifact_while_active: true,
+                telemetry_gap: false,
+            }
         );
     }
 

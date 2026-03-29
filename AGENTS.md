@@ -1142,8 +1142,9 @@ Pass when: if multiple driver variants leave negotiation counters, corruption co
 Pass when: runs preserve the websocket close code or reason, time since open, and whether the player was still in active mode when the close occurred.
 Current evidence after the explicit active-player proof: the session-page rerun `manual-lab-dd9497ed0d704513aeeee5162cfbb9ba` captured `websocket_open`, `websocket_first_message`, `websocket_close_raw`, and `websocket_close_transformed` for session `40f7aeb7-a150-4777-8c19-2edc2be6af8a`, and the persisted `player_websocket_summary` recorded `raw_close_code=1005`, `transformed_close_code=1005`, `elapsed_ms_since_open=27014`, and `active_mode_at_close=true` without falling back to static playback first.
 
-- [ ] `BS-30` Record whether the player falls back to static playback during an active session.
+- [x] `BS-30` Record whether the player falls back to static playback during an active session.
 Pass when: each run can say whether `/jet/jrec/play/?isActive=true` stayed on the active path, switched to static fallback, or attempted to fetch a missing recording artifact while the session was still live.
+Current evidence after the explicit ready-slot proof: the two-session control run `manual-lab-28266918fda643189d4dd827c8c1dd46` persisted `player_playback_path_summary` in `black-screen-evidence.json`. The attached ready slot `d42df6c4-f4d2-4b48-b22b-96b7ef16e8b6` recorded `player_mode_configured`, `websocket_open`, and `websocket_first_message` with `activeMode=true`, no `static_playback_started`, and the summary verdict `active_live_path`, while targeted tests now lock the `static_fallback_during_active` and `missing_artifact_probe_while_active` branches into the reducer contract.
 
 - [ ] `BS-31` Correlate session events with recording artifact creation and growth.
 Pass when: the run bundle can align `session.started`, `session.assigned`, `session.stream.ready`, `session.stream.failed`, websocket attach, and `recording-*.webm` creation or growth on one timeline.

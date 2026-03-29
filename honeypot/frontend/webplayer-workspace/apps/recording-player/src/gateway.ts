@@ -1,3 +1,5 @@
+import { emitPlayerTelemetry } from './telemetry';
+
 export class GatewayAccessApi {
   recordingInfo = null;
   gatewayAccessUrl: string;
@@ -15,10 +17,41 @@ export class GatewayAccessApi {
   }
 
   async fetchRecordingInfo() {
-    const response = await fetch(this.videoSrcInfoUrl());
+    const requestUrl = this.videoSrcInfoUrl();
+    emitPlayerTelemetry({
+      kind: 'recording_info_fetch_started',
+      requestUrl,
+      detail: 'recording-player requested recording.json',
+    });
+
+    let response;
+    try {
+      response = await fetch(requestUrl);
+    } catch (error) {
+      emitPlayerTelemetry({
+        kind: 'recording_info_fetch_failed',
+        requestUrl,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+
     if (!response.ok) {
+      emitPlayerTelemetry({
+        kind: 'recording_info_fetch_failed',
+        requestUrl,
+        httpStatus: response.status,
+        detail: `request failed with status ${response.status}`,
+      });
       throw new Error(`Request failed. Returned status of ${response.status}`);
     }
+
+    emitPlayerTelemetry({
+      kind: 'recording_info_fetch_succeeded',
+      requestUrl,
+      httpStatus: response.status,
+      detail: 'recording-player loaded recording.json successfully',
+    });
     this.recordingInfo = await response.json();
     return this.recordingInfo;
   }

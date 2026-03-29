@@ -61,6 +61,10 @@ struct PlayerTelemetryEvent {
     #[serde(default)]
     websocket_url: Option<String>,
     #[serde(default)]
+    request_url: Option<String>,
+    #[serde(default)]
+    http_status: Option<u16>,
+    #[serde(default)]
     opened_at_unix_ms: Option<u64>,
     #[serde(default)]
     first_message_at_unix_ms: Option<u64>,

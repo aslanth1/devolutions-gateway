@@ -6,6 +6,8 @@ type PlayerTelemetryEvent = {
   kind: string;
   observedAtUnixMs?: number;
   websocketUrl?: string;
+  requestUrl?: string;
+  httpStatus?: number;
   openedAtUnixMs?: number;
   firstMessageAtUnixMs?: number;
   closedAtUnixMs?: number;
@@ -35,6 +37,13 @@ export function configurePlayerTelemetry(gatewayAccessApi: GatewayAccessApi, isA
     isActiveSession,
     fallbackStarted: !isActiveSession,
   };
+
+  emitPlayerTelemetry({
+    kind: 'player_mode_configured',
+    detail: isActiveSession
+      ? 'recording-player configured active playback intent'
+      : 'recording-player configured static playback intent',
+  });
 }
 
 export function markStaticPlaybackStarted() {
@@ -68,6 +77,8 @@ export function emitPlayerTelemetry(event: PlayerTelemetryEvent) {
     observedAtUnixMs: event.observedAtUnixMs ?? Date.now(),
     kind: event.kind,
     websocketUrl: event.websocketUrl,
+    requestUrl: event.requestUrl,
+    httpStatus: event.httpStatus,
     openedAtUnixMs: event.openedAtUnixMs,
     firstMessageAtUnixMs: event.firstMessageAtUnixMs,
     closedAtUnixMs: event.closedAtUnixMs,
