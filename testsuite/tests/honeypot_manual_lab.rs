@@ -12,14 +12,15 @@ use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
 };
 use testsuite::honeypot_manual_lab::{
-    ManualLabBrowserPlayerMode, ManualLabBrowserVisibilityDataStatus, ManualLabPlaybackReadyVerdict,
+    ManualLabBlackScreenBranchVerdict, ManualLabBrowserPlayerMode, ManualLabBrowserVisibilityDataStatus,
+    ManualLabMultiSessionReadyPathSlotReason, ManualLabMultiSessionReadyPathVerdict, ManualLabPlaybackReadyVerdict,
     ManualLabPlayerPlaybackModeVerdict, ManualLabProxyConfigOptions, ManualLabReadyPathSustainVerdict,
     ManualLabRecordingVisibilityVerdict, ManualLabSessionBrowserVisibilitySummary,
     ManualLabSessionBrowserVisibilityWindowSummary, ManualLabSessionDriverEvidence,
     ManualLabSessionPlaybackReadyCorrelation, ManualLabSessionPlayerPlaybackPathSummary, active_state_path,
-    build_manual_lab_ready_path_sustain_summary, honeypot_manual_lab_assert_cmd,
-    parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_proxy_config,
-    render_three_host_trusted_image_manifest,
+    build_manual_lab_multi_session_ready_path_summary, build_manual_lab_ready_path_sustain_summary,
+    honeypot_manual_lab_assert_cmd, parse_manual_lab_recording_visibility_probe_result_from_dom,
+    render_manual_lab_proxy_config, render_three_host_trusted_image_manifest,
 };
 use testsuite::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path};
 
@@ -261,6 +262,102 @@ fn manual_lab_ready_path_sustain_rejects_static_fallback_before_steady_window() 
         ManualLabReadyPathSustainVerdict::StaticFallbackObserved
     );
     assert_eq!(summary.static_fallback_started_at_unix_ms, Some(1_050));
+}
+
+#[test]
+fn manual_lab_multi_session_ready_path_summary_accounts_for_three_slots() {
+    let mut slot_two = sample_ready_path_evidence();
+    slot_two.slot = 2;
+    slot_two.session_id = "session-two".to_owned();
+    slot_two.black_screen_branch.verdict = ManualLabBlackScreenBranchVerdict::PlayerLoss;
+    slot_two.player_playback_path_summary.verdict = ManualLabPlayerPlaybackModeVerdict::StaticFallbackDuringActive;
+    slot_two.player_playback_path_summary.static_playback_started_observed = true;
+    slot_two.player_playback_path_summary.static_playback_started_at_unix_ms = Some(1_050);
+    slot_two.artifact_visibility_at_browser_time.verdict = ManualLabRecordingVisibilityVerdict::VisibleFrame;
+
+    let mut slot_three = sample_ready_path_evidence();
+    slot_three.slot = 3;
+    slot_three.session_id = "session-three".to_owned();
+    slot_three.black_screen_branch.verdict = ManualLabBlackScreenBranchVerdict::NoReadyTruthfulness;
+    slot_three.player_playback_path_summary.telemetry_gap = true;
+    slot_three.browser_visibility_summary.windows.clear();
+    slot_three.browser_visibility_summary.valid_window_count = 0;
+    slot_three.browser_visibility_summary.representative_current_time_ms = None;
+    slot_three.artifact_visibility_at_browser_time.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+
+    let mut slot_one = sample_ready_path_evidence();
+    slot_one.slot = 1;
+    slot_one.session_id = "session-one".to_owned();
+    slot_one.black_screen_branch.verdict = ManualLabBlackScreenBranchVerdict::AlignedReady;
+    slot_one.artifact_visibility_at_browser_time.verdict = ManualLabRecordingVisibilityVerdict::VisibleFrame;
+
+    let summary = build_manual_lab_multi_session_ready_path_summary(&[slot_two, slot_three, slot_one], 3);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabMultiSessionReadyPathVerdict::AllSlotsAccounted
+    );
+    assert_eq!(summary.expected_slot_count, 3);
+    assert_eq!(summary.observed_session_count, 3);
+    assert_eq!(summary.slot_summaries.len(), 3);
+    assert_eq!(summary.slot_summaries[0].slot, 1);
+    assert_eq!(
+        summary.slot_summaries[0].reason,
+        ManualLabMultiSessionReadyPathSlotReason::UsableLivePlayback
+    );
+    assert_eq!(
+        summary.slot_summaries[0].black_screen_branch_verdict,
+        ManualLabBlackScreenBranchVerdict::AlignedReady
+    );
+    assert_eq!(summary.slot_summaries[1].slot, 2);
+    assert_eq!(
+        summary.slot_summaries[1].reason,
+        ManualLabMultiSessionReadyPathSlotReason::StaticFallbackObserved
+    );
+    assert_eq!(
+        summary.slot_summaries[1].black_screen_branch_verdict,
+        ManualLabBlackScreenBranchVerdict::PlayerLoss
+    );
+    assert_eq!(summary.slot_summaries[2].slot, 3);
+    assert_eq!(
+        summary.slot_summaries[2].reason,
+        ManualLabMultiSessionReadyPathSlotReason::TelemetryGap
+    );
+    assert_eq!(
+        summary.slot_summaries[2].black_screen_branch_verdict,
+        ManualLabBlackScreenBranchVerdict::NoReadyTruthfulness
+    );
+}
+
+#[test]
+fn manual_lab_multi_session_ready_path_summary_marks_missing_slot_evidence() {
+    let mut slot_one = sample_ready_path_evidence();
+    slot_one.slot = 1;
+    slot_one.session_id = "session-one".to_owned();
+
+    let mut slot_two = sample_ready_path_evidence();
+    slot_two.slot = 2;
+    slot_two.session_id = "session-two".to_owned();
+
+    let summary = build_manual_lab_multi_session_ready_path_summary(&[slot_one, slot_two], 3);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabMultiSessionReadyPathVerdict::MissingSlotEvidence
+    );
+    assert_eq!(summary.expected_slot_count, 3);
+    assert_eq!(summary.observed_session_count, 2);
+    assert_eq!(summary.slot_summaries.len(), 3);
+    assert_eq!(summary.slot_summaries[2].slot, 3);
+    assert_eq!(
+        summary.slot_summaries[2].reason,
+        ManualLabMultiSessionReadyPathSlotReason::MissingSlotEvidence
+    );
+    assert_eq!(summary.slot_summaries[2].session_id, "");
+    assert_eq!(
+        summary.slot_summaries[2].ready_path_sustain_summary.verdict,
+        ManualLabReadyPathSustainVerdict::Inconclusive
+    );
 }
 
 #[test]

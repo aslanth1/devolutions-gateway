@@ -1051,6 +1051,8 @@ pub struct ManualLabBlackScreenEvidence {
     pub env: BTreeMap<String, String>,
     #[serde(default)]
     pub session_invocations: Vec<ManualLabSessionDriverEvidence>,
+    #[serde(default)]
+    pub multi_session_ready_path_summary: ManualLabMultiSessionReadyPathSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1615,6 +1617,65 @@ pub struct ManualLabSessionReadyPathSustainSummary {
     pub static_fallback_started_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub telemetry_gap: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabMultiSessionReadyPathVerdict {
+    AllSlotsAccounted,
+    MissingSlotEvidence,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabMultiSessionReadyPathSlotReason {
+    UsableLivePlayback,
+    MissingReadyAlignment,
+    MissingActiveIntent,
+    StaticFallbackObserved,
+    MissingSteadyActiveWindow,
+    TelemetryGap,
+    MissingSlotEvidence,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabMultiSessionReadyPathSlotSummary {
+    #[serde(default)]
+    pub slot: usize,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub reason: ManualLabMultiSessionReadyPathSlotReason,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub ready_path_sustain_summary: ManualLabSessionReadyPathSustainSummary,
+    #[serde(default)]
+    pub black_screen_branch_verdict: ManualLabBlackScreenBranchVerdict,
+    #[serde(default)]
+    pub browser_visibility_verdict: ManualLabRecordingVisibilityVerdict,
+    #[serde(default)]
+    pub artifact_visibility_verdict: ManualLabRecordingVisibilityVerdict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabMultiSessionReadyPathSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabMultiSessionReadyPathVerdict,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub expected_slot_count: usize,
+    #[serde(default)]
+    pub observed_session_count: usize,
+    #[serde(default)]
+    pub slot_summaries: Vec<ManualLabMultiSessionReadyPathSlotSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4809,6 +4870,7 @@ fn build_black_screen_evidence(
         teardown_started_at_unix_ms: None,
         env,
         session_invocations: Vec::new(),
+        multi_session_ready_path_summary: ManualLabMultiSessionReadyPathSummary::default(),
     }
 }
 
@@ -4896,6 +4958,7 @@ const MANUAL_LAB_RECORDING_VISIBILITY_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BROWSER_VISIBILITY_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BROWSER_ARTIFACT_CORRELATION_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_READY_PATH_SUSTAIN_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_MULTI_SESSION_READY_PATH_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_RECORDING_VISIBILITY_SUMMARY_FILENAME: &str = "recording-visibility-summary.json";
 const MANUAL_LAB_RECORDING_VISIBILITY_AT_BROWSER_TIME_SUMMARY_FILENAME: &str =
     "recording-visibility-at-browser-time-summary.json";
@@ -6066,6 +6129,130 @@ pub fn build_manual_lab_ready_path_sustain_summary(
     };
     summary.detail =
         Some("ready active playback never reached a steady active_live browser window before teardown".to_owned());
+    summary
+}
+
+fn manual_lab_multi_session_ready_path_slot_reason(
+    verdict: ManualLabReadyPathSustainVerdict,
+) -> ManualLabMultiSessionReadyPathSlotReason {
+    match verdict {
+        ManualLabReadyPathSustainVerdict::SustainedActiveLive => {
+            ManualLabMultiSessionReadyPathSlotReason::UsableLivePlayback
+        }
+        ManualLabReadyPathSustainVerdict::MissingReadyAlignment => {
+            ManualLabMultiSessionReadyPathSlotReason::MissingReadyAlignment
+        }
+        ManualLabReadyPathSustainVerdict::MissingActiveIntent => {
+            ManualLabMultiSessionReadyPathSlotReason::MissingActiveIntent
+        }
+        ManualLabReadyPathSustainVerdict::StaticFallbackObserved => {
+            ManualLabMultiSessionReadyPathSlotReason::StaticFallbackObserved
+        }
+        ManualLabReadyPathSustainVerdict::MissingSteadyActiveWindow => {
+            ManualLabMultiSessionReadyPathSlotReason::MissingSteadyActiveWindow
+        }
+        ManualLabReadyPathSustainVerdict::TelemetryGap => ManualLabMultiSessionReadyPathSlotReason::TelemetryGap,
+        ManualLabReadyPathSustainVerdict::Inconclusive => ManualLabMultiSessionReadyPathSlotReason::Inconclusive,
+    }
+}
+
+pub fn build_manual_lab_multi_session_ready_path_summary(
+    session_evidence: &[ManualLabSessionDriverEvidence],
+    expected_slot_count: usize,
+) -> ManualLabMultiSessionReadyPathSummary {
+    let mut evidence_by_slot: BTreeMap<usize, Vec<&ManualLabSessionDriverEvidence>> = BTreeMap::new();
+    for evidence in session_evidence {
+        evidence_by_slot.entry(evidence.slot).or_default().push(evidence);
+    }
+
+    let mut summary = ManualLabMultiSessionReadyPathSummary {
+        schema_version: MANUAL_LAB_MULTI_SESSION_READY_PATH_SCHEMA_VERSION,
+        expected_slot_count,
+        observed_session_count: session_evidence.len(),
+        ..Default::default()
+    };
+
+    if expected_slot_count == 0 {
+        summary.verdict = ManualLabMultiSessionReadyPathVerdict::Inconclusive;
+        summary.detail = Some("multi-session ready-path summary requires at least one expected slot".to_owned());
+        return summary;
+    }
+
+    let mut missing_slots = Vec::new();
+    let mut duplicate_slots = Vec::new();
+
+    for slot in 1..=expected_slot_count {
+        match evidence_by_slot.get(&slot) {
+            Some(entries) if entries.len() == 1 => {
+                let entry = entries[0];
+                let ready_path_sustain_summary = build_manual_lab_ready_path_sustain_summary(entry);
+                summary.slot_summaries.push(ManualLabMultiSessionReadyPathSlotSummary {
+                    slot,
+                    session_id: entry.session_id.clone(),
+                    reason: manual_lab_multi_session_ready_path_slot_reason(ready_path_sustain_summary.verdict),
+                    detail: ready_path_sustain_summary.detail.clone(),
+                    ready_path_sustain_summary,
+                    black_screen_branch_verdict: entry.black_screen_branch.verdict,
+                    browser_visibility_verdict: entry.browser_visibility_summary.verdict,
+                    artifact_visibility_verdict: entry.artifact_visibility_at_browser_time.verdict,
+                });
+            }
+            Some(entries) => {
+                duplicate_slots.push(slot);
+                summary.slot_summaries.push(ManualLabMultiSessionReadyPathSlotSummary {
+                    slot,
+                    reason: ManualLabMultiSessionReadyPathSlotReason::Inconclusive,
+                    detail: Some(format!(
+                        "expected one evidence record for slot {slot}, observed {}",
+                        entries.len()
+                    )),
+                    ..Default::default()
+                });
+            }
+            None => {
+                missing_slots.push(slot);
+                summary.slot_summaries.push(ManualLabMultiSessionReadyPathSlotSummary {
+                    slot,
+                    reason: ManualLabMultiSessionReadyPathSlotReason::MissingSlotEvidence,
+                    detail: Some(format!(
+                        "no manual-lab ready-path evidence was recorded for slot {slot}"
+                    )),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    if !duplicate_slots.is_empty() {
+        summary.verdict = ManualLabMultiSessionReadyPathVerdict::Inconclusive;
+        summary.detail = Some(format!(
+            "duplicate manual-lab evidence was recorded for slot(s) {}",
+            duplicate_slots
+                .iter()
+                .map(|slot| slot.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        return summary;
+    }
+
+    if !missing_slots.is_empty() {
+        summary.verdict = ManualLabMultiSessionReadyPathVerdict::MissingSlotEvidence;
+        summary.detail = Some(format!(
+            "manual-lab ready-path evidence is missing for slot(s) {}",
+            missing_slots
+                .iter()
+                .map(|slot| slot.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        return summary;
+    }
+
+    summary.verdict = ManualLabMultiSessionReadyPathVerdict::AllSlotsAccounted;
+    summary.detail = Some(format!(
+        "manual-lab ready-path evidence accounted for slots 1..={expected_slot_count}"
+    ));
     summary
 }
 
@@ -7456,6 +7643,8 @@ fn persist_black_screen_evidence(
             },
         )
         .collect();
+    evidence.multi_session_ready_path_summary =
+        build_manual_lab_multi_session_ready_path_summary(&evidence.session_invocations, evidence.session_count);
     if let Some(parent) = evidence_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
