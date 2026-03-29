@@ -27,7 +27,7 @@ use testsuite::honeypot_manual_lab::{
     build_manual_lab_black_screen_run_verdict_summary, build_manual_lab_multi_session_ready_path_summary,
     build_manual_lab_ready_path_sustain_summary, honeypot_manual_lab_assert_cmd,
     parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_proxy_config,
-    render_three_host_trusted_image_manifest,
+    render_manual_lab_xfreerdp_lane_contract, render_three_host_trusted_image_manifest,
 };
 use testsuite::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path};
 
@@ -833,6 +833,78 @@ fn manual_lab_control_run_comparison_fails_closed_when_contracts_do_not_match() 
         summary.verdict,
         ManualLabBlackScreenControlRunComparisonVerdict::ArtifactContractMismatch
     );
+}
+
+#[test]
+fn manual_lab_rfx_lane_records_exact_codec_flags_and_same_day_control_provenance() {
+    let lane_contract = render_manual_lab_xfreerdp_lane_contract(
+        "642e76af-caa3-487b-b3ed-8abe864a7bc9",
+        3391,
+        3389,
+        Some("tls"),
+        "rfx",
+    )
+    .expect("render rfx lane contract");
+
+    assert_eq!(lane_contract.driver_lane, "xfreerdp-rfx");
+    assert!(lane_contract.driver_args.iter().any(|arg| arg == "/dynamic-resolution"));
+    assert!(lane_contract.driver_args.iter().any(|arg| arg == "/gfx:RFX"));
+    assert!(!lane_contract.driver_args.iter().any(|arg| arg == "-gfx"));
+    let driver_lane = lane_contract.driver_lane;
+    let driver_args = lane_contract.driver_args;
+
+    let tempdir = tempdir().expect("create tempdir");
+    let control_root = tempdir.path().join("control");
+    let mut control_evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+        ],
+        3,
+    );
+    control_evidence.bs_rows = vec!["BS-23".to_owned()];
+    control_evidence.driver_lane = "xfreerdp-control-default".to_owned();
+    control_evidence.is_control_lane = true;
+    control_evidence.run_started_at_unix_ms = Some(1_704_067_200_000);
+    control_evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&control_evidence);
+    control_evidence.artifact_contract_summary =
+        build_manual_lab_black_screen_artifact_contract_summary(&control_evidence);
+    write_black_screen_evidence_fixture(&control_root, &control_evidence);
+
+    let mut variant_slots = vec![
+        sample_run_slot_evidence(1),
+        sample_run_slot_evidence(2),
+        sample_run_slot_evidence(3),
+    ];
+    for slot in &mut variant_slots {
+        slot.driver_lane = Some(driver_lane.clone());
+        slot.driver_args = driver_args.clone();
+    }
+
+    let mut variant_evidence = sample_black_screen_run_evidence(variant_slots, 3);
+    variant_evidence.bs_rows = vec!["BS-23".to_owned()];
+    variant_evidence.driver_lane = driver_lane;
+    variant_evidence.run_started_at_unix_ms = Some(1_704_067_260_000);
+    variant_evidence.env.insert(
+        "DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT".to_owned(),
+        control_root.display().to_string(),
+    );
+    variant_evidence.artifact_contract_summary =
+        build_manual_lab_black_screen_artifact_contract_summary(&variant_evidence);
+
+    let summary = build_manual_lab_black_screen_control_run_comparison_summary(&variant_evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenControlRunComparisonVerdict::MeaningfulWithSameDayControl
+    );
+    assert_eq!(summary.control_artifact_root, Some(control_root));
+    for slot in &variant_evidence.session_invocations {
+        assert_eq!(slot.driver_lane.as_deref(), Some("xfreerdp-rfx"));
+        assert!(slot.driver_args.iter().any(|arg| arg == "/dynamic-resolution"));
+        assert!(slot.driver_args.iter().any(|arg| arg == "/gfx:RFX"));
+    }
 }
 
 #[test]

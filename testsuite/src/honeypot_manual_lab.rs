@@ -984,6 +984,35 @@ impl ManualLabXfreerdpGraphicsMode {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualLabXfreerdpLaneContract {
+    pub driver_lane: String,
+    pub driver_args: Vec<String>,
+}
+
+pub fn render_manual_lab_xfreerdp_lane_contract(
+    association_token: &str,
+    proxy_tcp_port: u16,
+    guest_rdp_port: u16,
+    rdp_security: Option<&str>,
+    graphics_mode_name: &str,
+) -> anyhow::Result<ManualLabXfreerdpLaneContract> {
+    let graphics_mode = ManualLabXfreerdpGraphicsMode::parse(graphics_mode_name)
+        .with_context(|| format!("parse xfreerdp graphics mode {graphics_mode_name:?}"))?;
+    let driver_args = xfreerdp_driver_args(
+        association_token,
+        proxy_tcp_port,
+        guest_rdp_port,
+        rdp_security,
+        graphics_mode,
+    );
+
+    Ok(ManualLabXfreerdpLaneContract {
+        driver_lane: graphics_mode.lane_name().to_owned(),
+        driver_args,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManualLabPorts {
     pub control_plane_http: u16,

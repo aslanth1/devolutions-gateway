@@ -1142,6 +1142,11 @@ fn honeypot_docs_keep_black_screen_runbook_contract_canonical() {
     assert_contains(
         runbook_path,
         &runbook,
+        "The explicit `BS-23` codec lane uses `DGW_HONEYPOT_INTEROP_XFREERDP_GFX_MODE=rfx`, which must emit `driver_lane=xfreerdp-rfx` plus `/dynamic-resolution` and `/gfx:RFX`, and it must still archive a same-day control companion through `DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT` before the result counts.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "Variant runs must set `DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT=<control-run-root>` so `control_run_comparison_summary` can require same-day sibling control evidence before the result is treated as meaningful.",
     );
     assert_contains(
