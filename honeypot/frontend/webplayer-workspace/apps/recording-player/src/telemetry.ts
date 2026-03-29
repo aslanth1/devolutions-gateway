@@ -20,6 +20,21 @@ type PlayerTelemetryEvent = {
   activeMode?: boolean;
   fallbackStarted?: boolean;
   wasClean?: boolean;
+  playerMode?: string;
+  windowIndex?: number;
+  windowPhase?: string;
+  windowStartAtUnixMs?: number;
+  windowEndAtUnixMs?: number;
+  sampleCount?: number;
+  validSampleCount?: number;
+  sampleStatus?: string;
+  visibilityVerdict?: string;
+  representativeCurrentTimeMs?: number;
+  videoWidth?: number;
+  videoHeight?: number;
+  maxNonBlackRatioPerMille?: number;
+  meanNonBlackRatioPerMille?: number;
+  transitionObserved?: boolean;
   detail?: string;
 };
 
@@ -91,6 +106,21 @@ export function emitPlayerTelemetry(event: PlayerTelemetryEvent) {
     activeMode: event.activeMode ?? playerActiveMode(),
     fallbackStarted: event.fallbackStarted ?? playerFallbackStarted(),
     wasClean: event.wasClean,
+    playerMode: event.playerMode,
+    windowIndex: event.windowIndex,
+    windowPhase: event.windowPhase,
+    windowStartAtUnixMs: event.windowStartAtUnixMs,
+    windowEndAtUnixMs: event.windowEndAtUnixMs,
+    sampleCount: event.sampleCount,
+    validSampleCount: event.validSampleCount,
+    sampleStatus: event.sampleStatus,
+    visibilityVerdict: event.visibilityVerdict,
+    representativeCurrentTimeMs: event.representativeCurrentTimeMs,
+    videoWidth: event.videoWidth,
+    videoHeight: event.videoHeight,
+    maxNonBlackRatioPerMille: event.maxNonBlackRatioPerMille,
+    meanNonBlackRatioPerMille: event.meanNonBlackRatioPerMille,
+    transitionObserved: event.transitionObserved,
     detail: event.detail,
   };
   const body = JSON.stringify(payload);

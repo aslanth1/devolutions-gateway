@@ -1151,6 +1151,12 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub recording_visibility_summary: ManualLabSessionRecordingVisibilitySummary,
     #[serde(default)]
+    pub browser_visibility_summary: ManualLabSessionBrowserVisibilitySummary,
+    #[serde(default)]
+    pub artifact_visibility_at_browser_time: ManualLabSessionRecordingVisibilitySummary,
+    #[serde(default)]
+    pub browser_artifact_correlation_summary: ManualLabSessionBrowserArtifactCorrelationSummary,
+    #[serde(default)]
     pub gfx_filter_summary: Option<ManualLabSessionGfxFilterSummary>,
     #[serde(default)]
     pub fastpath_warning_summary: Option<ManualLabSessionFastPathWarningSummary>,
@@ -1429,6 +1435,8 @@ pub struct ManualLabSessionRecordingVisibilitySummary {
     #[serde(default)]
     pub recording_path: Option<PathBuf>,
     #[serde(default)]
+    pub probe_seek_to_ms: Option<u64>,
+    #[serde(default)]
     pub video_duration_ms: Option<u64>,
     #[serde(default)]
     pub ready_state: Option<u8>,
@@ -1444,6 +1452,130 @@ pub struct ManualLabSessionRecordingVisibilitySummary {
     pub first_sparse_offset_ms: Option<u64>,
     #[serde(default)]
     pub max_non_black_ratio_per_mille: Option<u16>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBrowserPlayerMode {
+    ActiveLive,
+    StaticFallback,
+    #[default]
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBrowserVisibilityDataStatus {
+    Ready,
+    NoVideoElement,
+    NoDecodableFrame,
+    ReadbackError,
+    InsufficientSamples,
+    Transitional,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionBrowserVisibilityWindowSummary {
+    #[serde(default)]
+    pub window_index: u32,
+    #[serde(default)]
+    pub window_phase: String,
+    #[serde(default)]
+    pub player_mode: ManualLabBrowserPlayerMode,
+    #[serde(default)]
+    pub data_status: ManualLabBrowserVisibilityDataStatus,
+    #[serde(default)]
+    pub verdict: ManualLabRecordingVisibilityVerdict,
+    #[serde(default)]
+    pub sample_count: u64,
+    #[serde(default)]
+    pub valid_sample_count: u64,
+    #[serde(default)]
+    pub window_start_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub window_end_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub representative_current_time_ms: Option<u64>,
+    #[serde(default)]
+    pub video_width: Option<u32>,
+    #[serde(default)]
+    pub video_height: Option<u32>,
+    #[serde(default)]
+    pub max_non_black_ratio_per_mille: Option<u16>,
+    #[serde(default)]
+    pub mean_non_black_ratio_per_mille: Option<u16>,
+    #[serde(default)]
+    pub transition_observed: bool,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionBrowserVisibilitySummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabRecordingVisibilityVerdict,
+    #[serde(default)]
+    pub confidence: ManualLabEvidenceConfidence,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub dominant_mode: ManualLabBrowserPlayerMode,
+    #[serde(default)]
+    pub data_status: ManualLabBrowserVisibilityDataStatus,
+    #[serde(default)]
+    pub representative_current_time_ms: Option<u64>,
+    #[serde(default)]
+    pub valid_window_count: u64,
+    #[serde(default)]
+    pub transition_observed: bool,
+    #[serde(default)]
+    pub max_non_black_ratio_per_mille: Option<u16>,
+    #[serde(default)]
+    pub windows: Vec<ManualLabSessionBrowserVisibilityWindowSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBrowserArtifactCorrelationVerdict {
+    BothVisible,
+    BothBlack,
+    BrowserBlackArtifactVisible,
+    BrowserVisibleArtifactBlack,
+    InconclusiveInsufficientData,
+    InconclusiveAlignmentGap,
+    InconclusiveTransition,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionBrowserArtifactCorrelationSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabBrowserArtifactCorrelationVerdict,
+    #[serde(default)]
+    pub confidence: ManualLabEvidenceConfidence,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub browser_player_mode: ManualLabBrowserPlayerMode,
+    #[serde(default)]
+    pub browser_verdict: ManualLabRecordingVisibilityVerdict,
+    #[serde(default)]
+    pub artifact_verdict: ManualLabRecordingVisibilityVerdict,
+    #[serde(default)]
+    pub browser_current_time_ms: Option<u64>,
+    #[serde(default)]
+    pub artifact_probe_seek_to_ms: Option<u64>,
+    #[serde(default)]
+    pub browser_data_status: ManualLabBrowserVisibilityDataStatus,
+    #[serde(default)]
+    pub transition_observed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4722,8 +4854,14 @@ const MANUAL_LAB_PLAYER_WEBSOCKET_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYER_PLAYBACK_PATH_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYBACK_ARTIFACT_TIMELINE_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_RECORDING_VISIBILITY_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_BROWSER_VISIBILITY_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_BROWSER_ARTIFACT_CORRELATION_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_RECORDING_VISIBILITY_SUMMARY_FILENAME: &str = "recording-visibility-summary.json";
+const MANUAL_LAB_RECORDING_VISIBILITY_AT_BROWSER_TIME_SUMMARY_FILENAME: &str =
+    "recording-visibility-at-browser-time-summary.json";
 const MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS: u64 = 8_000;
 const MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS: u64 = 250;
+const MANUAL_LAB_RECORDING_VISIBILITY_VIRTUAL_TIME_BUDGET_MS: u64 = 14_000;
 const MANUAL_LAB_RECORDING_VISIBILITY_VISIBLE_THRESHOLD_PER_MILLE: u16 = 10;
 const MANUAL_LAB_RECORDING_VISIBILITY_SPARSE_THRESHOLD_PER_MILLE: u16 = 1;
 
@@ -4742,11 +4880,23 @@ const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
   const src = __SOURCE_FILE_URL__;
   const maxMs = __MAX_MS__;
   const intervalMs = __INTERVAL_MS__;
+  const seekToMs = __SEEK_TO_MS__;
   const visibleThreshold = __VISIBLE_THRESHOLD__;
   const sparseThreshold = __SPARSE_THRESHOLD__;
   const samples = [];
   let firstVisibleAt = null;
   let firstSparseAt = null;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function waitForEvent(target, eventName, timeoutMs) {
+    await Promise.race([
+      new Promise((resolve) => target.addEventListener(eventName, resolve, { once: true })),
+      sleep(timeoutMs),
+    ]);
+  }
 
   function sample() {
     if (video.readyState < 2) {
@@ -4781,6 +4931,22 @@ const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
   try {
     await video.play();
   } catch (_error) {}
+
+  await waitForEvent(video, "loadedmetadata", 2000);
+
+  if (seekToMs !== null && Number.isFinite(seekToMs)) {
+    const seekSeconds = Math.max(0, seekToMs / 1000);
+    const clampedSeekSeconds =
+      Number.isFinite(video.duration) && video.duration > 0
+        ? Math.min(seekSeconds, Math.max(video.duration - 0.05, 0))
+        : seekSeconds;
+
+    try {
+      video.currentTime = clampedSeekSeconds;
+    } catch (_error) {}
+
+    await sleep(500);
+  }
 
   const handle = setInterval(sample, intervalMs);
 
@@ -4873,6 +5039,36 @@ struct ManualLabPlayerWebsocketEvent {
     #[serde(default)]
     was_clean: Option<bool>,
     #[serde(default)]
+    player_mode: Option<String>,
+    #[serde(default)]
+    window_index: Option<u32>,
+    #[serde(default)]
+    window_phase: Option<String>,
+    #[serde(default)]
+    window_start_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    window_end_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    sample_count: Option<u64>,
+    #[serde(default)]
+    valid_sample_count: Option<u64>,
+    #[serde(default)]
+    sample_status: Option<String>,
+    #[serde(default)]
+    visibility_verdict: Option<String>,
+    #[serde(default)]
+    representative_current_time_ms: Option<u64>,
+    #[serde(default)]
+    video_width: Option<u32>,
+    #[serde(default)]
+    video_height: Option<u32>,
+    #[serde(default)]
+    max_non_black_ratio_per_mille: Option<u16>,
+    #[serde(default)]
+    mean_non_black_ratio_per_mille: Option<u16>,
+    #[serde(default)]
+    transition_observed: Option<bool>,
+    #[serde(default)]
     detail: Option<String>,
 }
 
@@ -4906,9 +5102,13 @@ struct ManualLabRecordingVisibilityProbePayload {
     error: Option<String>,
 }
 
-fn render_manual_lab_recording_visibility_probe_html(recording_file_url: &str) -> anyhow::Result<String> {
+fn render_manual_lab_recording_visibility_probe_html(
+    recording_file_url: &str,
+    seek_to_ms: Option<u64>,
+) -> anyhow::Result<String> {
     let source_file_url =
         serde_json::to_string(recording_file_url).context("serialize recording visibility file URL")?;
+    let seek_to_ms = serde_json::to_string(&seek_to_ms).context("serialize recording visibility seek offset")?;
     Ok(MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE
         .replace("__SOURCE_FILE_URL__", &source_file_url)
         .replace(
@@ -4919,6 +5119,7 @@ fn render_manual_lab_recording_visibility_probe_html(recording_file_url: &str) -
             "__INTERVAL_MS__",
             &MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS.to_string(),
         )
+        .replace("__SEEK_TO_MS__", &seek_to_ms)
         .replace(
             "__VISIBLE_THRESHOLD__",
             &format!(
@@ -5007,6 +5208,7 @@ fn run_manual_lab_recording_visibility_probe(
     chrome_binary: &Path,
     session_root: &Path,
     recording_artifact_path: &Path,
+    seek_to_ms: Option<u64>,
 ) -> anyhow::Result<ManualLabRecordingVisibilityProbePayload> {
     let probe_page_path = session_root.join("recording-visibility-probe.html");
     let probe_dom_path = session_root.join("recording-visibility-probe.dom.html");
@@ -5017,7 +5219,7 @@ fn run_manual_lab_recording_visibility_probe(
     fs::create_dir_all(&profile_dir).with_context(|| format!("create {}", profile_dir.display()))?;
 
     let recording_file_url = manual_lab_local_file_url(recording_artifact_path)?;
-    let probe_page = render_manual_lab_recording_visibility_probe_html(&recording_file_url)?;
+    let probe_page = render_manual_lab_recording_visibility_probe_html(&recording_file_url, seek_to_ms)?;
     fs::write(&probe_page_path, probe_page).with_context(|| format!("write {}", probe_page_path.display()))?;
 
     let probe_page_url = manual_lab_local_file_url(&probe_page_path)?;
@@ -5032,7 +5234,7 @@ fn run_manual_lab_recording_visibility_probe(
             OsString::from("--no-default-browser-check"),
             OsString::from(format!(
                 "--virtual-time-budget={}",
-                MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS + 2_000
+                MANUAL_LAB_RECORDING_VISIBILITY_VIRTUAL_TIME_BUDGET_MS
             )),
             OsString::from(format!("--user-data-dir={}", profile_dir.display())),
             OsString::from("--dump-dom"),
@@ -5061,6 +5263,8 @@ fn build_manual_lab_recording_visibility_summary(
     session_id: &str,
     chrome_binary: Option<&Path>,
     teardown_started_at_unix_ms: Option<u64>,
+    probe_seek_to_ms: Option<u64>,
+    summary_artifact_filename: &str,
 ) -> ManualLabSessionRecordingVisibilitySummary {
     let session_root = recordings_root.join(session_id);
     let recording_artifact_path = session_root.join("recording-0.webm");
@@ -5068,13 +5272,14 @@ fn build_manual_lab_recording_visibility_summary(
         schema_version: MANUAL_LAB_RECORDING_VISIBILITY_SCHEMA_VERSION,
         sample_window_ms: MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS,
         sample_interval_ms: MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS,
+        probe_seek_to_ms,
         recording_path: recording_artifact_path
             .is_file()
             .then_some(recording_artifact_path.clone()),
         ..Default::default()
     };
 
-    let summary_artifact_path = session_root.join("recording-visibility-summary.json");
+    let summary_artifact_path = session_root.join(summary_artifact_filename);
     let should_write_summary_artifact = teardown_started_at_unix_ms.is_some() && session_root.exists();
 
     if !recording_artifact_path.is_file() {
@@ -5114,6 +5319,7 @@ fn build_manual_lab_recording_visibility_summary(
         chrome_binary,
         &recordings_root.join(session_id),
         &recording_artifact_path,
+        probe_seek_to_ms,
     ) {
         Ok(payload) => {
             summary.ready_state = payload.ready_state;
@@ -5396,6 +5602,333 @@ fn build_manual_lab_player_playback_path_summary(
             } else {
                 "player telemetry did not contain enough evidence to classify playback path".to_owned()
             }
+        }
+    });
+
+    summary
+}
+
+fn parse_manual_lab_browser_player_mode(value: Option<&str>) -> ManualLabBrowserPlayerMode {
+    match value {
+        Some("active_live") => ManualLabBrowserPlayerMode::ActiveLive,
+        Some("static_fallback") => ManualLabBrowserPlayerMode::StaticFallback,
+        _ => ManualLabBrowserPlayerMode::Unknown,
+    }
+}
+
+fn parse_manual_lab_browser_visibility_data_status(value: Option<&str>) -> ManualLabBrowserVisibilityDataStatus {
+    match value {
+        Some("ready") => ManualLabBrowserVisibilityDataStatus::Ready,
+        Some("no_video_element") => ManualLabBrowserVisibilityDataStatus::NoVideoElement,
+        Some("no_decodable_frame") => ManualLabBrowserVisibilityDataStatus::NoDecodableFrame,
+        Some("readback_error") => ManualLabBrowserVisibilityDataStatus::ReadbackError,
+        Some("insufficient_samples") => ManualLabBrowserVisibilityDataStatus::InsufficientSamples,
+        Some("transitional") => ManualLabBrowserVisibilityDataStatus::Transitional,
+        _ => ManualLabBrowserVisibilityDataStatus::Inconclusive,
+    }
+}
+
+fn parse_manual_lab_recording_visibility_verdict(value: Option<&str>) -> ManualLabRecordingVisibilityVerdict {
+    match value {
+        Some("visible_frame") | Some("visible") => ManualLabRecordingVisibilityVerdict::VisibleFrame,
+        Some("sparse_pixels") | Some("sparse") => ManualLabRecordingVisibilityVerdict::SparsePixels,
+        Some("all_black") | Some("black") => ManualLabRecordingVisibilityVerdict::AllBlack,
+        _ => ManualLabRecordingVisibilityVerdict::Inconclusive,
+    }
+}
+
+fn manual_lab_browser_visibility_phase_rank(phase: &str) -> u8 {
+    match phase {
+        "steady" => 3,
+        "stabilize" => 2,
+        "startup" => 1,
+        _ => 0,
+    }
+}
+
+fn manual_lab_evidence_confidence_rank(confidence: ManualLabEvidenceConfidence) -> u8 {
+    match confidence {
+        ManualLabEvidenceConfidence::High => 3,
+        ManualLabEvidenceConfidence::Medium => 2,
+        ManualLabEvidenceConfidence::Low => 1,
+    }
+}
+
+fn manual_lab_min_evidence_confidence(
+    left: ManualLabEvidenceConfidence,
+    right: ManualLabEvidenceConfidence,
+) -> ManualLabEvidenceConfidence {
+    if manual_lab_evidence_confidence_rank(left) <= manual_lab_evidence_confidence_rank(right) {
+        left
+    } else {
+        right
+    }
+}
+
+fn manual_lab_visible_or_sparse(verdict: ManualLabRecordingVisibilityVerdict) -> bool {
+    matches!(
+        verdict,
+        ManualLabRecordingVisibilityVerdict::VisibleFrame | ManualLabRecordingVisibilityVerdict::SparsePixels
+    )
+}
+
+fn build_manual_lab_browser_visibility_summary(
+    events: &[ManualLabPlayerWebsocketEvent],
+) -> ManualLabSessionBrowserVisibilitySummary {
+    let windows = events
+        .iter()
+        .filter(|event| event.kind == "browser_visibility_window")
+        .map(|event| ManualLabSessionBrowserVisibilityWindowSummary {
+            window_index: event.window_index.unwrap_or_default(),
+            window_phase: event.window_phase.clone().unwrap_or_else(|| "unknown".to_owned()),
+            player_mode: parse_manual_lab_browser_player_mode(event.player_mode.as_deref()),
+            data_status: parse_manual_lab_browser_visibility_data_status(event.sample_status.as_deref()),
+            verdict: parse_manual_lab_recording_visibility_verdict(event.visibility_verdict.as_deref()),
+            sample_count: event.sample_count.unwrap_or_default(),
+            valid_sample_count: event.valid_sample_count.unwrap_or_default(),
+            window_start_at_unix_ms: event.window_start_at_unix_ms,
+            window_end_at_unix_ms: event.window_end_at_unix_ms,
+            representative_current_time_ms: event.representative_current_time_ms,
+            video_width: event.video_width,
+            video_height: event.video_height,
+            max_non_black_ratio_per_mille: event.max_non_black_ratio_per_mille,
+            mean_non_black_ratio_per_mille: event.mean_non_black_ratio_per_mille,
+            transition_observed: event.transition_observed.unwrap_or(false),
+            detail: event.detail.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    let valid_window_count = windows
+        .iter()
+        .filter(|window| window.data_status == ManualLabBrowserVisibilityDataStatus::Ready)
+        .count()
+        .try_into()
+        .expect("valid browser visibility window count should fit in u64");
+    let transition_observed = windows.iter().any(|window| window.transition_observed);
+    let max_non_black_ratio_per_mille = windows
+        .iter()
+        .filter_map(|window| {
+            (window.data_status == ManualLabBrowserVisibilityDataStatus::Ready)
+                .then_some(window.max_non_black_ratio_per_mille)
+                .flatten()
+        })
+        .max();
+    let selected_ready_window = windows
+        .iter()
+        .filter(|window| window.data_status == ManualLabBrowserVisibilityDataStatus::Ready)
+        .max_by_key(|window| {
+            (
+                manual_lab_browser_visibility_phase_rank(&window.window_phase),
+                window.window_index,
+            )
+        });
+    let dominant_mode = selected_ready_window
+        .map(|window| window.player_mode)
+        .or_else(|| {
+            windows
+                .iter()
+                .filter(|window| window.player_mode != ManualLabBrowserPlayerMode::Unknown)
+                .max_by_key(|window| {
+                    (
+                        manual_lab_browser_visibility_phase_rank(&window.window_phase),
+                        window.window_index,
+                    )
+                })
+                .map(|window| window.player_mode)
+        })
+        .unwrap_or_default();
+
+    let data_status = if selected_ready_window.is_some() {
+        ManualLabBrowserVisibilityDataStatus::Ready
+    } else if transition_observed {
+        ManualLabBrowserVisibilityDataStatus::Transitional
+    } else if windows
+        .iter()
+        .any(|window| window.data_status == ManualLabBrowserVisibilityDataStatus::ReadbackError)
+    {
+        ManualLabBrowserVisibilityDataStatus::ReadbackError
+    } else if windows
+        .iter()
+        .any(|window| window.data_status == ManualLabBrowserVisibilityDataStatus::NoVideoElement)
+    {
+        ManualLabBrowserVisibilityDataStatus::NoVideoElement
+    } else if windows
+        .iter()
+        .any(|window| window.data_status == ManualLabBrowserVisibilityDataStatus::NoDecodableFrame)
+    {
+        ManualLabBrowserVisibilityDataStatus::NoDecodableFrame
+    } else if windows
+        .iter()
+        .any(|window| window.data_status == ManualLabBrowserVisibilityDataStatus::InsufficientSamples)
+    {
+        ManualLabBrowserVisibilityDataStatus::InsufficientSamples
+    } else {
+        ManualLabBrowserVisibilityDataStatus::Inconclusive
+    };
+
+    let verdict = selected_ready_window
+        .map(|window| window.verdict)
+        .unwrap_or(ManualLabRecordingVisibilityVerdict::Inconclusive);
+    let representative_current_time_ms = selected_ready_window.and_then(|window| window.representative_current_time_ms);
+    let confidence = if valid_window_count >= 2 && !transition_observed {
+        ManualLabEvidenceConfidence::High
+    } else if valid_window_count >= 1 {
+        ManualLabEvidenceConfidence::Medium
+    } else {
+        ManualLabEvidenceConfidence::Low
+    };
+
+    let detail = Some(if let Some(window) = selected_ready_window {
+        format!(
+            "browser visibility selected {} window {} with {:?} at {}ms",
+            window.window_phase,
+            window.window_index,
+            window.verdict,
+            window.representative_current_time_ms.unwrap_or_default()
+        )
+    } else if transition_observed {
+        "browser visibility windows crossed an active/static transition and were not stable enough to classify"
+            .to_owned()
+    } else if windows.is_empty() {
+        "no browser visibility window telemetry was captured".to_owned()
+    } else {
+        match data_status {
+            ManualLabBrowserVisibilityDataStatus::NoVideoElement => {
+                "browser visibility never found a player video element".to_owned()
+            }
+            ManualLabBrowserVisibilityDataStatus::NoDecodableFrame => {
+                "browser visibility never reached a decodable player frame".to_owned()
+            }
+            ManualLabBrowserVisibilityDataStatus::ReadbackError => {
+                "browser visibility could not read pixels from the player video".to_owned()
+            }
+            ManualLabBrowserVisibilityDataStatus::InsufficientSamples => {
+                "browser visibility captured too few ready samples for a stable verdict".to_owned()
+            }
+            ManualLabBrowserVisibilityDataStatus::Transitional => {
+                "browser visibility windows were transitional".to_owned()
+            }
+            ManualLabBrowserVisibilityDataStatus::Ready | ManualLabBrowserVisibilityDataStatus::Inconclusive => {
+                "browser visibility did not produce a stable verdict".to_owned()
+            }
+        }
+    });
+
+    ManualLabSessionBrowserVisibilitySummary {
+        schema_version: MANUAL_LAB_BROWSER_VISIBILITY_SCHEMA_VERSION,
+        verdict,
+        confidence,
+        detail,
+        dominant_mode,
+        data_status,
+        representative_current_time_ms,
+        valid_window_count,
+        transition_observed,
+        max_non_black_ratio_per_mille,
+        windows,
+    }
+}
+
+fn build_manual_lab_browser_artifact_correlation_summary(
+    browser: &ManualLabSessionBrowserVisibilitySummary,
+    artifact: &ManualLabSessionRecordingVisibilitySummary,
+) -> ManualLabSessionBrowserArtifactCorrelationSummary {
+    let mut summary = ManualLabSessionBrowserArtifactCorrelationSummary {
+        schema_version: MANUAL_LAB_BROWSER_ARTIFACT_CORRELATION_SCHEMA_VERSION,
+        browser_player_mode: browser.dominant_mode,
+        browser_verdict: browser.verdict,
+        artifact_verdict: artifact.verdict,
+        browser_current_time_ms: browser.representative_current_time_ms,
+        artifact_probe_seek_to_ms: artifact.probe_seek_to_ms,
+        browser_data_status: browser.data_status,
+        transition_observed: browser.transition_observed,
+        ..Default::default()
+    };
+
+    if browser.transition_observed {
+        summary.verdict = ManualLabBrowserArtifactCorrelationVerdict::InconclusiveTransition;
+        summary.confidence = ManualLabEvidenceConfidence::Low;
+        summary.detail = Some(
+            "browser visibility crossed an active/static transition, so artifact correlation is not trustworthy"
+                .to_owned(),
+        );
+        return summary;
+    }
+
+    if browser.data_status != ManualLabBrowserVisibilityDataStatus::Ready {
+        summary.verdict = ManualLabBrowserArtifactCorrelationVerdict::InconclusiveInsufficientData;
+        summary.confidence = ManualLabEvidenceConfidence::Low;
+        summary.detail = Some(format!(
+            "browser visibility did not yield a ready window: {:?}",
+            browser.data_status
+        ));
+        return summary;
+    }
+
+    if browser.representative_current_time_ms.is_none()
+        || artifact.probe_seek_to_ms.is_none()
+        || browser.representative_current_time_ms != artifact.probe_seek_to_ms
+    {
+        summary.verdict = ManualLabBrowserArtifactCorrelationVerdict::InconclusiveAlignmentGap;
+        summary.confidence = ManualLabEvidenceConfidence::Low;
+        summary.detail = Some(
+            "browser visibility did not provide a representative playback offset that matched the artifact probe"
+                .to_owned(),
+        );
+        return summary;
+    }
+
+    if !matches!(
+        artifact.verdict,
+        ManualLabRecordingVisibilityVerdict::VisibleFrame
+            | ManualLabRecordingVisibilityVerdict::SparsePixels
+            | ManualLabRecordingVisibilityVerdict::AllBlack
+    ) {
+        summary.verdict = ManualLabBrowserArtifactCorrelationVerdict::InconclusiveInsufficientData;
+        summary.confidence = ManualLabEvidenceConfidence::Low;
+        summary.detail = Some(format!(
+            "artifact visibility at browser time was not usable for correlation: {:?}",
+            artifact.verdict
+        ));
+        return summary;
+    }
+
+    summary.verdict = if browser.verdict == ManualLabRecordingVisibilityVerdict::AllBlack
+        && artifact.verdict == ManualLabRecordingVisibilityVerdict::AllBlack
+    {
+        ManualLabBrowserArtifactCorrelationVerdict::BothBlack
+    } else if browser.verdict == ManualLabRecordingVisibilityVerdict::AllBlack
+        && manual_lab_visible_or_sparse(artifact.verdict)
+    {
+        ManualLabBrowserArtifactCorrelationVerdict::BrowserBlackArtifactVisible
+    } else if manual_lab_visible_or_sparse(browser.verdict)
+        && artifact.verdict == ManualLabRecordingVisibilityVerdict::AllBlack
+    {
+        ManualLabBrowserArtifactCorrelationVerdict::BrowserVisibleArtifactBlack
+    } else if manual_lab_visible_or_sparse(browser.verdict) && manual_lab_visible_or_sparse(artifact.verdict) {
+        ManualLabBrowserArtifactCorrelationVerdict::BothVisible
+    } else {
+        ManualLabBrowserArtifactCorrelationVerdict::Inconclusive
+    };
+    summary.confidence = manual_lab_min_evidence_confidence(browser.confidence, artifact.confidence);
+    summary.detail = Some(match summary.verdict {
+        ManualLabBrowserArtifactCorrelationVerdict::BothVisible => {
+            "browser and artifact both showed non-black content at the aligned playback point".to_owned()
+        }
+        ManualLabBrowserArtifactCorrelationVerdict::BothBlack => {
+            "browser and artifact were both black at the aligned playback point".to_owned()
+        }
+        ManualLabBrowserArtifactCorrelationVerdict::BrowserBlackArtifactVisible => {
+            "browser looked black while the aligned recording artifact still had visible content".to_owned()
+        }
+        ManualLabBrowserArtifactCorrelationVerdict::BrowserVisibleArtifactBlack => {
+            "browser showed visible content while the aligned recording artifact sampled as black".to_owned()
+        }
+        ManualLabBrowserArtifactCorrelationVerdict::InconclusiveInsufficientData
+        | ManualLabBrowserArtifactCorrelationVerdict::InconclusiveAlignmentGap
+        | ManualLabBrowserArtifactCorrelationVerdict::InconclusiveTransition
+        | ManualLabBrowserArtifactCorrelationVerdict::Inconclusive => {
+            "browser/artifact correlation remained inconclusive".to_owned()
         }
     });
 
@@ -6707,6 +7240,40 @@ fn persist_black_screen_evidence(
                     &session.session_id,
                     recording_visibility_chrome.as_deref(),
                     evidence.teardown_started_at_unix_ms,
+                    None,
+                    MANUAL_LAB_RECORDING_VISIBILITY_SUMMARY_FILENAME,
+                );
+                let browser_visibility_summary = build_manual_lab_browser_visibility_summary(&player_websocket_events);
+                let artifact_visibility_at_browser_time = if let Some(representative_current_time_ms) =
+                    browser_visibility_summary.representative_current_time_ms
+                {
+                    build_manual_lab_recording_visibility_summary(
+                        &evidence.artifacts.recordings_root,
+                        &session.session_id,
+                        recording_visibility_chrome.as_deref(),
+                        evidence.teardown_started_at_unix_ms,
+                        Some(representative_current_time_ms),
+                        MANUAL_LAB_RECORDING_VISIBILITY_AT_BROWSER_TIME_SUMMARY_FILENAME,
+                    )
+                } else {
+                    ManualLabSessionRecordingVisibilitySummary {
+                        schema_version: MANUAL_LAB_RECORDING_VISIBILITY_SCHEMA_VERSION,
+                        verdict: ManualLabRecordingVisibilityVerdict::AnalysisUnavailable,
+                        confidence: ManualLabEvidenceConfidence::Low,
+                        detail: Some(
+                            "browser visibility did not produce a representative playback time for artifact alignment"
+                                .to_owned(),
+                        ),
+                        analysis_backend: recording_visibility_summary.analysis_backend.clone(),
+                        recording_path: recording_visibility_summary.recording_path.clone(),
+                        sample_window_ms: MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS,
+                        sample_interval_ms: MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS,
+                        ..Default::default()
+                    }
+                };
+                let browser_artifact_correlation_summary = build_manual_lab_browser_artifact_correlation_summary(
+                    &browser_visibility_summary,
+                    &artifact_visibility_at_browser_time,
                 );
                 let fastpath_warning_summary = build_manual_lab_fastpath_warning_summary(
                     &fastpath_warnings,
@@ -6744,6 +7311,9 @@ fn persist_black_screen_evidence(
                     player_playback_path_summary,
                     playback_artifact_timeline_summary,
                     recording_visibility_summary,
+                    browser_visibility_summary,
+                    artifact_visibility_at_browser_time,
+                    browser_artifact_correlation_summary,
                     gfx_filter_summary,
                     fastpath_warning_summary: Some(fastpath_warning_summary),
                     gfx_warning_summary,
@@ -6910,13 +7480,16 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ManualLabBlackScreenBranchVerdict, ManualLabDriverKind, ManualLabEvidenceConfidence,
+        ManualLabBlackScreenBranchVerdict, ManualLabBrowserArtifactCorrelationVerdict, ManualLabBrowserPlayerMode,
+        ManualLabBrowserVisibilityDataStatus, ManualLabDriverKind, ManualLabEvidenceConfidence,
         ManualLabFastPathWarningEvent, ManualLabFastPathWarningEvidence, ManualLabPlaybackArtifactTimelineVerdict,
         ManualLabPlaybackBootstrapVerdict, ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict,
-        ManualLabPlayerWebsocketEvent, ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary,
-        ManualLabSessionPlaybackBootstrapEvent, ManualLabSessionPlayerPlaybackPathSummary,
-        ManualLabSessionPlayerWebsocketSummary, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
-        association_token, build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
+        ManualLabPlayerWebsocketEvent, ManualLabRecordingVisibilityVerdict, ManualLabSessionBrowserVisibilitySummary,
+        ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
+        ManualLabSessionPlayerPlaybackPathSummary, ManualLabSessionPlayerWebsocketSummary,
+        ManualLabSessionReadyTraceEvent, ManualLabSessionRecordingVisibilitySummary, ManualLabXfreerdpGraphicsMode,
+        association_token, build_manual_lab_black_screen_branch, build_manual_lab_browser_artifact_correlation_summary,
+        build_manual_lab_browser_visibility_summary, build_manual_lab_fastpath_warning_summary,
         build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_artifact_timeline_summary,
         build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
         build_manual_lab_player_playback_path_summary, build_manual_lab_player_websocket_summary,
@@ -7222,6 +7795,32 @@ mod tests {
     }
 
     #[test]
+    fn manual_lab_parses_browser_visibility_window_events_from_recording_dir() {
+        let temp = tempdir().expect("tempdir");
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let session_dir = temp.path().join(session_id);
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        let log_path = session_dir.join("player-websocket.ndjson");
+        fs::write(
+            &log_path,
+            concat!(
+                "{\"schemaVersion\":1,\"sessionId\":\"11111111-2222-3333-4444-555555555555\",\"observedAtUnixMs\":10,\"kind\":\"browser_visibility_window\",\"playerMode\":\"active_live\",\"windowIndex\":2,\"windowPhase\":\"steady\",\"sampleCount\":6,\"validSampleCount\":4,\"sampleStatus\":\"ready\",\"visibilityVerdict\":\"visible_frame\",\"representativeCurrentTimeMs\":4510,\"maxNonBlackRatioPerMille\":27,\"meanNonBlackRatioPerMille\":11,\"transitionObserved\":false}\n"
+            ),
+        )
+        .expect("write websocket log");
+
+        let events =
+            parse_manual_lab_player_websocket_events(temp.path(), session_id).expect("parse player websocket events");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "browser_visibility_window");
+        assert_eq!(events[0].player_mode.as_deref(), Some("active_live"));
+        assert_eq!(events[0].window_phase.as_deref(), Some("steady"));
+        assert_eq!(events[0].representative_current_time_ms, Some(4510));
+        assert_eq!(events[0].max_non_black_ratio_per_mille, Some(27));
+    }
+
+    #[test]
     fn manual_lab_builds_player_websocket_summary_with_raw_and_transformed_close() {
         let session_id = "11111111-2222-3333-4444-555555555555";
         let mut open = player_websocket_event(session_id, "websocket_open", 100);
@@ -7406,6 +8005,221 @@ mod tests {
                 telemetry_gap: false,
             }
         );
+    }
+
+    #[test]
+    fn manual_lab_builds_browser_visibility_summary_preferring_steady_ready_window() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+
+        let mut startup = player_websocket_event(session_id, "browser_visibility_window", 100);
+        startup.player_mode = Some("active_live".to_owned());
+        startup.window_index = Some(0);
+        startup.window_phase = Some("startup".to_owned());
+        startup.sample_count = Some(5);
+        startup.valid_sample_count = Some(3);
+        startup.sample_status = Some("ready".to_owned());
+        startup.visibility_verdict = Some("all_black".to_owned());
+        startup.representative_current_time_ms = Some(450);
+        startup.max_non_black_ratio_per_mille = Some(0);
+        startup.mean_non_black_ratio_per_mille = Some(0);
+
+        let mut steady = player_websocket_event(session_id, "browser_visibility_window", 300);
+        steady.player_mode = Some("active_live".to_owned());
+        steady.window_index = Some(2);
+        steady.window_phase = Some("steady".to_owned());
+        steady.sample_count = Some(8);
+        steady.valid_sample_count = Some(6);
+        steady.sample_status = Some("ready".to_owned());
+        steady.visibility_verdict = Some("visible_frame".to_owned());
+        steady.representative_current_time_ms = Some(4_520);
+        steady.max_non_black_ratio_per_mille = Some(28);
+        steady.mean_non_black_ratio_per_mille = Some(12);
+
+        let summary = build_manual_lab_browser_visibility_summary(&[startup, steady]);
+
+        assert_eq!(
+            summary,
+            ManualLabSessionBrowserVisibilitySummary {
+                schema_version: 1,
+                verdict: ManualLabRecordingVisibilityVerdict::VisibleFrame,
+                confidence: ManualLabEvidenceConfidence::High,
+                detail: Some("browser visibility selected steady window 2 with VisibleFrame at 4520ms".to_owned()),
+                dominant_mode: ManualLabBrowserPlayerMode::ActiveLive,
+                data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+                representative_current_time_ms: Some(4_520),
+                valid_window_count: 2,
+                transition_observed: false,
+                max_non_black_ratio_per_mille: Some(28),
+                windows: vec![
+                    super::ManualLabSessionBrowserVisibilityWindowSummary {
+                        window_index: 0,
+                        window_phase: "startup".to_owned(),
+                        player_mode: ManualLabBrowserPlayerMode::ActiveLive,
+                        data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+                        verdict: ManualLabRecordingVisibilityVerdict::AllBlack,
+                        sample_count: 5,
+                        valid_sample_count: 3,
+                        window_start_at_unix_ms: None,
+                        window_end_at_unix_ms: None,
+                        representative_current_time_ms: Some(450),
+                        video_width: None,
+                        video_height: None,
+                        max_non_black_ratio_per_mille: Some(0),
+                        mean_non_black_ratio_per_mille: Some(0),
+                        transition_observed: false,
+                        detail: None,
+                    },
+                    super::ManualLabSessionBrowserVisibilityWindowSummary {
+                        window_index: 2,
+                        window_phase: "steady".to_owned(),
+                        player_mode: ManualLabBrowserPlayerMode::ActiveLive,
+                        data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+                        verdict: ManualLabRecordingVisibilityVerdict::VisibleFrame,
+                        sample_count: 8,
+                        valid_sample_count: 6,
+                        window_start_at_unix_ms: None,
+                        window_end_at_unix_ms: None,
+                        representative_current_time_ms: Some(4_520),
+                        video_width: None,
+                        video_height: None,
+                        max_non_black_ratio_per_mille: Some(28),
+                        mean_non_black_ratio_per_mille: Some(12),
+                        transition_observed: false,
+                        detail: None,
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn manual_lab_browser_visibility_summary_keeps_transitional_windows_inconclusive() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let mut transition = player_websocket_event(session_id, "browser_visibility_window", 200);
+        transition.player_mode = Some("static_fallback".to_owned());
+        transition.window_index = Some(1);
+        transition.window_phase = Some("stabilize".to_owned());
+        transition.sample_count = Some(6);
+        transition.valid_sample_count = Some(1);
+        transition.sample_status = Some("transitional".to_owned());
+        transition.visibility_verdict = Some("inconclusive".to_owned());
+        transition.transition_observed = Some(true);
+
+        let summary = build_manual_lab_browser_visibility_summary(&[transition]);
+
+        assert_eq!(summary.verdict, ManualLabRecordingVisibilityVerdict::Inconclusive);
+        assert_eq!(summary.data_status, ManualLabBrowserVisibilityDataStatus::Transitional);
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::Low);
+        assert_eq!(summary.transition_observed, true);
+    }
+
+    #[test]
+    fn manual_lab_builds_browser_artifact_correlation_for_browser_black_artifact_visible() {
+        let browser = ManualLabSessionBrowserVisibilitySummary {
+            schema_version: 1,
+            verdict: ManualLabRecordingVisibilityVerdict::AllBlack,
+            confidence: ManualLabEvidenceConfidence::High,
+            detail: None,
+            dominant_mode: ManualLabBrowserPlayerMode::ActiveLive,
+            data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+            representative_current_time_ms: Some(4_500),
+            valid_window_count: 2,
+            transition_observed: false,
+            max_non_black_ratio_per_mille: Some(0),
+            windows: Vec::new(),
+        };
+        let artifact = ManualLabSessionRecordingVisibilitySummary {
+            schema_version: 1,
+            verdict: ManualLabRecordingVisibilityVerdict::VisibleFrame,
+            confidence: ManualLabEvidenceConfidence::High,
+            detail: None,
+            analysis_backend: None,
+            recording_path: None,
+            probe_seek_to_ms: Some(4_500),
+            video_duration_ms: None,
+            ready_state: None,
+            sample_window_ms: 8_000,
+            sample_interval_ms: 250,
+            sampled_frame_count: 12,
+            first_visible_offset_ms: Some(0),
+            first_sparse_offset_ms: Some(0),
+            max_non_black_ratio_per_mille: Some(25),
+        };
+
+        let summary = build_manual_lab_browser_artifact_correlation_summary(&browser, &artifact);
+
+        assert_eq!(
+            summary.verdict,
+            ManualLabBrowserArtifactCorrelationVerdict::BrowserBlackArtifactVisible
+        );
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::High);
+        assert_eq!(summary.browser_current_time_ms, Some(4_500));
+        assert_eq!(summary.artifact_probe_seek_to_ms, Some(4_500));
+    }
+
+    #[test]
+    fn manual_lab_builds_browser_artifact_correlation_for_both_black() {
+        let browser = ManualLabSessionBrowserVisibilitySummary {
+            schema_version: 1,
+            verdict: ManualLabRecordingVisibilityVerdict::AllBlack,
+            confidence: ManualLabEvidenceConfidence::Medium,
+            detail: None,
+            dominant_mode: ManualLabBrowserPlayerMode::ActiveLive,
+            data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+            representative_current_time_ms: Some(900),
+            valid_window_count: 1,
+            transition_observed: false,
+            max_non_black_ratio_per_mille: Some(0),
+            windows: Vec::new(),
+        };
+        let artifact = ManualLabSessionRecordingVisibilitySummary {
+            schema_version: 1,
+            verdict: ManualLabRecordingVisibilityVerdict::AllBlack,
+            confidence: ManualLabEvidenceConfidence::High,
+            detail: None,
+            analysis_backend: None,
+            recording_path: None,
+            probe_seek_to_ms: Some(900),
+            video_duration_ms: None,
+            ready_state: None,
+            sample_window_ms: 8_000,
+            sample_interval_ms: 250,
+            sampled_frame_count: 12,
+            first_visible_offset_ms: None,
+            first_sparse_offset_ms: None,
+            max_non_black_ratio_per_mille: Some(0),
+        };
+
+        let summary = build_manual_lab_browser_artifact_correlation_summary(&browser, &artifact);
+
+        assert_eq!(summary.verdict, ManualLabBrowserArtifactCorrelationVerdict::BothBlack);
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::Medium);
+    }
+
+    #[test]
+    fn manual_lab_browser_artifact_correlation_stays_inconclusive_for_transitions() {
+        let browser = ManualLabSessionBrowserVisibilitySummary {
+            schema_version: 1,
+            verdict: ManualLabRecordingVisibilityVerdict::Inconclusive,
+            confidence: ManualLabEvidenceConfidence::Low,
+            detail: None,
+            dominant_mode: ManualLabBrowserPlayerMode::Unknown,
+            data_status: ManualLabBrowserVisibilityDataStatus::Transitional,
+            representative_current_time_ms: None,
+            valid_window_count: 0,
+            transition_observed: true,
+            max_non_black_ratio_per_mille: None,
+            windows: Vec::new(),
+        };
+        let artifact = ManualLabSessionRecordingVisibilitySummary::default();
+
+        let summary = build_manual_lab_browser_artifact_correlation_summary(&browser, &artifact);
+
+        assert_eq!(
+            summary.verdict,
+            ManualLabBrowserArtifactCorrelationVerdict::InconclusiveTransition
+        );
+        assert_eq!(summary.confidence, ManualLabEvidenceConfidence::Low);
     }
 
     #[test]

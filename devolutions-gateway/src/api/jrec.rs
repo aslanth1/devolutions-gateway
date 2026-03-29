@@ -89,6 +89,36 @@ struct PlayerTelemetryEvent {
     #[serde(default)]
     was_clean: Option<bool>,
     #[serde(default)]
+    player_mode: Option<String>,
+    #[serde(default)]
+    window_index: Option<u32>,
+    #[serde(default)]
+    window_phase: Option<String>,
+    #[serde(default)]
+    window_start_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    window_end_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    sample_count: Option<u64>,
+    #[serde(default)]
+    valid_sample_count: Option<u64>,
+    #[serde(default)]
+    sample_status: Option<String>,
+    #[serde(default)]
+    visibility_verdict: Option<String>,
+    #[serde(default)]
+    representative_current_time_ms: Option<u64>,
+    #[serde(default)]
+    video_width: Option<u32>,
+    #[serde(default)]
+    video_height: Option<u32>,
+    #[serde(default)]
+    max_non_black_ratio_per_mille: Option<u16>,
+    #[serde(default)]
+    mean_non_black_ratio_per_mille: Option<u16>,
+    #[serde(default)]
+    transition_observed: Option<bool>,
+    #[serde(default)]
     detail: Option<String>,
 }
 
