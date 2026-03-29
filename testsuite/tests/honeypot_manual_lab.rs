@@ -12,7 +12,12 @@ use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
 };
 use testsuite::honeypot_manual_lab::{
-    ManualLabProxyConfigOptions, active_state_path, honeypot_manual_lab_assert_cmd,
+    ManualLabBrowserPlayerMode, ManualLabBrowserVisibilityDataStatus, ManualLabPlaybackReadyVerdict,
+    ManualLabPlayerPlaybackModeVerdict, ManualLabProxyConfigOptions, ManualLabReadyPathSustainVerdict,
+    ManualLabRecordingVisibilityVerdict, ManualLabSessionBrowserVisibilitySummary,
+    ManualLabSessionBrowserVisibilityWindowSummary, ManualLabSessionDriverEvidence,
+    ManualLabSessionPlaybackReadyCorrelation, ManualLabSessionPlayerPlaybackPathSummary, active_state_path,
+    build_manual_lab_ready_path_sustain_summary, honeypot_manual_lab_assert_cmd,
     parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_proxy_config,
     render_three_host_trusted_image_manifest,
 };
@@ -166,6 +171,96 @@ fn manual_lab_parses_recording_visibility_probe_dom() {
     assert_eq!(parsed.get("readyState"), Some(&json!(4)));
     assert_eq!(parsed.get("sampled"), Some(&json!(33)));
     assert_eq!(parsed.get("verdict"), Some(&json!("sparse")));
+}
+
+fn sample_ready_path_evidence() -> ManualLabSessionDriverEvidence {
+    ManualLabSessionDriverEvidence {
+        playback_ready_correlation: ManualLabSessionPlaybackReadyCorrelation {
+            verdict: ManualLabPlaybackReadyVerdict::AlignedReady,
+            session_stream_ready_emitted_at_unix_ms: Some(1_000),
+            source_ready_at_unix_ms: Some(995),
+            probe_observed_at_unix_ms: Some(1_050),
+            ..Default::default()
+        },
+        player_playback_path_summary: ManualLabSessionPlayerPlaybackPathSummary {
+            schema_version: 1,
+            verdict: ManualLabPlayerPlaybackModeVerdict::ActiveLivePath,
+            detail: Some(
+                "active playback intent held and no static fallback or missing recording fetch was observed".to_owned(),
+            ),
+            active_intent_observed: true,
+            active_intent_at_unix_ms: Some(900),
+            recording_info_fetch_attempted: true,
+            recording_info_fetch_succeeded: true,
+            ..Default::default()
+        },
+        browser_visibility_summary: ManualLabSessionBrowserVisibilitySummary {
+            schema_version: 1,
+            verdict: ManualLabRecordingVisibilityVerdict::AllBlack,
+            dominant_mode: ManualLabBrowserPlayerMode::ActiveLive,
+            data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+            representative_current_time_ms: Some(1),
+            valid_window_count: 2,
+            windows: vec![
+                ManualLabSessionBrowserVisibilityWindowSummary {
+                    window_index: 1,
+                    window_phase: "stabilize".to_owned(),
+                    player_mode: ManualLabBrowserPlayerMode::ActiveLive,
+                    data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+                    verdict: ManualLabRecordingVisibilityVerdict::AllBlack,
+                    valid_sample_count: 3,
+                    representative_current_time_ms: Some(1),
+                    ..Default::default()
+                },
+                ManualLabSessionBrowserVisibilityWindowSummary {
+                    window_index: 2,
+                    window_phase: "steady".to_owned(),
+                    player_mode: ManualLabBrowserPlayerMode::ActiveLive,
+                    data_status: ManualLabBrowserVisibilityDataStatus::Ready,
+                    verdict: ManualLabRecordingVisibilityVerdict::AllBlack,
+                    valid_sample_count: 15,
+                    representative_current_time_ms: Some(1),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[test]
+fn manual_lab_ready_path_sustain_accepts_steady_active_live_window() {
+    let evidence = sample_ready_path_evidence();
+
+    let summary = build_manual_lab_ready_path_sustain_summary(&evidence);
+
+    assert_eq!(summary.verdict, ManualLabReadyPathSustainVerdict::SustainedActiveLive);
+    assert_eq!(summary.ready_verdict, ManualLabPlaybackReadyVerdict::AlignedReady);
+    assert_eq!(
+        summary.player_path_verdict,
+        ManualLabPlayerPlaybackModeVerdict::ActiveLivePath
+    );
+    assert_eq!(summary.dominant_mode, ManualLabBrowserPlayerMode::ActiveLive);
+    assert!(summary.steady_window_observed);
+    assert_eq!(summary.steady_window_index, Some(2));
+    assert_eq!(summary.static_fallback_started_at_unix_ms, None);
+}
+
+#[test]
+fn manual_lab_ready_path_sustain_rejects_static_fallback_before_steady_window() {
+    let mut evidence = sample_ready_path_evidence();
+    evidence.player_playback_path_summary.verdict = ManualLabPlayerPlaybackModeVerdict::StaticFallbackDuringActive;
+    evidence.player_playback_path_summary.static_playback_started_observed = true;
+    evidence.player_playback_path_summary.static_playback_started_at_unix_ms = Some(1_050);
+
+    let summary = build_manual_lab_ready_path_sustain_summary(&evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabReadyPathSustainVerdict::StaticFallbackObserved
+    );
+    assert_eq!(summary.static_fallback_started_at_unix_ms, Some(1_050));
 }
 
 #[test]

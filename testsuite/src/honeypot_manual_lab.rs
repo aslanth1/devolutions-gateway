@@ -1578,6 +1578,45 @@ pub struct ManualLabSessionBrowserArtifactCorrelationSummary {
     pub transition_observed: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabReadyPathSustainVerdict {
+    SustainedActiveLive,
+    MissingReadyAlignment,
+    MissingActiveIntent,
+    StaticFallbackObserved,
+    MissingSteadyActiveWindow,
+    TelemetryGap,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionReadyPathSustainSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabReadyPathSustainVerdict,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub ready_verdict: ManualLabPlaybackReadyVerdict,
+    #[serde(default)]
+    pub player_path_verdict: ManualLabPlayerPlaybackModeVerdict,
+    #[serde(default)]
+    pub dominant_mode: ManualLabBrowserPlayerMode,
+    #[serde(default)]
+    pub steady_window_observed: bool,
+    #[serde(default)]
+    pub steady_window_index: Option<u32>,
+    #[serde(default)]
+    pub steady_window_current_time_ms: Option<u64>,
+    #[serde(default)]
+    pub static_fallback_started_at_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub telemetry_gap: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ManualLabSessionGfxFilterSummary {
     #[serde(default)]
@@ -4856,6 +4895,7 @@ const MANUAL_LAB_PLAYBACK_ARTIFACT_TIMELINE_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_RECORDING_VISIBILITY_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BROWSER_VISIBILITY_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BROWSER_ARTIFACT_CORRELATION_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_READY_PATH_SUSTAIN_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_RECORDING_VISIBILITY_SUMMARY_FILENAME: &str = "recording-visibility-summary.json";
 const MANUAL_LAB_RECORDING_VISIBILITY_AT_BROWSER_TIME_SUMMARY_FILENAME: &str =
     "recording-visibility-at-browser-time-summary.json";
@@ -5932,6 +5972,100 @@ fn build_manual_lab_browser_artifact_correlation_summary(
         }
     });
 
+    summary
+}
+
+pub fn build_manual_lab_ready_path_sustain_summary(
+    evidence: &ManualLabSessionDriverEvidence,
+) -> ManualLabSessionReadyPathSustainSummary {
+    let ready = &evidence.playback_ready_correlation;
+    let player = &evidence.player_playback_path_summary;
+    let browser = &evidence.browser_visibility_summary;
+
+    let steady_window = browser.windows.iter().find(|window| {
+        window.window_phase == "steady"
+            && window.player_mode == ManualLabBrowserPlayerMode::ActiveLive
+            && window.data_status == ManualLabBrowserVisibilityDataStatus::Ready
+            && !window.transition_observed
+    });
+    let fallback_window = browser
+        .windows
+        .iter()
+        .find(|window| window.player_mode == ManualLabBrowserPlayerMode::StaticFallback);
+    let telemetry_gap = player.telemetry_gap || browser.windows.is_empty() || browser.valid_window_count == 0;
+
+    let mut summary = ManualLabSessionReadyPathSustainSummary {
+        schema_version: MANUAL_LAB_READY_PATH_SUSTAIN_SCHEMA_VERSION,
+        ready_verdict: ready.verdict,
+        player_path_verdict: player.verdict,
+        dominant_mode: browser.dominant_mode,
+        steady_window_observed: steady_window.is_some(),
+        steady_window_index: steady_window.map(|window| window.window_index),
+        steady_window_current_time_ms: steady_window.and_then(|window| window.representative_current_time_ms),
+        static_fallback_started_at_unix_ms: player.static_playback_started_at_unix_ms,
+        telemetry_gap,
+        ..Default::default()
+    };
+
+    if ready.verdict != ManualLabPlaybackReadyVerdict::AlignedReady {
+        summary.verdict = ManualLabReadyPathSustainVerdict::MissingReadyAlignment;
+        summary.detail = Some(format!(
+            "ready-path sustain requires aligned_ready, observed {:?}",
+            ready.verdict
+        ));
+        return summary;
+    }
+
+    if !player.active_intent_observed {
+        summary.verdict = ManualLabReadyPathSustainVerdict::MissingActiveIntent;
+        summary.detail = Some("active playback intent was never observed".to_owned());
+        return summary;
+    }
+
+    if matches!(
+        player.verdict,
+        ManualLabPlayerPlaybackModeVerdict::StaticFallbackDuringActive
+            | ManualLabPlayerPlaybackModeVerdict::StaticIntentFromStart
+    ) || player.static_playback_started_observed
+        || fallback_window.is_some()
+    {
+        summary.verdict = ManualLabReadyPathSustainVerdict::StaticFallbackObserved;
+        summary.static_fallback_started_at_unix_ms = summary
+            .static_fallback_started_at_unix_ms
+            .or_else(|| fallback_window.and_then(|window| window.window_start_at_unix_ms));
+        summary.detail = Some("static fallback was observed before the ready-path sustain proof completed".to_owned());
+        return summary;
+    }
+
+    if player.verdict != ManualLabPlayerPlaybackModeVerdict::ActiveLivePath {
+        summary.verdict = if telemetry_gap {
+            ManualLabReadyPathSustainVerdict::TelemetryGap
+        } else {
+            ManualLabReadyPathSustainVerdict::Inconclusive
+        };
+        summary.detail = Some(format!(
+            "ready-path sustain requires active_live_path, observed {:?}",
+            player.verdict
+        ));
+        return summary;
+    }
+
+    if let Some(steady_window) = steady_window {
+        summary.verdict = ManualLabReadyPathSustainVerdict::SustainedActiveLive;
+        summary.detail = Some(format!(
+            "ready active playback reached steady browser window {} without static fallback",
+            steady_window.window_index
+        ));
+        return summary;
+    }
+
+    summary.verdict = if telemetry_gap {
+        ManualLabReadyPathSustainVerdict::TelemetryGap
+    } else {
+        ManualLabReadyPathSustainVerdict::MissingSteadyActiveWindow
+    };
+    summary.detail =
+        Some("ready active playback never reached a steady active_live browser window before teardown".to_owned());
     summary
 }
 
