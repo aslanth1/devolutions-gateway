@@ -4,6 +4,8 @@
 
 This fork turns `devolutions-gateway` into an art-piece honeypot with three runtime service domains: `control-plane`, `proxy`, and `frontend`.
 The winning direction is to extend the current Gateway data plane as the proxy core, add a Rust control plane for Linux-hosted QEMU Windows 11 VMs, and add a fresh HTMX frontend around versioned contracts.
+The overall product goal is to build a honeypot streaming platform that can provision attacker-facing sessions and stream them live to operators through the dedicated frontend.
+The current highest-friction delivery blocker inside that goal is the black-screen failure in live streamed honeypot RDP sessions.
 
 ## Non-Negotiables
 
@@ -1030,8 +1032,11 @@ Current evidence after the canonical fallback gate: `docs/honeypot/decisions.md`
 ### Milestone 6v: Black-Screen Forensics Matrix (Instrumentation-First Non-RDPGFX)
 
 This matrix is the canonical no-repeat checklist for the remaining black-screen and pixel-artifact playback issue.
+The direct goal of the remaining `BS-*` work is to make live streaming of honeypot RDP sessions stop presenting a black screen to the operator.
 Every run that touches this problem must record `git rev`, the active `BS-*` row IDs, driver lane, env fingerprint, artifact root, and final verdict before another experiment is opened.
 Do not rerun a disproven row unless the next run bundle names the new code, new inputs, or new instrumentation that makes the retry materially different.
+When this matrix is worked through a council workflow, use exactly three sub-agents with `model = "gpt-5.4-mini"` and `model_reasoning_effort = "high"`.
+If council voting ties, break the tie with the same criteria while keeping the tie-break on `gpt-5.4-mini` with reasoning `high`.
 
 #### 6v.1 Baseline Freeze And Evidence Discipline
 
@@ -1134,9 +1139,11 @@ Current evidence after the fresh same-day gate rerun: the control proof `manual-
 
 - [ ] `BS-27` Promote a new default control lane only if the variant wins on both protocol proof and visible output.
 Pass when: the candidate lane shows reproducible visual improvement, proves whether `rdpgfx` was really on or off, preserves truthful negative-path behavior, and does not regress session assignment or teardown semantics.
+Current evidence after the refreshed browser-backed probe rerun: control `manual-lab-9986c77ec92e4955b28d03cfaf3a2dcb` and variant `manual-lab-1b5018d392804dde967defb4886903a8` now both persist `playback_ready_correlation.verdict=aligned_ready` and `black_screen_branch.verdict=aligned_ready`, so startup readiness is no longer the blocking seam. The variant kept `driver_lane=ironrdp-rdpgfx`, `control_run_comparison_summary.verdict=meaningful_with_same_day_control`, `browser_visibility_summary.verdict=visible_frame`, `recording_visibility_summary.verdict=visible_frame`, and direct human-observed video, but promotion still stays blocked because the archived run verdict ends at `missing_steady_active_window` plus `browser_visible_artifact_black` rather than a clean sustained-proof contract.
 
 - [ ] `BS-28` Reject further driver churn if the counters and output do not materially move.
 Pass when: if multiple driver variants leave negotiation counters, corruption counters, and visible output essentially unchanged, the investigation explicitly stops changing drivers and returns to decode or player analysis.
+Current evidence after the same rerun: this row is still the guardrail, but it is no longer the next action. The refreshed control and variant runs both start from identical `aligned_ready` conditions, yet they still diverge materially in visible output: control degrades into `telemetry_gap` with websocket close `1011 webm streaming failure`, while `ironrdp-rdpgfx` stays live long enough for `visible_frame` in both browser and recording visibility. Because output materially moved, the next work stays on sustained-window or artifact-correlation analysis rather than opening another driver lane.
 
 #### 6v.4 Browser, Player, And Artifact Correlation
 

@@ -2507,53 +2507,12 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         }
 
         for index in 0..state.sessions.len() {
-            match probe_stream_token(
+            let outcome = probe_stream_token(
                 state.ports.proxy_http,
                 &state.sessions[index].session_id,
                 &wildcard_token,
-            )? {
-                ManualLabStreamProbeOutcome::Ready {
-                    token,
-                    http_status,
-                    observed_at_unix_ms,
-                } => {
-                    state.sessions[index].stream_probe_status = Some("ready".to_owned());
-                    state.sessions[index].stream_probe_http_status = Some(http_status);
-                    state.sessions[index].stream_probe_observed_at_unix_ms = Some(observed_at_unix_ms);
-                    state.sessions[index].stream_id = Some(token.stream_id);
-                    if state.sessions[index].vm_lease_id.is_none() {
-                        state.sessions[index].vm_lease_id = Some(token.vm_lease_id);
-                    }
-                    state.sessions[index].stream_probe_detail = Some(format!(
-                        "stream_id={} vm_lease_id={}",
-                        state.sessions[index].stream_id.as_deref().unwrap_or("<pending>"),
-                        state.sessions[index].vm_lease_id.as_deref().unwrap_or("<pending>")
-                    ));
-                    persist_active_state(&state)?;
-                    eprintln!(
-                        "manual lab phase=session.stream.ready run_id={} slot={} session_id={} stream_id={}",
-                        state.run_id,
-                        state.sessions[index].slot,
-                        state.sessions[index].session_id,
-                        state.sessions[index].stream_id.as_deref().unwrap_or("<pending>")
-                    );
-                }
-                ManualLabStreamProbeOutcome::Unavailable {
-                    detail,
-                    http_status,
-                    observed_at_unix_ms,
-                } => {
-                    state.sessions[index].stream_probe_status = Some("unavailable".to_owned());
-                    state.sessions[index].stream_probe_http_status = Some(http_status);
-                    state.sessions[index].stream_probe_observed_at_unix_ms = Some(observed_at_unix_ms);
-                    state.sessions[index].stream_probe_detail = Some(detail.clone());
-                    persist_active_state(&state)?;
-                    eprintln!(
-                        "manual lab phase=session.stream.unavailable run_id={} slot={} session_id={} detail={}",
-                        state.run_id, state.sessions[index].slot, state.sessions[index].session_id, detail
-                    );
-                }
-            }
+            )?;
+            record_stream_probe_outcome(&mut state, index, outcome, "session.stream.initial")?;
         }
 
         wait_for_frontend_tiles(state.ports.frontend_http, state.sessions.len())?;
@@ -2569,6 +2528,7 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
                 "manual lab phase=chrome.started run_id={} pid={}",
                 state.run_id, chrome.pid
             );
+            refresh_browser_backed_stream_probes(&mut state, &wildcard_token)?;
         }
 
         persist_active_state(&state)?;
@@ -3567,6 +3527,109 @@ fn probe_stream_token(
     }
 
     anyhow::bail!("unexpected HTTP status for POST {path} on port {proxy_http_port}: {status}")
+}
+
+fn record_stream_probe_outcome(
+    state: &mut ManualLabState,
+    session_index: usize,
+    outcome: ManualLabStreamProbeOutcome,
+    phase: &str,
+) -> anyhow::Result<()> {
+    match outcome {
+        ManualLabStreamProbeOutcome::Ready {
+            token,
+            http_status,
+            observed_at_unix_ms,
+        } => {
+            state.sessions[session_index].stream_probe_status = Some("ready".to_owned());
+            state.sessions[session_index].stream_probe_http_status = Some(http_status);
+            state.sessions[session_index].stream_probe_observed_at_unix_ms = Some(observed_at_unix_ms);
+            state.sessions[session_index].stream_id = Some(token.stream_id);
+            if state.sessions[session_index].vm_lease_id.is_none() {
+                state.sessions[session_index].vm_lease_id = Some(token.vm_lease_id);
+            }
+            state.sessions[session_index].stream_probe_detail = Some(format!(
+                "stream_id={} vm_lease_id={}",
+                state.sessions[session_index]
+                    .stream_id
+                    .as_deref()
+                    .unwrap_or("<pending>"),
+                state.sessions[session_index]
+                    .vm_lease_id
+                    .as_deref()
+                    .unwrap_or("<pending>")
+            ));
+            persist_active_state(state)?;
+            eprintln!(
+                "manual lab phase={phase} run_id={} slot={} session_id={} status=ready stream_id={}",
+                state.run_id,
+                state.sessions[session_index].slot,
+                state.sessions[session_index].session_id,
+                state.sessions[session_index]
+                    .stream_id
+                    .as_deref()
+                    .unwrap_or("<pending>")
+            );
+        }
+        ManualLabStreamProbeOutcome::Unavailable {
+            detail,
+            http_status,
+            observed_at_unix_ms,
+        } => {
+            state.sessions[session_index].stream_probe_status = Some("unavailable".to_owned());
+            state.sessions[session_index].stream_probe_http_status = Some(http_status);
+            state.sessions[session_index].stream_probe_observed_at_unix_ms = Some(observed_at_unix_ms);
+            state.sessions[session_index].stream_probe_detail = Some(detail.clone());
+            persist_active_state(state)?;
+            eprintln!(
+                "manual lab phase={phase} run_id={} slot={} session_id={} status=unavailable detail={}",
+                state.run_id, state.sessions[session_index].slot, state.sessions[session_index].session_id, detail
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn refresh_browser_backed_stream_probes(state: &mut ManualLabState, wildcard_token: &str) -> anyhow::Result<()> {
+    if state.chrome_pid.is_none() || state.sessions.len() != 1 {
+        return Ok(());
+    }
+
+    for session_index in 0..state.sessions.len() {
+        if state.sessions[session_index].stream_probe_status.as_deref() == Some("ready") {
+            continue;
+        }
+
+        let session_id = state.sessions[session_index].session_id.clone();
+        let refreshed_outcome = match wait_for_condition(
+            MANUAL_LAB_STREAM_READY_TIMEOUT,
+            || match probe_stream_token(state.ports.proxy_http, &session_id, wildcard_token)? {
+                outcome @ ManualLabStreamProbeOutcome::Ready { .. } => Ok(outcome),
+                ManualLabStreamProbeOutcome::Unavailable {
+                    detail,
+                    http_status,
+                    observed_at_unix_ms,
+                } => bail!(
+                    "stream probe is still unavailable for session {session_id}: status={http_status} observed_at_unix_ms={observed_at_unix_ms} detail={detail}"
+                ),
+            },
+            &format!("browser-backed stream probe for session {session_id}"),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!(
+                    "manual lab phase=session.stream.refresh.timeout run_id={} slot={} session_id={} detail={:#}",
+                    state.run_id, state.sessions[session_index].slot, session_id, error
+                );
+                probe_stream_token(state.ports.proxy_http, &session_id, wildcard_token)?
+            }
+        };
+
+        record_stream_probe_outcome(state, session_index, refreshed_outcome, "session.stream.refresh")?;
+    }
+
+    Ok(())
 }
 
 fn wait_for_frontend_tiles(frontend_http_port: u16, expected_tiles: usize) -> anyhow::Result<()> {
