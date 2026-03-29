@@ -1,0 +1,34 @@
+<div class="focus-shell" data-focused-session-id="{{ session_id }}">
+  <div class="tile-meta"><strong>Session</strong><code>{{ session_id }}</code></div>
+  <div class="tile-meta"><strong>State</strong><span>{{ state_label }}</span></div>
+  <div class="tile-meta"><strong>Stream state</strong><span>{{ stream_label }}</span></div>
+  {{ focus_actions_html|safe }}
+  {% if has_stream_preview %}
+  <div class="stream-stage">
+    {% if has_player_url %}
+    <iframe class="stream-frame" src="{{ player_url }}" loading="lazy"></iframe>
+    {% else %}
+    <div class="focus-note">{{ player_url_missing_note }}</div>
+    {% endif %}
+    <div>
+      <div class="badge">{{ transport_label }}</div>
+      <h2>Session {{ session_id }}</h2>
+      <p class="focus-note">{{ focus_note }}</p>
+      <p><strong>Stream ID</strong><br><code>{{ stream_id }}</code></p>
+      <p><strong>Token expires</strong><br><code>{{ token_expires_at }}</code></p>
+    </div>
+  </div>
+  {% else %}
+  <div class="stream-stage">
+    <div>
+      <h2>Stream unavailable</h2>
+      <p class="focus-note">{{ focus_note }}</p>
+    </div>
+  </div>
+  {% endif %}
+  {% if standalone_retry %}
+  <script>
+    window.setTimeout(() => window.location.replace(window.location.href), 1500);
+  </script>
+  {% endif %}
+</div>

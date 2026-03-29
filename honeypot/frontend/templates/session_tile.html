@@ -1,0 +1,19 @@
+<article class="session-tile state-{{ state_class }}" id="session-tile-{{ session_id }}">
+  <a class="tile-hit" href="/session/{{ session_id }}?{{ auth_query }}" hx-get="/session/{{ session_id }}?{{ auth_query }}" hx-target="#focus-panel" hx-swap="innerHTML">
+    <div class="tile-head">
+      <div>
+        <div class="badge">{{ state_label }}</div>
+      </div>
+      <div class="tile-meta"><strong>Stream</strong><span>{{ stream_label }}</span></div>
+    </div>
+    <div class="tile-meta"><strong>Session</strong><code>{{ session_id }}</code></div>
+    <div class="tile-meta"><strong>Lease</strong><code>{{ vm_lease_id }}</code></div>
+    <div class="tile-meta"><strong>Last event</strong><code>{{ last_event_id }}</code></div>
+    {% if has_preview %}
+    <div class="tile-meta"><strong>Stream</strong><code>{{ preview_stream_id }}</code><span>{{ preview_transport_label }}</span></div>
+    {% else %}
+    <div class="tile-meta"><strong>Stream</strong><span>{{ preview_message }}</span></div>
+    {% endif %}
+  </a>
+  {{ action_buttons_html|safe }}
+</article>

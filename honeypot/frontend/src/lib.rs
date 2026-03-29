@@ -4,6 +4,7 @@ pub mod config;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use askama::Template;
 use axum::body::Body;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
@@ -865,6 +866,54 @@ fn auth_error(error: AuthError) -> Response {
     }
 }
 
+#[derive(Template)]
+#[template(path = "dashboard.html")]
+struct DashboardPageTemplate<'a> {
+    title: &'a str,
+    session_count: usize,
+    replay_cursor: &'a str,
+    replay_cursor_json: &'a str,
+    operator_token_json: &'a str,
+    has_live_sessions: bool,
+    system_kill_button_html: &'a str,
+    tiles_html: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "session_tile.html")]
+struct SessionTileTemplate<'a> {
+    session_id: &'a str,
+    state_class: &'a str,
+    state_label: &'a str,
+    stream_label: &'a str,
+    vm_lease_id: &'a str,
+    last_event_id: &'a str,
+    auth_query: &'a str,
+    has_preview: bool,
+    preview_stream_id: &'a str,
+    preview_transport_label: &'a str,
+    preview_message: &'a str,
+    action_buttons_html: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "focus_panel.html")]
+struct FocusPanelTemplate<'a> {
+    session_id: &'a str,
+    state_label: &'a str,
+    stream_label: &'a str,
+    focus_actions_html: &'a str,
+    has_stream_preview: bool,
+    has_player_url: bool,
+    player_url: &'a str,
+    player_url_missing_note: &'a str,
+    transport_label: &'a str,
+    stream_id: &'a str,
+    token_expires_at: &'a str,
+    focus_note: &'a str,
+    standalone_retry: bool,
+}
+
 fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse, access: &OperatorAccess) -> String {
     let operator_token = access.raw_token();
     let system_kill_button = render_system_kill_button(access);
@@ -882,435 +931,72 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
             .collect::<Vec<_>>()
             .join("\n")
     };
-
-    let title = escape_html(&config.ui.title);
-    let replay_cursor = escape_html(&bootstrap.replay_cursor);
     let session_count = bootstrap
         .sessions
         .iter()
         .filter(|session| session_is_live_for_dashboard(session.state))
         .count();
     let operator_token_json = serde_json::to_string(operator_token).unwrap_or_else(|_| "\"invalid-token\"".to_owned());
+    let replay_cursor_json = serde_json::to_string(&bootstrap.replay_cursor).unwrap_or_else(|_| "\"0\"".to_owned());
 
-    format!(
-        r#"<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{title}</title>
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <style>
-    :root {{
-      --paper: #f5ecd9;
-      --ink: #1f1b16;
-      --accent: #c54d20;
-      --accent-2: #0d6a73;
-      --shadow: rgba(31, 27, 22, 0.14);
-      --panel: rgba(255, 251, 243, 0.88);
-      --ended: #8c8578;
-      --warning: #aa2d18;
-    }}
-    * {{ box-sizing: border-box; }}
-    body {{
-      margin: 0;
-      min-height: 100vh;
-      font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
-      color: var(--ink);
-      background:
-        radial-gradient(circle at top left, rgba(197, 77, 32, 0.24), transparent 32rem),
-        radial-gradient(circle at top right, rgba(13, 106, 115, 0.18), transparent 28rem),
-        linear-gradient(180deg, #fffaf0 0%, var(--paper) 100%);
-    }}
-    .shell {{
-      max-width: 1400px;
-      margin: 0 auto;
-      padding: 2rem;
-    }}
-    .masthead {{
-      display: flex;
-      gap: 1rem;
-      align-items: end;
-      justify-content: space-between;
-      margin-bottom: 1.5rem;
-    }}
-    .kicker {{
-      margin: 0;
-      font-size: 0.8rem;
-      letter-spacing: 0.18em;
-      text-transform: uppercase;
-      color: var(--accent-2);
-    }}
-    h1 {{
-      margin: 0.25rem 0 0;
-      font-size: clamp(2rem, 4vw, 3.3rem);
-      line-height: 0.95;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }}
-    .status-bar {{
-      display: grid;
-      gap: 0.75rem;
-      padding: 1rem 1.2rem;
-      border-radius: 1.2rem;
-      background: var(--panel);
-      box-shadow: 0 1.4rem 3rem var(--shadow);
-      min-width: 16rem;
-    }}
-    .status-metric {{
-      font-size: 0.9rem;
-      color: rgba(31, 27, 22, 0.72);
-    }}
-    .layout {{
-      display: grid;
-      grid-template-columns: minmax(0, 1.7fr) minmax(22rem, 0.9fr);
-      gap: 1.25rem;
-    }}
-    .tile-grid, .focus-panel {{
-      padding: 1rem;
-      border-radius: 1.5rem;
-      background: var(--panel);
-      box-shadow: 0 1.4rem 3rem var(--shadow);
-    }}
-    .tile-grid {{
-      display: grid;
-      gap: 0.9rem;
-      align-content: start;
-      min-height: 22rem;
-    }}
-    .session-tile {{
-      display: grid;
-      gap: 0.7rem;
-      padding: 1rem;
-      border: 1px solid rgba(31, 27, 22, 0.08);
-      border-radius: 1.2rem;
-      background: rgba(255, 255, 255, 0.72);
-      transition: transform 140ms ease, box-shadow 140ms ease;
-    }}
-    .session-tile:hover {{
-      transform: translateY(-2px);
-      box-shadow: 0 1rem 2rem rgba(31, 27, 22, 0.1);
-    }}
-    .session-tile.state-disconnected, .session-tile.state-killed, .session-tile.state-recycled {{
-      opacity: 0.64;
-      border-color: rgba(140, 133, 120, 0.4);
-    }}
-    .tile-hit {{
-      color: inherit;
-      text-decoration: none;
-      display: grid;
-      gap: 0.7rem;
-    }}
-    .tile-head {{
-      display: flex;
-      justify-content: space-between;
-      gap: 1rem;
-      align-items: start;
-    }}
-    .badge {{
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      padding: 0.25rem 0.55rem;
-      border-radius: 999px;
-      font-size: 0.78rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      background: rgba(197, 77, 32, 0.12);
-      color: var(--accent);
-    }}
-    .tile-meta {{
-      display: grid;
-      gap: 0.2rem;
-      font-size: 0.92rem;
-      color: rgba(31, 27, 22, 0.74);
-    }}
-    .tile-actions, .focus-actions {{
-      display: flex;
-      justify-content: end;
-      gap: 0.75rem;
-    }}
-    .kill-button {{
-      border: 0;
-      border-radius: 999px;
-      padding: 0.6rem 0.9rem;
-      font: inherit;
-      font-size: 0.9rem;
-      letter-spacing: 0.03em;
-      background: linear-gradient(135deg, #9f2f13, #c54d20);
-      color: #fff7f2;
-      cursor: pointer;
-      box-shadow: 0 0.7rem 1.4rem rgba(159, 47, 19, 0.18);
-    }}
-    .kill-button:hover {{
-      filter: brightness(1.05);
-    }}
-    .quarantine-button {{
-      border: 0;
-      border-radius: 999px;
-      padding: 0.6rem 0.9rem;
-      font: inherit;
-      font-size: 0.9rem;
-      letter-spacing: 0.03em;
-      background: linear-gradient(135deg, #8b6c0d, #c29114);
-      color: #fffaf0;
-      cursor: pointer;
-      box-shadow: 0 0.7rem 1.4rem rgba(139, 108, 13, 0.18);
-    }}
-    .quarantine-button:hover {{
-      filter: brightness(1.05);
-    }}
-    .focus-panel {{
-      min-height: 22rem;
-    }}
-    .focus-empty, .empty-state {{
-      display: grid;
-      place-items: center;
-      min-height: 100%;
-      color: rgba(31, 27, 22, 0.58);
-      text-align: center;
-      padding: 2rem;
-      border: 1px dashed rgba(31, 27, 22, 0.14);
-      border-radius: 1rem;
-    }}
-    .focus-shell {{
-      display: grid;
-      gap: 1rem;
-    }}
-    .stream-stage {{
-      min-height: 18rem;
-      display: grid;
-      gap: 1rem;
-      border-radius: 1rem;
-      background: linear-gradient(135deg, rgba(13, 106, 115, 0.12), rgba(197, 77, 32, 0.14));
-      border: 1px solid rgba(13, 106, 115, 0.2);
-      text-align: center;
-      padding: 1.5rem;
-    }}
-    .stream-frame {{
-      width: 100%;
-      min-height: 34rem;
-      border: 0;
-      border-radius: 1rem;
-      background: #17130f;
-      box-shadow: 0 1.2rem 2.4rem rgba(23, 19, 15, 0.18);
-    }}
-    .focus-note {{
-      margin: 0;
-      color: rgba(31, 27, 22, 0.68);
-    }}
-    code {{
-      font-family: "IBM Plex Mono", "Cascadia Code", monospace;
-      font-size: 0.88rem;
-      overflow-wrap: anywhere;
-    }}
-    @media (max-width: 900px) {{
-      .shell {{ padding: 1rem; }}
-      .layout {{ grid-template-columns: 1fr; }}
-      .masthead {{ align-items: start; flex-direction: column; }}
-      .status-bar {{ min-width: 0; width: 100%; }}
-    }}
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <header class="masthead">
-      <div>
-        <p class="kicker">Watch and kill operator surface</p>
-        <h1>{title}</h1>
-      </div>
-      <section class="status-bar">
-        <div class="status-metric">Live sessions: <strong>{session_count}</strong></div>
-        <div class="status-metric">Replay cursor: <code id="cursor-value">{replay_cursor}</code></div>
-        {system_kill_button}
-      </section>
-    </header>
-    <main class="layout">
-      <section id="tile-grid" class="tile-grid">
-        {tiles}
-      </section>
-      <aside id="focus-panel" class="focus-panel">
-        <div class="focus-empty">Choose a live tile to inspect stream metadata and session state.</div>
-      </aside>
-    </main>
-  </div>
-  <script>
-    (() => {{
-      let replayCursor = {replay_cursor_json};
-      const operatorToken = {operator_token_json};
-      let reconnectTimer = null;
-      const cursorNode = document.getElementById("cursor-value");
-      const tileGrid = document.getElementById("tile-grid");
-      const focusPanel = document.getElementById("focus-panel");
-
-      function authedPath(path) {{
-        const url = new URL(path, window.location.origin);
-        url.searchParams.set("token", operatorToken);
-        return `${{url.pathname}}${{url.search}}`;
-      }}
-
-      async function fetchHtml(path) {{
-        const response = await fetch(authedPath(path), {{ headers: {{ "X-Requested-With": "honeypot-frontend" }} }});
-        if (response.status === 404) {{
-          return null;
-        }}
-        if (!response.ok) {{
-          throw new Error(`request failed for ${{path}} with ${{response.status}}`);
-        }}
-        return response.text();
-      }}
-
-      async function upsertTile(sessionId) {{
-        const html = await fetchHtml(`/tile/${{encodeURIComponent(sessionId)}}`);
-        const existing = document.getElementById(`session-tile-${{sessionId}}`);
-        if (html === null) {{
-          existing?.remove();
-          return;
-        }}
-
-        const wrapper = document.createElement("div");
-        wrapper.innerHTML = html.trim();
-        const incoming = wrapper.firstElementChild;
-        if (!incoming) {{
-          return;
-        }}
-
-        if (existing) {{
-          existing.replaceWith(incoming);
-        }} else {{
-          tileGrid.prepend(incoming);
-        }}
-      }}
-
-      function dropTile(sessionId, message) {{
-        document.getElementById(`session-tile-${{sessionId}}`)?.remove();
-        const focused = focusPanel.querySelector("[data-focused-session-id]");
-        if (focused && focused.getAttribute("data-focused-session-id") === sessionId) {{
-          focusPanel.innerHTML = `<div class="focus-empty">${{message}}</div>`;
-        }}
-      }}
-
-      function scheduleReconnect() {{
-        if (reconnectTimer !== null) {{
-          return;
-        }}
-        reconnectTimer = window.setTimeout(() => {{
-          reconnectTimer = null;
-          connectEvents();
-        }}, 1500);
-      }}
-
-      function connectEvents() {{
-        const source = new EventSource(authedPath(`/events?cursor=${{encodeURIComponent(replayCursor)}}`));
-
-        source.onmessage = async (event) => {{
-          let payload = null;
-          try {{
-            payload = JSON.parse(event.data);
-          }} catch (_error) {{
-            return;
-          }}
-
-          replayCursor = payload.global_cursor || event.lastEventId || replayCursor;
-          cursorNode.textContent = replayCursor;
-
-          const sessionId = payload.session_id;
-          if (!sessionId) {{
-            return;
-          }}
-
-          switch (payload.event_kind) {{
-            case "session.ended":
-              dropTile(sessionId, "This session has ended.");
-              break;
-            case "session.killed":
-              dropTile(
-                sessionId,
-                payload.kill_reason === "operator_quarantine"
-                  ? "This session was quarantined."
-                  : "This session was killed."
-              );
-              break;
-            default:
-              try {{
-                await upsertTile(sessionId);
-              }} catch (_error) {{
-                source.close();
-                scheduleReconnect();
-              }}
-              break;
-          }}
-        }};
-
-        source.onerror = () => {{
-          source.close();
-          scheduleReconnect();
-        }};
-      }}
-
-      connectEvents();
-    }})();
-  </script>
-</body>
-</html>"#,
-        replay_cursor_json = serde_json::to_string(&bootstrap.replay_cursor).unwrap_or_else(|_| "\"0\"".to_owned()),
-        operator_token_json = operator_token_json,
-        system_kill_button = system_kill_button,
-    )
+    DashboardPageTemplate {
+        title: &config.ui.title,
+        session_count,
+        replay_cursor: &bootstrap.replay_cursor,
+        replay_cursor_json: &replay_cursor_json,
+        operator_token_json: &operator_token_json,
+        has_live_sessions: !live_sessions.is_empty(),
+        system_kill_button_html: &system_kill_button,
+        tiles_html: &tiles,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("dashboard template render failed: {error}"))
 }
 
 fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> String {
     let operator_token = access.raw_token();
-    let session_id = escape_html(&session.session_id);
     let vm_lease_id = session.vm_lease_id.as_deref().unwrap_or("pending-lease");
-    let last_event_id = escape_html(&session.last_event_id);
     let state_label = session_state_label(session.state);
     let stream_label = stream_state_label(session.stream_state);
+    let state_class = state_label.replace(' ', "-").to_ascii_lowercase();
     let auth_query = operator_token_query(operator_token);
     let action_buttons = render_session_action_buttons(session, operator_token, access.can_kill_sessions());
-    let preview_label = session
-        .stream_preview
-        .as_ref()
-        .map(|preview| {
-            format!(
-                "<div class=\"tile-meta\"><strong>Stream</strong><code>{}</code><span>{}</span></div>",
-                escape_html(&preview.stream_id),
-                escape_html(stream_transport_label(preview.transport))
-            )
-        })
-        .unwrap_or_else(|| {
-            let message = if session.stream_state == StreamState::Failed {
-                "No live source is available."
-            } else {
-                "Awaiting preview."
-            };
-            format!("<div class=\"tile-meta\"><strong>Stream</strong><span>{message}</span></div>")
-        });
+    let (has_preview, preview_stream_id, preview_transport_label, preview_message) =
+        session.stream_preview.as_ref().map_or_else(
+            || {
+                let message = if session.stream_state == StreamState::Failed {
+                    "No live source is available."
+                } else {
+                    "Awaiting preview."
+                };
+                (false, "", "", message)
+            },
+            |preview| {
+                (
+                    true,
+                    preview.stream_id.as_str(),
+                    stream_transport_label(preview.transport),
+                    "",
+                )
+            },
+        );
 
-    format!(
-        r##"<article class="session-tile state-{state_class}" id="session-tile-{session_id}">
-  <a class="tile-hit" href="/session/{session_id}?{auth_query}" hx-get="/session/{session_id}?{auth_query}" hx-target="#focus-panel" hx-swap="innerHTML">
-    <div class="tile-head">
-      <div>
-        <div class="badge">{state_label}</div>
-      </div>
-      <div class="tile-meta"><strong>Stream</strong><span>{stream_label}</span></div>
-    </div>
-    <div class="tile-meta"><strong>Session</strong><code>{session_id}</code></div>
-    <div class="tile-meta"><strong>Lease</strong><code>{vm_lease_id}</code></div>
-    <div class="tile-meta"><strong>Last event</strong><code>{last_event_id}</code></div>
-    {preview_label}
-  </a>
-  {action_buttons}
-</article>"##,
-        state_class = state_label.replace(' ', "-").to_ascii_lowercase(),
-        state_label = escape_html(state_label),
-        stream_label = escape_html(stream_label),
-        vm_lease_id = escape_html(vm_lease_id),
-        preview_label = preview_label,
-        auth_query = auth_query,
-        action_buttons = action_buttons,
-    )
+    SessionTileTemplate {
+        session_id: &session.session_id,
+        state_class: &state_class,
+        state_label,
+        stream_label,
+        vm_lease_id,
+        last_event_id: &session.last_event_id,
+        auth_query: &auth_query,
+        has_preview,
+        preview_stream_id,
+        preview_transport_label,
+        preview_message,
+        action_buttons_html: &action_buttons,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("session tile template render failed: {error}"))
 }
 
 fn render_focus_panel(
@@ -1320,72 +1006,60 @@ fn render_focus_panel(
     access: &OperatorAccess,
     standalone_retry: bool,
 ) -> String {
-    let session_id = escape_html(&session.session_id);
-    let state_label = escape_html(session_state_label(session.state));
-    let stream_label = escape_html(stream_state_label(session.stream_state));
+    let session_id = session.session_id.as_str();
+    let state_label = session_state_label(session.state);
+    let stream_label = stream_state_label(session.stream_state);
     let focus_actions = render_focus_action_buttons(session, access);
-    let retry_script = if standalone_retry {
-        r#"<script>
-  window.setTimeout(() => window.location.replace(window.location.href), 1500);
-</script>"#
-            .to_owned()
-    } else {
-        String::new()
-    };
-    let body = if let Some(preview) = stream_preview {
-        let player = player_url.map_or_else(
-            || {
-                "<div class=\"focus-note\">The frontend could not resolve a live player URL for this session yet.</div>"
-                    .to_owned()
-            },
-            |url| {
-                format!(
-                    "<iframe class=\"stream-frame\" src=\"{}\" loading=\"lazy\"></iframe>",
-                    escape_html(url)
-                )
-            },
-        );
-        format!(
-            r#"<div class="stream-stage">
-  {player}
-  <div>
-    <div class="badge">{transport}</div>
-    <h2>Session {session_id}</h2>
-    <p class="focus-note">Refresh reconnects near the live tail while the attacker session is still active.</p>
-    <p><strong>Stream ID</strong><br><code>{stream_id}</code></p>
-    <p><strong>Token expires</strong><br><code>{token_expires_at}</code></p>
-  </div>
-</div>"#,
-            player = player,
-            transport = escape_html(stream_transport_label(preview.transport)),
-            stream_id = escape_html(&preview.stream_id),
-            token_expires_at = escape_html(&preview.token_expires_at),
-        )
-    } else {
-        let focus_note = if session.stream_state == StreamState::Failed {
-            "The proxy has not observed an active recording producer for this session."
-        } else {
-            "The frontend could not resolve a stream preview for this session yet."
-        };
-        r#"<div class="stream-stage">
-  <div>
-    <h2>Stream unavailable</h2>
-    <p class="focus-note">{focus_note}</p>
-  </div>
-</div>"#
-            .replace("{focus_note}", focus_note)
-    };
+    let (
+        has_stream_preview,
+        has_player_url,
+        player_url,
+        player_url_missing_note,
+        transport_label,
+        stream_id,
+        token_expires_at,
+        focus_note,
+    ) = stream_preview.map_or_else(
+        || {
+            let focus_note = if session.stream_state == StreamState::Failed {
+                "The proxy has not observed an active recording producer for this session."
+            } else {
+                "The frontend could not resolve a stream preview for this session yet."
+            };
+            (false, false, "", "", "", "", "", focus_note)
+        },
+        |preview| {
+            let missing_note = "The frontend could not resolve a live player URL for this session yet.";
+            (
+                true,
+                player_url.is_some(),
+                player_url.unwrap_or(""),
+                missing_note,
+                stream_transport_label(preview.transport),
+                preview.stream_id.as_str(),
+                preview.token_expires_at.as_str(),
+                "Refresh reconnects near the live tail while the attacker session is still active.",
+            )
+        },
+    );
 
-    format!(
-        r#"<div class="focus-shell" data-focused-session-id="{session_id}">
-  <div class="tile-meta"><strong>Session</strong><code>{session_id}</code></div>
-  <div class="tile-meta"><strong>State</strong><span>{state_label}</span></div>
-  <div class="tile-meta"><strong>Stream state</strong><span>{stream_label}</span></div>
-  {focus_actions}
-  {body}
-  {retry_script}
-</div>"#
-    )
+    FocusPanelTemplate {
+        session_id: &session_id,
+        state_label: &state_label,
+        stream_label: &stream_label,
+        focus_actions_html: &focus_actions,
+        has_stream_preview,
+        has_player_url,
+        player_url,
+        player_url_missing_note,
+        transport_label,
+        stream_id,
+        token_expires_at,
+        focus_note,
+        standalone_retry,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("focus panel template render failed: {error}"))
 }
 
 fn render_kill_notice(session_id: &str, operator_token: &str) -> String {
