@@ -450,9 +450,7 @@ impl GfxFilter {
         cache_slot: u16,
         source_rectangle: &InclusiveRectangle,
     ) -> Result<()> {
-        let width = u32::from(source_rectangle.right.saturating_sub(source_rectangle.left)) + 1;
-        let height = u32::from(source_rectangle.bottom.saturating_sub(source_rectangle.top)) + 1;
-        let rgba_data = {
+        let (effective_rectangle, width, height, rgba_data) = {
             let Some(framebuffer) = self.surfaces.get(&surface_id) else {
                 Self::increment_warning(&mut self.warning_summary.surface_to_cache_unknown_surface_count);
                 warn!(
@@ -465,13 +463,28 @@ impl GfxFilter {
                 return Ok(());
             };
 
-            framebuffer.copy_region(
-                u32::from(source_rectangle.left),
-                u32::from(source_rectangle.top),
+            copy_surface_to_cache_region(framebuffer, source_rectangle)?
+        };
+
+        if effective_rectangle != *source_rectangle {
+            debug!(
+                session_id = %self.session_id,
+                surface_id,
+                cache_slot,
+                cache_key,
+                original_rect_left = source_rectangle.left,
+                original_rect_top = source_rectangle.top,
+                original_rect_right = source_rectangle.right,
+                original_rect_bottom = source_rectangle.bottom,
+                effective_rect_left = effective_rectangle.left,
+                effective_rect_top = effective_rectangle.top,
+                effective_rect_right = effective_rectangle.right,
+                effective_rect_bottom = effective_rectangle.bottom,
                 width,
                 height,
-            )?
-        };
+                "Applied SurfaceToCache rectangle fallback"
+            );
+        }
 
         self.maybe_log_rgba_coverage("surface_to_cache", surface_id, width, height, &rgba_data);
 
@@ -490,10 +503,10 @@ impl GfxFilter {
             surface_id,
             cache_slot,
             cache_key,
-            rect_left = source_rectangle.left,
-            rect_top = source_rectangle.top,
-            rect_right = source_rectangle.right,
-            rect_bottom = source_rectangle.bottom,
+            rect_left = effective_rectangle.left,
+            rect_top = effective_rectangle.top,
+            rect_right = effective_rectangle.right,
+            rect_bottom = effective_rectangle.bottom,
             width,
             height,
             "Cached RDPEGFX surface region"
@@ -859,7 +872,26 @@ impl GfxFilter {
 
         match codec_id {
             Codec1Type::Uncompressed => {
-                let rectangle = destination_rectangle;
+                let original_rectangle = destination_rectangle;
+                let rectangle =
+                    normalized_uncompressed_wire_to_surface_1_rectangle(original_rectangle.clone(), bitmap_data.len())?;
+                if rectangle != original_rectangle {
+                    debug!(
+                        session_id = %self.session_id,
+                        surface_id,
+                        codec_id = ?codec_id,
+                        bitmap_data_len = bitmap_data.len(),
+                        original_rect_left = original_rectangle.left,
+                        original_rect_top = original_rectangle.top,
+                        original_rect_right = original_rectangle.right,
+                        original_rect_bottom = original_rectangle.bottom,
+                        effective_rect_left = rectangle.left,
+                        effective_rect_top = rectangle.top,
+                        effective_rect_right = rectangle.right,
+                        effective_rect_bottom = rectangle.bottom,
+                        "Applied WireToSurface1 rectangle fallback"
+                    );
+                }
                 let rgba_data = decode_uncompressed_wire_to_surface_1(pixel_format, &rectangle, bitmap_data)?;
                 let (surface_width, surface_height) = {
                     let framebuffer = self.surfaces.get_mut(&surface_id).expect("surface checked above");
@@ -1288,17 +1320,96 @@ fn checked_rgba_buffer_len(width: u32, height: u32) -> Result<usize> {
     .context("RGBA buffer length exceeds usize")
 }
 
+fn inclusive_rectangle_dimensions(rectangle: &InclusiveRectangle) -> (u32, u32) {
+    (
+        u32::from(rectangle.right.saturating_sub(rectangle.left)) + 1,
+        u32::from(rectangle.bottom.saturating_sub(rectangle.top)) + 1,
+    )
+}
+
+fn maybe_shrink_inclusive_rectangle(rectangle: &InclusiveRectangle) -> Option<InclusiveRectangle> {
+    if rectangle.right > rectangle.left && rectangle.bottom > rectangle.top {
+        Some(InclusiveRectangle {
+            left: rectangle.left,
+            top: rectangle.top,
+            right: rectangle.right - 1,
+            bottom: rectangle.bottom - 1,
+        })
+    } else {
+        None
+    }
+}
+
+fn expected_uncompressed_wire_to_surface_1_len(rectangle: &InclusiveRectangle) -> Result<usize> {
+    let (width, height) = inclusive_rectangle_dimensions(rectangle);
+
+    checked_rgba_buffer_len(width, height).context("compute expected WireToSurface1 byte count")
+}
+
+fn normalized_uncompressed_wire_to_surface_1_rectangle(
+    destination_rectangle: InclusiveRectangle,
+    bitmap_data_len: usize,
+) -> Result<InclusiveRectangle> {
+    let expected_len = expected_uncompressed_wire_to_surface_1_len(&destination_rectangle)?;
+    if bitmap_data_len == expected_len {
+        return Ok(destination_rectangle);
+    }
+
+    let Some(shrunk_rectangle) = maybe_shrink_inclusive_rectangle(&destination_rectangle) else {
+        anyhow::bail!(
+            "uncompressed WireToSurface1 data size mismatch: got {} bytes, expected {}",
+            bitmap_data_len,
+            expected_len
+        );
+    };
+
+    let shrunk_expected_len = expected_uncompressed_wire_to_surface_1_len(&shrunk_rectangle)?;
+    if bitmap_data_len == shrunk_expected_len {
+        return Ok(shrunk_rectangle);
+    }
+
+    anyhow::bail!(
+        "uncompressed WireToSurface1 data size mismatch: got {} bytes, expected {}",
+        bitmap_data_len,
+        expected_len
+    );
+}
+
+fn copy_surface_to_cache_region(
+    framebuffer: &Framebuffer,
+    source_rectangle: &InclusiveRectangle,
+) -> Result<(InclusiveRectangle, u32, u32, Vec<u8>)> {
+    let (width, height) = inclusive_rectangle_dimensions(source_rectangle);
+    match framebuffer.copy_region(
+        u32::from(source_rectangle.left),
+        u32::from(source_rectangle.top),
+        width,
+        height,
+    ) {
+        Ok(rgba_data) => Ok((source_rectangle.clone(), width, height, rgba_data)),
+        Err(error) => {
+            let Some(shrunk_rectangle) = maybe_shrink_inclusive_rectangle(source_rectangle) else {
+                return Err(error);
+            };
+            let (shrunk_width, shrunk_height) = inclusive_rectangle_dimensions(&shrunk_rectangle);
+            let rgba_data = framebuffer.copy_region(
+                u32::from(shrunk_rectangle.left),
+                u32::from(shrunk_rectangle.top),
+                shrunk_width,
+                shrunk_height,
+            )?;
+            Ok((shrunk_rectangle, shrunk_width, shrunk_height, rgba_data))
+        }
+    }
+}
+
 fn decode_uncompressed_wire_to_surface_1(
     pixel_format: PixelFormat,
     destination_rectangle: &InclusiveRectangle,
     bitmap_data: &[u8],
 ) -> Result<Vec<u8>> {
-    let width = destination_rectangle.right.saturating_sub(destination_rectangle.left) + 1;
-    let height = destination_rectangle.bottom.saturating_sub(destination_rectangle.top) + 1;
-    let byte_len = usize::from(width)
-        .checked_mul(usize::from(height))
-        .and_then(|pixels| pixels.checked_mul(4))
-        .context("uncompressed WireToSurface1 byte count overflow")?;
+    let (width, height) = inclusive_rectangle_dimensions(destination_rectangle);
+    let byte_len = expected_uncompressed_wire_to_surface_1_len(destination_rectangle)?;
 
     if bitmap_data.len() != byte_len {
         anyhow::bail!(
@@ -1313,11 +1424,14 @@ fn decode_uncompressed_wire_to_surface_1(
         PixelFormat::XRgb => GraphicsPixelFormat::XRgb32,
     };
 
+    let source_width = u16::try_from(width).context("uncompressed WireToSurface1 width exceeds u16")?;
+    let source_height = u16::try_from(height).context("uncompressed WireToSurface1 height exceeds u16")?;
+
     let source_region = InclusiveRectangle {
         left: 0,
         top: 0,
-        right: width - 1,
-        bottom: height - 1,
+        right: source_width - 1,
+        bottom: source_height - 1,
     };
     let mut rgba_data = vec![0; byte_len];
     ImageRegion {
@@ -2057,6 +2171,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_surface_to_cache_uses_exclusive_style_fallback_when_source_rectangle_overruns_by_one() {
+        let config = GfxConfig::default();
+        let mut filter = GfxFilter::new(config, "test".to_string());
+
+        filter.handle_create_surface(23, 4, 4).unwrap();
+        {
+            let surface = filter.surfaces.get_mut(&23).expect("surface");
+            let mut value = 1u8;
+            for y in 1..=3 {
+                for x in 1..=3 {
+                    surface.set_pixel(x, y, value, value.wrapping_add(1), value.wrapping_add(2), 255).unwrap();
+                    value = value.wrapping_add(3);
+                }
+            }
+        }
+
+        let surface_to_cache = Bytes::from(
+            encode_vec(&ServerPdu::SurfaceToCache(SurfaceToCachePdu {
+                surface_id: 23,
+                cache_key: 0x1020_3040_5060_7080,
+                cache_slot: 4,
+                source_rectangle: InclusiveRectangle {
+                    left: 1,
+                    top: 1,
+                    right: 4,
+                    bottom: 4,
+                },
+            }))
+            .expect("encode surface to cache"),
+        );
+
+        let result = filter.process_server_to_client(surface_to_cache.clone()).await.unwrap();
+        assert_eq!(result, surface_to_cache);
+
+        let cached_tile = filter.surface_cache.get(&4).expect("cached surface tile");
+        assert_eq!(cached_tile.width, 3);
+        assert_eq!(cached_tile.height, 3);
+        assert_eq!(&cached_tile.rgba_data[0..4], &[1, 2, 3, 255]);
+        assert_eq!(&cached_tile.rgba_data[cached_tile.rgba_data.len() - 4..], &[25, 26, 27, 255]);
+    }
+
+    #[tokio::test]
     async fn test_evict_cache_entry_drops_cached_surface_tile() {
         let config = GfxConfig::default();
         let mut filter = GfxFilter::new(config, "test".to_string());
@@ -2351,6 +2507,50 @@ mod tests {
 
         let updated = filter.surfaces.get(&2).expect("surface");
         assert_eq!(updated.get_pixel(1, 1), Some((0x11, 0x22, 0x33, 0xFF)));
+    }
+
+    #[tokio::test]
+    async fn test_wire_to_surface_uncompressed_uses_exclusive_style_fallback_when_bitmap_len_matches() {
+        let config = GfxConfig::default();
+        let mut filter = GfxFilter::new(config, "test".to_string());
+
+        filter.handle_create_surface(22, 8, 8).unwrap();
+
+        let test_data = Bytes::from(
+            encode_vec(&ServerPdu::WireToSurface1(WireToSurface1Pdu {
+                surface_id: 22,
+                codec_id: Codec1Type::Uncompressed,
+                pixel_format: PixelFormat::ARgb,
+                destination_rectangle: InclusiveRectangle {
+                    left: 1,
+                    top: 1,
+                    right: 2,
+                    bottom: 2,
+                },
+                bitmap_data: vec![0x44, 0x11, 0x22, 0x33],
+            }))
+            .expect("encode wire to surface pdu"),
+        );
+
+        let result = filter.process_server_to_client(test_data.clone()).await.unwrap();
+        assert_eq!(result, test_data);
+
+        let updated = filter.surfaces.get(&22).expect("surface");
+        assert_eq!(updated.get_pixel(1, 1), Some((0x11, 0x22, 0x33, 0x44)));
+        assert_eq!(updated.get_pixel(2, 2), Some((0, 0, 0, 0)));
+
+        let updates = filter.drain_surface_updates();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(
+            updates[0].rectangle,
+            InclusiveRectangle {
+                left: 1,
+                top: 1,
+                right: 1,
+                bottom: 1,
+            }
+        );
+        assert_eq!(updates[0].rgba_data, vec![0x11, 0x22, 0x33, 0x44]);
     }
 
     #[tokio::test]
