@@ -1026,6 +1026,148 @@ Pass when: a sanctioned `manual-lab` proof run records at least one `session.str
 - [ ] Bound any control-plane-assisted capture fallback behind an explicit rejection gate.
 Pass when: if the proxy-owned producer seam cannot be made to emit JREC bytes, the repo records the exact blocker first and only then opens a follow-up fallback task for control-plane-assisted capture that still feeds the same `/jet/jrec/push/{session_id}` contract without adding a fourth runtime service.
 
+### Milestone 6v: Black-Screen Forensics Matrix (Instrumentation-First Non-RDPGFX)
+
+This matrix is the canonical no-repeat checklist for the remaining black-screen and pixel-artifact playback issue.
+Every run that touches this problem must record `git rev`, the active `BS-*` row IDs, driver lane, env fingerprint, artifact root, and final verdict before another experiment is opened.
+Do not rerun a disproven row unless the next run bundle names the new code, new inputs, or new instrumentation that makes the retry materially different.
+
+#### 6v.1 Baseline Freeze And Evidence Discipline
+
+- [x] `BS-00` Freeze the black-screen investigation structure before changing playback lanes again.
+Pass when: this matrix exists in `AGENTS.md`, later playback work references `BS-*` rows instead of inventing ad hoc experiments, and the winning plan remains instrumentation-first with `xfreerdp` as the control lane until evidence says otherwise.
+
+- [ ] `BS-01` Record a baseline evidence stamp before each new troubleshooting branch.
+Pass when: every run bundle records `git rev`, row IDs exercised, driver lane, `DGW_HONEYPOT_*` env values, session count, artifact root, and whether the run is control or variant before code or config changes are evaluated.
+
+- [ ] `BS-02` Keep the `xfreerdp` control lane aligned with the pre-experiment HEAD defaults.
+Pass when: the default manual-lab `xfreerdp` invocation matches the pre-experiment argument set unless an explicit opt-in env changes it, and no prior `Rfx`, `-gfx`, or similar experiment silently becomes the new baseline.
+
+- [ ] `BS-03` Record the exact driver command line and binary identity for every run.
+Pass when: each run bundle preserves the driver executable path, version or build identity, full arguments, and any wrapper env so later comparisons never rely on memory or shell history.
+
+- [ ] `BS-04` Reset and verify a clean pre-experiment state before black-screen runs.
+Pass when: tests confirm no stale `active.json`, stale sockets, stale recording directories, or leftover credentials from prior proof runs before a new control or variant lane is evaluated.
+
+- [ ] `BS-05` Capture a one-session `xfreerdp` control run before any variant run opens.
+Pass when: a single-session manual-lab run stores proxy logs, frontend logs, player console output, session events, and recording artifacts under a named artifact root that can be compared to later variants.
+
+- [ ] `BS-06` Capture a two-session `xfreerdp` control run before concurrency conclusions are drawn.
+Pass when: a two-session run records per-session negotiation counters, readiness transitions, websocket outcomes, and artifact timestamps so resource contention is separated from single-session decode issues.
+
+- [ ] `BS-07` Capture a three-session `xfreerdp` control run before calling the third-slot problem nondeterministic.
+Pass when: a three-session run records enough evidence to name which session diverged, when it diverged, and whether the failure was negotiation, producer, player, or timing related instead of only saying "slot 3 was bad".
+
+- [ ] `BS-08` Preserve the truthful negative path during all black-screen investigation work.
+Pass when: runs without a proven active producer still return `503 honeypot stream is unavailable`, still emit `session.stream.failed`, and never regress to fake live bindings while visual-debug work proceeds.
+
+- [ ] `BS-09` Preserve the active ready-path invariant during black-screen investigation work.
+Pass when: once `session.stream.ready` is emitted for an active session, the player does not immediately fall back to static `recording.json` without a separately recorded stream failure reason.
+
+- [ ] `BS-10` Standardize the minimum artifact set for every black-screen run.
+Pass when: each run bundle includes proxy playback logs, session lifecycle logs, player console output, websocket close reason, `recording-*.webm`, `recording.json`, relevant HTTP responses, and a short verdict keyed by row ID.
+
+#### 6v.2 Negotiation, Channel, And Producer Truth
+
+- [ ] `BS-11` Prove whether `drdynvc` negotiation occurs on the control lane.
+Pass when: logs or summaries record whether `drdynvc` was requested, accepted, assigned a channel ID, and kept open long enough for wrapped graphics payloads to be observed.
+
+- [ ] `BS-12` Prove whether `rdpgfx` actually opens on the control lane.
+Pass when: the evidence set includes explicit `rdpgfx` open counts and channel identifiers so the team can distinguish "RDPGFX never negotiated" from "RDPGFX negotiated but rendered badly".
+
+- [ ] `BS-13` Count wrapped graphics PDUs and payload bytes per session.
+Pass when: every probe run records `rdpegfx_pdu_count`, payload counts, or equivalent summary fields per session so black-screen runs can be sorted into "no graphics data" and "graphics data present" branches.
+
+- [ ] `BS-14` Count corruption-signaling warnings in `rdp_gfx`.
+Pass when: unknown-surface, unknown-cache-slot, `WireToSurface1` size mismatch, and related warning classes are counted per session instead of being treated as unstructured log noise.
+
+- [ ] `BS-15` Prove producer bootstrap ordering around the handshake seam.
+Pass when: the evidence shows when the producer attached relative to `intercept_connect_confirm`, when client leftovers were fed, when server leftovers were fed, and whether those steps happened before any graphics negotiation was lost.
+
+- [ ] `BS-16` Prove whether the first emitted recording bytes and the first ready state describe the same reality.
+Pass when: the run can name the timestamp for producer start, first chunk emitted, recording-manager connected state, and `session.stream.ready`, and those events do not contradict each other.
+
+- [ ] `BS-17` Emit a machine-readable playback evidence summary for every probe run.
+Pass when: each run stores a stable JSON or similarly structured summary with the key counters, timestamps, lane identity, and verdict so later runs can be compared without scraping free-form logs.
+
+- [ ] `BS-18` Add tests that lock the evidence-summary fields in place.
+Pass when: targeted tests fail if the required negotiation, producer, and corruption counters disappear or silently rename themselves during later refactors.
+
+- [ ] `BS-19` Split FastPath warnings into known-noise and candidate-root-cause classes.
+Pass when: the run bundle records which FastPath warnings are expected background noise and which correlate with visible corruption, so the same warning is not argued about repeatedly across runs.
+
+- [ ] `BS-20` Reduce the third-session failure into a named branch before new lane churn begins.
+Pass when: a failing third-session run can be labeled as negotiation loss, producer loss, player loss, decode corruption, or simple no-ready truthfulness instead of staying in the generic "black screen" bucket.
+
+#### 6v.3 Driver And Non-RDPGFX Experiment Matrix
+
+- [ ] `BS-21` Keep `xfreerdp` as the control lane until a variant beats it on evidence.
+Pass when: all early experiments compare back to a current same-day `xfreerdp` control run, and no alternate driver becomes the implied default before the promotion criteria are met.
+
+- [ ] `BS-22` Try an explicit `xfreerdp` control-minus lane that attempts to suppress `rdpgfx` without changing unrelated behavior.
+Pass when: the experiment is opt-in, the exact flags are recorded, the control run exists first, and the result proves whether reduced graphics negotiation changes the black-screen outcome.
+
+- [ ] `BS-23` Try an explicit `xfreerdp` `Rfx` or similarly scoped codec variant only after the control-minus result is archived.
+Pass when: the exact codec flags, lane identity, and comparison result are recorded so the repo never reopens a vague "maybe `Rfx` helps" experiment without evidence.
+
+- [ ] `BS-24` Add an opt-in IronRDP lane that intentionally omits `RdpgfxClient`.
+Pass when: manual-lab can launch an IronRDP client lane on demand, the lane stays opt-in, and the evidence proves whether `rdpgfx` really stayed off for that run.
+
+- [ ] `BS-25` Add an opt-in IronRDP comparison lane with normal negotiated graphics.
+Pass when: the repo can compare IronRDP with and without graphics capability under the same artifact contract instead of assuming the client swap alone explains any visual difference.
+
+- [ ] `BS-26` Keep the evidence contract identical across all driver lanes.
+Pass when: control and variant runs always capture the same logs, counters, websocket outcomes, artifacts, and verdict fields so comparisons stay apples-to-apples.
+
+- [ ] `BS-27` Promote a new default control lane only if the variant wins on both protocol proof and visible output.
+Pass when: the candidate lane shows reproducible visual improvement, proves whether `rdpgfx` was really on or off, preserves truthful negative-path behavior, and does not regress session assignment or teardown semantics.
+
+- [ ] `BS-28` Reject further driver churn if the counters and output do not materially move.
+Pass when: if multiple driver variants leave negotiation counters, corruption counters, and visible output essentially unchanged, the investigation explicitly stops changing drivers and returns to decode or player analysis.
+
+#### 6v.4 Browser, Player, And Artifact Correlation
+
+- [ ] `BS-29` Record the shadow websocket close reason and timing for every active-player failure.
+Pass when: runs preserve the websocket close code or reason, time since open, and whether the player was still in active mode when the close occurred.
+
+- [ ] `BS-30` Record whether the player falls back to static playback during an active session.
+Pass when: each run can say whether `/jet/jrec/play/?isActive=true` stayed on the active path, switched to static fallback, or attempted to fetch a missing recording artifact while the session was still live.
+
+- [ ] `BS-31` Correlate session events with recording artifact creation and growth.
+Pass when: the run bundle can align `session.started`, `session.assigned`, `session.stream.ready`, `session.stream.failed`, websocket attach, and `recording-*.webm` creation or growth on one timeline.
+
+- [ ] `BS-32` Add a first-non-black-frame check for recording artifacts.
+Pass when: the repo has one repeatable way to tell whether a recording artifact contains a visible frame, an all-black frame, or only a few stray pixels, and that result is stored alongside the session verdict.
+
+- [ ] `BS-33` Compare browser-visible corruption with the underlying recording artifact at the same point in time.
+Pass when: the run can distinguish "browser is black but WebM has real frames" from "WebM itself is black", which prevents frontend and producer bugs from being conflated.
+
+- [ ] `BS-34` Add a positive ready-path test that proves active playback does not immediately collapse into static fallback.
+Pass when: a targeted test in `testsuite/tests/` proves that a ready active session stays on the live path long enough to avoid the old immediate `recording.json` fallback behavior.
+
+- [ ] `BS-35` Add a multi-session ready-path proof that includes the historically weak third slot.
+Pass when: the sanctioned proof flow records whether session one, two, and three each reached usable live playback or failed truthfully with a named reason, and the third-slot behavior is no longer hand-waved.
+
+#### 6v.5 Decision Gates, Anti-Duplication, And Escalation
+
+- [ ] `BS-36` Define green, amber, and red verdicts for black-screen runs.
+Pass when: the repo can classify a run as "usable playback", "producer ready but corruption unresolved", or "contract violation or missing proof" without inventing a new label each time.
+
+- [ ] `BS-37` Add a do-not-retry ledger for disproven hypotheses.
+Pass when: every disproven hypothesis records the failing lane, evidence artifact root, reason it was rejected, and the condition required before the row may be retried.
+
+- [ ] `BS-38` Require a current control-run verdict before any new code or flag experiment is accepted.
+Pass when: no variant result is treated as meaningful unless a same-day control run with the same artifact contract exists beside it.
+
+- [ ] `BS-39` Block any control-plane-assisted capture fallback until the proxy seam is explicitly rejected.
+Pass when: fallback capture work cannot open until the repo records why the proxy-owned `/jet/jrec/push/{session_id}` seam was insufficient even after the instrumentation-first and non-RDPGFX lanes were exhausted.
+
+- [ ] `BS-40` Add a short runbook for black-screen experiment order and artifact naming.
+Pass when: AGENTS or the linked docs name the command order, lane naming, artifact filenames, and verdict format that each row expects so future runs do not improvise new layouts.
+
+- [ ] `BS-41` Keep baseline Rust verification green after every accepted black-screen change.
+Pass when: any change that clears one or more `BS-*` rows still ends with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests` staying green unless the run bundle records a known unrelated blocker.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.
