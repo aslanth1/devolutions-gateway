@@ -1093,8 +1093,9 @@ Pass when: each run stores a stable JSON or similarly structured summary with th
 - [x] `BS-18` Add tests that lock the evidence-summary fields in place.
 Pass when: targeted tests fail if the required negotiation, producer, and corruption counters disappear or silently rename themselves during later refactors.
 
-- [ ] `BS-19` Split FastPath warnings into known-noise and candidate-root-cause classes.
+- [x] `BS-19` Split FastPath warnings into known-noise and candidate-root-cause classes.
 Pass when: the run bundle records which FastPath warnings are expected background noise and which correlate with visible corruption, so the same warning is not argued about repeatedly across runs.
+Current evidence after the `BS-19` control proof: the repeated `fastpath_process_server_frame_error` warning now carries `session_id` and was classified as `known_noise` on both aligned-ready sessions, while the failing third slot emitted no FastPath warning evidence at all and still ended as `negotiation_loss` with `rdpegfx_pdu_count=0`.
 
 - [x] `BS-20` Reduce the third-session failure into a named branch before new lane churn begins.
 Pass when: a failing third-session run can be labeled as negotiation loss, producer loss, player loss, decode corruption, or simple no-ready truthfulness instead of staying in the generic "black screen" bucket.

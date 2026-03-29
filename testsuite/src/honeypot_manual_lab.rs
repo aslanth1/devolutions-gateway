@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{Read as _, Write as _};
@@ -1075,6 +1075,8 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub gfx_filter_summary: Option<ManualLabSessionGfxFilterSummary>,
     #[serde(default)]
+    pub fastpath_warning_summary: Option<ManualLabSessionFastPathWarningSummary>,
+    #[serde(default)]
     pub gfx_warning_summary: Option<ManualLabSessionGfxWarningSummary>,
     #[serde(default)]
     pub black_screen_branch: ManualLabSessionBlackScreenBranch,
@@ -1203,6 +1205,53 @@ pub struct ManualLabSessionGfxFilterSummary {
     pub cached_tile_count: u64,
     #[serde(default)]
     pub codec_context_surface_count: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabFastPathWarningEvidence {
+    #[default]
+    Uncertain,
+    KnownNoise,
+    CandidateRootCause,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionFastPathWarningSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub total_warning_count: u64,
+    #[serde(default)]
+    pub with_session_id_count: u64,
+    #[serde(default)]
+    pub without_session_id_count: u64,
+    #[serde(default)]
+    pub process_server_frame_error_count: u64,
+    #[serde(default)]
+    pub invalid_rdp_frame_prefix_count: u64,
+    #[serde(default)]
+    pub before_source_ready_count: u64,
+    #[serde(default)]
+    pub after_source_ready_count: u64,
+    #[serde(default)]
+    pub before_stream_ready_count: u64,
+    #[serde(default)]
+    pub after_stream_ready_count: u64,
+    #[serde(default)]
+    pub known_noise_count: u64,
+    #[serde(default)]
+    pub candidate_root_cause_count: u64,
+    #[serde(default)]
+    pub uncertain_count: u64,
+    #[serde(default)]
+    pub known_noise_warn_codes: Vec<String>,
+    #[serde(default)]
+    pub candidate_root_cause_warn_codes: Vec<String>,
+    #[serde(default)]
+    pub uncertain_warn_codes: Vec<String>,
+    #[serde(default)]
+    pub overall_evidence: ManualLabFastPathWarningEvidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4137,6 +4186,7 @@ fn parse_http_status_code(status: &str) -> Option<u16> {
 }
 
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_FASTPATH_WARNING_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS: [&str; 11] = [
     "playback.bootstrap.requested",
     "playback.bootstrap.request_result",
@@ -4155,6 +4205,150 @@ const MANUAL_LAB_PLAYBACK_BOOTSTRAP_UPDATE_EVENTS: [&str; 3] = [
     "playback.update.wrapped_gfx.first",
     "playback.update.none",
 ];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManualLabFastPathWarningEvent {
+    session_id: Option<String>,
+    warn_code: String,
+    observed_at_unix_ms: Option<u64>,
+}
+
+fn parse_manual_lab_fastpath_warning_line(line: &str) -> Option<ManualLabFastPathWarningEvent> {
+    if !line.contains("Passive FastPath observer") {
+        return None;
+    }
+
+    let warn_code = parse_manual_lab_log_field(line, "warn_code")
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            if line.contains("failed to process server frame") {
+                Some("fastpath_process_server_frame_error".to_owned())
+            } else if line.contains("dropped an invalid RDP frame prefix") {
+                Some("fastpath_invalid_rdp_frame_prefix".to_owned())
+            } else {
+                None
+            }
+        })?;
+    let session_id = parse_manual_lab_log_field(line, "session_id")
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && *value != "none" && *value != "unbound")
+        .map(ToOwned::to_owned);
+
+    Some(ManualLabFastPathWarningEvent {
+        session_id,
+        warn_code,
+        observed_at_unix_ms: parse_manual_lab_log_prefix_timestamp_unix_ms(line),
+    })
+}
+
+fn parse_manual_lab_fastpath_warning_events(
+    proxy_stdout_log: &Path,
+) -> anyhow::Result<Vec<ManualLabFastPathWarningEvent>> {
+    if !proxy_stdout_log.exists() {
+        return Ok(Vec::new());
+    }
+
+    let log = fs::read_to_string(proxy_stdout_log).with_context(|| format!("read {}", proxy_stdout_log.display()))?;
+    Ok(log.lines().filter_map(parse_manual_lab_fastpath_warning_line).collect())
+}
+
+fn build_manual_lab_fastpath_warning_summary(
+    events: &[ManualLabFastPathWarningEvent],
+    unattributed_warning_count: u64,
+    correlation: &ManualLabSessionPlaybackReadyCorrelation,
+    aligned_ready_baseline_warn_codes: &BTreeSet<String>,
+) -> Option<ManualLabSessionFastPathWarningSummary> {
+    if events.is_empty() && unattributed_warning_count == 0 {
+        return None;
+    }
+
+    let mut summary = ManualLabSessionFastPathWarningSummary {
+        schema_version: MANUAL_LAB_FASTPATH_WARNING_SCHEMA_VERSION,
+        with_session_id_count: events
+            .iter()
+            .filter(|event| event.session_id.is_some())
+            .count()
+            .try_into()
+            .expect("with-session fastpath warning count should fit in u64"),
+        without_session_id_count: unattributed_warning_count,
+        ..Default::default()
+    };
+
+    let mut known_noise_warn_codes = BTreeSet::new();
+    let mut candidate_root_cause_warn_codes = BTreeSet::new();
+    let mut uncertain_warn_codes = BTreeSet::new();
+
+    for event in events {
+        summary.total_warning_count = summary.total_warning_count.saturating_add(1);
+
+        match event.warn_code.as_str() {
+            "fastpath_process_server_frame_error" => {
+                summary.process_server_frame_error_count = summary.process_server_frame_error_count.saturating_add(1);
+            }
+            "fastpath_invalid_rdp_frame_prefix" => {
+                summary.invalid_rdp_frame_prefix_count = summary.invalid_rdp_frame_prefix_count.saturating_add(1);
+            }
+            _ => {}
+        }
+
+        if let Some(observed_at_unix_ms) = event.observed_at_unix_ms {
+            if let Some(source_ready_at_unix_ms) = correlation.source_ready_at_unix_ms {
+                if observed_at_unix_ms < source_ready_at_unix_ms {
+                    summary.before_source_ready_count = summary.before_source_ready_count.saturating_add(1);
+                } else {
+                    summary.after_source_ready_count = summary.after_source_ready_count.saturating_add(1);
+                }
+            } else {
+                summary.before_source_ready_count = summary.before_source_ready_count.saturating_add(1);
+            }
+
+            if let Some(stream_ready_at_unix_ms) = correlation.session_stream_ready_emitted_at_unix_ms {
+                if observed_at_unix_ms < stream_ready_at_unix_ms {
+                    summary.before_stream_ready_count = summary.before_stream_ready_count.saturating_add(1);
+                } else {
+                    summary.after_stream_ready_count = summary.after_stream_ready_count.saturating_add(1);
+                }
+            } else {
+                summary.before_stream_ready_count = summary.before_stream_ready_count.saturating_add(1);
+            }
+        }
+
+        let is_known_noise = aligned_ready_baseline_warn_codes.contains(&event.warn_code);
+        let is_candidate_root_cause = !is_known_noise
+            && correlation.verdict != ManualLabPlaybackReadyVerdict::AlignedReady
+            && event.observed_at_unix_ms.is_some();
+
+        if is_known_noise {
+            summary.known_noise_count = summary.known_noise_count.saturating_add(1);
+            known_noise_warn_codes.insert(event.warn_code.clone());
+        } else if is_candidate_root_cause {
+            summary.candidate_root_cause_count = summary.candidate_root_cause_count.saturating_add(1);
+            candidate_root_cause_warn_codes.insert(event.warn_code.clone());
+        } else {
+            summary.uncertain_count = summary.uncertain_count.saturating_add(1);
+            uncertain_warn_codes.insert(event.warn_code.clone());
+        }
+    }
+
+    summary.total_warning_count = summary.total_warning_count.saturating_add(unattributed_warning_count);
+    if unattributed_warning_count > 0 {
+        summary.uncertain_count = summary.uncertain_count.saturating_add(unattributed_warning_count);
+        uncertain_warn_codes.insert("unattributed_fastpath_warning".to_owned());
+    }
+
+    summary.known_noise_warn_codes = known_noise_warn_codes.into_iter().collect();
+    summary.candidate_root_cause_warn_codes = candidate_root_cause_warn_codes.into_iter().collect();
+    summary.uncertain_warn_codes = uncertain_warn_codes.into_iter().collect();
+    summary.overall_evidence = if summary.candidate_root_cause_count > 0 {
+        ManualLabFastPathWarningEvidence::CandidateRootCause
+    } else if summary.total_warning_count > 0 && summary.uncertain_count == 0 {
+        ManualLabFastPathWarningEvidence::KnownNoise
+    } else {
+        ManualLabFastPathWarningEvidence::Uncertain
+    };
+
+    Some(summary)
+}
 
 fn build_manual_lab_playback_bootstrap_timeline(
     mut events: Vec<ManualLabSessionPlaybackBootstrapEvent>,
@@ -4892,7 +5086,14 @@ fn persist_black_screen_evidence(
     let playback_bootstrap_timelines = parse_manual_lab_playback_bootstrap_timelines(&state.proxy.stdout_log)?;
     let ready_trace_events = parse_manual_lab_ready_trace_events(&state.proxy.stdout_log)?;
     let gfx_filter_summaries = parse_manual_lab_gfx_filter_summaries(&state.proxy.stdout_log)?;
+    let fastpath_warning_events = parse_manual_lab_fastpath_warning_events(&state.proxy.stdout_log)?;
     let gfx_warning_summaries = parse_manual_lab_gfx_warning_summaries(&state.proxy.stdout_log)?;
+    let unattributed_fastpath_warning_count = fastpath_warning_events
+        .iter()
+        .filter(|event| event.session_id.is_none())
+        .count()
+        .try_into()
+        .expect("unattributed fastpath warning count should fit in u64");
     let session_evidence = state
         .sessions
         .iter()
@@ -4910,6 +5111,11 @@ fn persist_black_screen_evidence(
                 session.stream_probe_observed_at_unix_ms,
             );
             let gfx_filter_summary = gfx_filter_summaries.get(&session.session_id).cloned();
+            let fastpath_warnings = fastpath_warning_events
+                .iter()
+                .filter(|event| event.session_id.as_deref() == Some(session.session_id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
             let gfx_warning_summary = gfx_warning_summaries.get(&session.session_id).cloned();
 
             (
@@ -4917,13 +5123,19 @@ fn persist_black_screen_evidence(
                 playback_bootstrap_timeline,
                 playback_ready_correlation,
                 gfx_filter_summary,
+                fastpath_warnings,
                 gfx_warning_summary,
             )
         })
         .collect::<Vec<_>>();
+    let aligned_ready_fastpath_warn_codes = session_evidence
+        .iter()
+        .filter(|(_, _, correlation, _, _, _)| correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
+        .flat_map(|(_, _, _, _, fastpath_warnings, _)| fastpath_warnings.iter().map(|event| event.warn_code.clone()))
+        .collect::<BTreeSet<_>>();
     let aligned_ready_warning_summaries = session_evidence
         .iter()
-        .filter_map(|(_, _, correlation, _, gfx_warning_summary)| {
+        .filter_map(|(_, _, correlation, _, _, gfx_warning_summary)| {
             (correlation.verdict == ManualLabPlaybackReadyVerdict::AlignedReady)
                 .then_some(gfx_warning_summary.clone())
                 .flatten()
@@ -4940,8 +5152,15 @@ fn persist_black_screen_evidence(
                 playback_bootstrap_timeline,
                 playback_ready_correlation,
                 gfx_filter_summary,
+                fastpath_warnings,
                 gfx_warning_summary,
             )| {
+                let fastpath_warning_summary = build_manual_lab_fastpath_warning_summary(
+                    &fastpath_warnings,
+                    unattributed_fastpath_warning_count,
+                    &playback_ready_correlation,
+                    &aligned_ready_fastpath_warn_codes,
+                );
                 let black_screen_branch = build_manual_lab_black_screen_branch(
                     &playback_bootstrap_timeline,
                     &playback_ready_correlation,
@@ -4969,6 +5188,7 @@ fn persist_black_screen_evidence(
                     playback_bootstrap_timeline,
                     playback_ready_correlation,
                     gfx_filter_summary,
+                    fastpath_warning_summary,
                     gfx_warning_summary,
                     black_screen_branch,
                 }
@@ -5120,6 +5340,7 @@ fn now_unix_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
     use std::time::Duration;
@@ -5130,16 +5351,18 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        ManualLabBlackScreenBranchVerdict, ManualLabEvidenceConfidence, ManualLabPlaybackBootstrapVerdict,
-        ManualLabPlaybackReadyVerdict, ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary,
-        ManualLabSessionPlaybackBootstrapEvent, ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode,
-        association_token, build_manual_lab_black_screen_branch, build_manual_lab_gfx_warning_baseline,
-        build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
-        build_session_records, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
+        ManualLabBlackScreenBranchVerdict, ManualLabEvidenceConfidence, ManualLabFastPathWarningEvent,
+        ManualLabFastPathWarningEvidence, ManualLabPlaybackBootstrapVerdict, ManualLabPlaybackReadyVerdict,
+        ManualLabSessionGfxFilterSummary, ManualLabSessionGfxWarningSummary, ManualLabSessionPlaybackBootstrapEvent,
+        ManualLabSessionReadyTraceEvent, ManualLabXfreerdpGraphicsMode, association_token,
+        build_manual_lab_black_screen_branch, build_manual_lab_fastpath_warning_summary,
+        build_manual_lab_gfx_warning_baseline, build_manual_lab_playback_bootstrap_timeline,
+        build_manual_lab_playback_ready_correlation, build_session_records,
+        discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
         evaluate_manual_lab_source_manifest_candidate, manual_lab_manifest_path, manual_lab_service_ready_timeout,
-        parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
-        parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_ready_trace_line,
-        parse_proc_stat_process_state, xfreerdp_driver_args,
+        parse_manual_lab_fastpath_warning_line, parse_manual_lab_gfx_filter_summary_line,
+        parse_manual_lab_gfx_warning_summary_line, parse_manual_lab_playback_bootstrap_trace_line,
+        parse_manual_lab_ready_trace_line, parse_proc_stat_process_state, xfreerdp_driver_args,
     };
 
     fn bootstrap_event(seq: u64, event: &str, status: &str) -> ManualLabSessionPlaybackBootstrapEvent {
@@ -5364,6 +5587,121 @@ mod tests {
                     observed_at_unix_ms: Some(1_774_735_201_000),
                 }
             ))
+        );
+    }
+
+    #[test]
+    fn manual_lab_parses_fastpath_warning_lines() {
+        let session_id = "11111111-2222-3333-4444-555555555555";
+        let line = format!(
+            "2026-03-28T22:00:02.000000Z  WARN ThreadId(42) session_id={session_id} warn_code=fastpath_process_server_frame_error warn_category=fastpath warn_phase=frame_process error=\"oops\" Passive FastPath observer failed to process server frame"
+        );
+
+        let parsed = parse_manual_lab_fastpath_warning_line(&line);
+        assert_eq!(
+            parsed,
+            Some(ManualLabFastPathWarningEvent {
+                session_id: Some(session_id.to_owned()),
+                warn_code: "fastpath_process_server_frame_error".to_owned(),
+                observed_at_unix_ms: Some(1_774_735_202_000),
+            })
+        );
+    }
+
+    #[test]
+    fn manual_lab_parses_legacy_fastpath_warning_lines() {
+        let line = "2026-03-28T22:00:03.000000Z  WARN ThreadId(42) buffer_len=9 prefix_hex=0300000902f08068 error=invalid-length Passive FastPath observer dropped an invalid RDP frame prefix";
+
+        let parsed = parse_manual_lab_fastpath_warning_line(line);
+        assert_eq!(
+            parsed,
+            Some(ManualLabFastPathWarningEvent {
+                session_id: None,
+                warn_code: "fastpath_invalid_rdp_frame_prefix".to_owned(),
+                observed_at_unix_ms: Some(1_774_735_203_000),
+            })
+        );
+    }
+
+    #[test]
+    fn manual_lab_classifies_fastpath_known_noise_from_aligned_ready_baseline() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![
+            bootstrap_event(1, "playback.bootstrap.requested", "ok"),
+            bootstrap_event(2, "playback.bootstrap.request_result", "ok"),
+            bootstrap_event(3, "playback.chunk.appended.first", "ok"),
+        ]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            vec![
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "recording.connected.first".to_owned(),
+                    source: "recording-manager".to_owned(),
+                    ts_unix_ms: 1_700_000_000_040,
+                    observed_at_unix_ms: Some(1_700_000_000_040),
+                },
+                ManualLabSessionReadyTraceEvent {
+                    schema_version: 1,
+                    event: "session.stream.ready.emitted".to_owned(),
+                    source: "honeypot".to_owned(),
+                    ts_unix_ms: 1_700_000_000_050,
+                    observed_at_unix_ms: Some(1_700_000_000_050),
+                },
+            ],
+            Some("ready"),
+            Some(200),
+            Some(1_700_000_000_060),
+        );
+        let summary = build_manual_lab_fastpath_warning_summary(
+            &[ManualLabFastPathWarningEvent {
+                session_id: Some("session-a".to_owned()),
+                warn_code: "fastpath_process_server_frame_error".to_owned(),
+                observed_at_unix_ms: Some(1_700_000_000_030),
+            }],
+            0,
+            &correlation,
+            &BTreeSet::from(["fastpath_process_server_frame_error".to_owned()]),
+        )
+        .expect("summary should exist");
+
+        assert_eq!(summary.total_warning_count, 1);
+        assert_eq!(summary.known_noise_count, 1);
+        assert_eq!(summary.candidate_root_cause_count, 0);
+        assert_eq!(summary.uncertain_count, 0);
+        assert_eq!(summary.overall_evidence, ManualLabFastPathWarningEvidence::KnownNoise);
+    }
+
+    #[test]
+    fn manual_lab_classifies_novel_pre_ready_fastpath_warning_as_candidate_root_cause() {
+        let timeline = build_manual_lab_playback_bootstrap_timeline(vec![bootstrap_event(
+            1,
+            "playback.bootstrap.requested",
+            "ok",
+        )]);
+        let correlation = build_manual_lab_playback_ready_correlation(
+            &timeline,
+            Vec::new(),
+            Some("unavailable"),
+            Some(503),
+            Some(1_700_000_000_010),
+        );
+        let summary = build_manual_lab_fastpath_warning_summary(
+            &[ManualLabFastPathWarningEvent {
+                session_id: Some("session-b".to_owned()),
+                warn_code: "fastpath_unseen_warning".to_owned(),
+                observed_at_unix_ms: Some(1_700_000_000_005),
+            }],
+            0,
+            &correlation,
+            &BTreeSet::new(),
+        )
+        .expect("summary should exist");
+
+        assert_eq!(summary.known_noise_count, 0);
+        assert_eq!(summary.candidate_root_cause_count, 1);
+        assert_eq!(
+            summary.overall_evidence,
+            ManualLabFastPathWarningEvidence::CandidateRootCause
         );
     }
 

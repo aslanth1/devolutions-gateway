@@ -425,10 +425,11 @@ struct PlaybackObserver {
 
 impl PlaybackObserver {
     fn new(session_id: uuid::Uuid) -> Self {
+        let session_id = session_id.to_string();
         Self {
-            fastpath: ObserverFastPath::new(),
+            fastpath: ObserverFastPath::new(session_id.clone()),
             wrapped_gfx: WrappedGfxExtractor::new(),
-            gfx: GfxFilter::new(GfxConfig::default(), session_id.to_string()),
+            gfx: GfxFilter::new(GfxConfig::default(), session_id),
         }
     }
 
@@ -499,6 +500,7 @@ struct FastPathSurfaceUpdate {
 
 #[derive(Default)]
 struct ObserverFastPath {
+    session_id: String,
     server_pdu_buffer: Vec<u8>,
     desktop_size: Option<(u16, u16)>,
     io_channel_id: Option<u16>,
@@ -507,15 +509,18 @@ struct ObserverFastPath {
 }
 
 impl ObserverFastPath {
-    fn new() -> Self {
-        Self::default()
+    fn new(session_id: String) -> Self {
+        Self {
+            session_id,
+            ..Self::default()
+        }
     }
 
     fn observe_server_packet(&mut self, data: &[u8]) -> Vec<FastPathSurfaceUpdate> {
         let mut updates = Vec::new();
         self.server_pdu_buffer.extend_from_slice(data);
 
-        while let Some((frame, action)) = Self::take_next_rdp_frame(&mut self.server_pdu_buffer) {
+        while let Some((frame, action)) = self.take_next_rdp_frame() {
             match action {
                 ironrdp_pdu::Action::X224 => self.observe_x224_frame(&frame),
                 ironrdp_pdu::Action::FastPath => updates.extend(self.observe_fastpath_frame(&frame)),
@@ -568,6 +573,7 @@ impl ObserverFastPath {
         self.image = Some(DecodedImage::new(PixelFormat::RgbA32, width, height));
 
         info!(
+            session_id = %self.session_id,
             io_channel_id = share_control_ctx.channel_id,
             desktop_width = width,
             desktop_height = height,
@@ -588,6 +594,10 @@ impl ObserverFastPath {
             Ok(processor_updates) => processor_updates,
             Err(error) => {
                 warn!(
+                    session_id = %self.session_id,
+                    warn_code = "fastpath_process_server_frame_error",
+                    warn_category = "fastpath",
+                    warn_phase = "frame_process",
                     error = format!("{error:#}"),
                     frame_len = frame.len(),
                     "Passive FastPath observer failed to process server frame",
@@ -625,30 +635,34 @@ impl ObserverFastPath {
         surface_updates
     }
 
-    fn take_next_rdp_frame(buffer: &mut Vec<u8>) -> Option<(Vec<u8>, ironrdp_pdu::Action)> {
-        match ironrdp_pdu::find_size(buffer) {
+    fn take_next_rdp_frame(&mut self) -> Option<(Vec<u8>, ironrdp_pdu::Action)> {
+        match ironrdp_pdu::find_size(&self.server_pdu_buffer) {
             Ok(Some(info)) => {
-                if buffer.len() < info.length {
+                if self.server_pdu_buffer.len() < info.length {
                     return None;
                 }
 
-                let frame = buffer.drain(..info.length).collect();
+                let frame = self.server_pdu_buffer.drain(..info.length).collect();
                 Some((frame, info.action))
             }
             Ok(None) => None,
             Err(error) => {
-                let prefix_len = buffer.len().min(16);
-                let prefix = buffer[..prefix_len]
+                let prefix_len = self.server_pdu_buffer.len().min(16);
+                let prefix = self.server_pdu_buffer[..prefix_len]
                     .iter()
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>();
                 warn!(
-                    buffer_len = buffer.len(),
+                    session_id = %self.session_id,
+                    warn_code = "fastpath_invalid_rdp_frame_prefix",
+                    warn_category = "fastpath",
+                    warn_phase = "frame_boundary",
+                    buffer_len = self.server_pdu_buffer.len(),
                     prefix_hex = %prefix,
                     error = %error,
                     "Passive FastPath observer dropped an invalid RDP frame prefix",
                 );
-                buffer.clear();
+                self.server_pdu_buffer.clear();
                 None
             }
         }
