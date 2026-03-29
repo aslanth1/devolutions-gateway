@@ -5602,26 +5602,7 @@ const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
   video.autoplay = true;
   video.muted = true;
 
-  try {
-    await video.play();
-  } catch (_error) {}
-
-  await waitForEvent(video, "loadedmetadata", 2000);
-
-  if (seekToMs !== null && Number.isFinite(seekToMs)) {
-    const seekSeconds = Math.max(0, seekToMs / 1000);
-    const clampedSeekSeconds =
-      Number.isFinite(video.duration) && video.duration > 0
-        ? Math.min(seekSeconds, Math.max(video.duration - 0.05, 0))
-        : seekSeconds;
-
-    try {
-      video.currentTime = clampedSeekSeconds;
-    } catch (_error) {}
-
-    await sleep(500);
-  }
-
+  // Keep the DOM marker deterministic even if a media await stalls.
   const handle = setInterval(sample, intervalMs);
 
   setTimeout(() => {
@@ -5642,6 +5623,26 @@ const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
       verdict: firstVisibleAt !== null ? "visible" : (firstSparseAt !== null ? "sparse" : "black")
     });
   }, maxMs);
+
+  try {
+    await video.play();
+  } catch (_error) {}
+
+  await waitForEvent(video, "loadedmetadata", 2000);
+
+  if (seekToMs !== null && Number.isFinite(seekToMs)) {
+    const seekSeconds = Math.max(0, seekToMs / 1000);
+    const clampedSeekSeconds =
+      Number.isFinite(video.duration) && video.duration > 0
+        ? Math.min(seekSeconds, Math.max(video.duration - 0.05, 0))
+        : seekSeconds;
+
+    try {
+      video.currentTime = clampedSeekSeconds;
+    } catch (_error) {}
+
+    await sleep(500);
+  }
 })();
 </script>
 "#;

@@ -18,13 +18,12 @@
 - The Askama templatization phase is done and the dashboard root now auto-loads the only live session into the focus panel.
 - The truthful dashboard-root proof is now in hand: both control and variant dashboard runs reached `/jet/jrec/play`, `/jet/jrec/telemetry`, `/jet/jrec/shadow`, and a steady `active_live` browser window from `/?token=...`.
 - The dashboard-fragment self-retry patch is now a kept stability fix: the clean rerun restored `player-websocket.ndjson`, reached steady `active_live` on both lanes, preserved a valid same-day control compare, and matched repeated operator-visible video.
-- The remaining blocker is the downstream corruption or alignment seam, because both latest retained runs still archive `producer_ready_corruption_unresolved` even after the dashboard path boots correctly.
-- The latest aligned-probe replay attempt was discarded and reverted even though both lanes preserved steady live playback: replaying after the aligned seek regressed the artifact from parseable `all_black` to `analysis_failed`, and both probe DOM captures stayed at `<pre id="out">starting</pre>`.
-- The required 3-agent council converged on a smaller follow-up hypothesis: arm the aligned probe's final JSON marker before awaited media setup so `--dump-dom` cannot strand the DOM at `starting`.
-- The council-selected finalizer-ordering patch was discarded and reverted in this cycle because the control lane hung in `manual-lab-up` with `credential injection: TLS upgrade with client failed: tls handshake eof`, wrote no recordings directory, and never reached a truthful compare seam.
-- The latest one-shot IronRDP retry attempt was also discarded and reverted: the variant completed the run, but the retry path never fired, so the cycle did not prove that the early `read frame by hint / not enough bytes` failure is timing-related.
-- The recent failure streak is now `4 / 3`, so council remains available, but the next cycle first needs to decide whether the new control-lane hang is transient or reproducible.
-- Keep the next cycle bounded to corruption or alignment analysis rather than more dashboard bootstrap churn.
+- The BS-48 early-finalizer patch is now a kept probe fix: the clean control plus variant rerun preserved a truthful same-day compare and made the aligned browser-time artifact parseable again.
+- The new retained BS-48 baseline roots are `manual-lab-563588fc582b44b48d93df537135ba3a` for control and `manual-lab-b4342575f7364976a8212d8d0f3ec512` for the `ironrdp-rdpgfx` variant.
+- Those retained roots now archive `run_verdict_summary.verdict=usable_playback` on both lanes, with control `sparse_pixels` at browser time and variant `visible_frame` at browser time.
+- The previous control-only `manual-lab-025e...` hang is now treated as transient evaluator noise, not the active blocker on this seam.
+- The recent failure streak resets to `0 / 3`.
+- Keep the next cycle bounded to confirming and operationalizing the new truthful aligned-artifact baseline rather than reopening dashboard bootstrap churn or speculative driver changes.
 - Treat the favicon `404` and `/events` `ERR_INCOMPLETE_CHUNKED_ENCODING` reconnect noise as secondary unless a concrete change shows they block player mount or token refresh.
 
 ## Evaluator
@@ -37,17 +36,12 @@
 
 ## Active Tasks
 
-- [ ] Use the latest truthful dashboard proof roots `manual-lab-b3f101cc771d46d9951760ff2a973c0c` and `manual-lab-76c2cab5e7cc42d89652a163d189c272` as the retained playback baseline while investigating the remaining `producer_ready_corruption_unresolved` state.
-- [ ] Treat the discarded control root `manual-lab-8c3684c5394e482f9b835ade62900a61` and variant root `manual-lab-1c54d41020d140918440c2f3b0db6d80` as a truthful but insufficient-evidence cycle: both lanes stayed live, yet the aligned probe DOM never advanced past `starting`.
-- [ ] Treat the discarded control root `manual-lab-025eac93b0474801b6d97a237244770d` as a hung-control cycle: it failed closed on `missing_ready_alignment`, wrote no recordings directory, and ended with `credential injection: TLS upgrade with client failed: tls handshake eof` before any variant run existed.
+- [ ] Use the retained BS-48 roots `manual-lab-563588fc582b44b48d93df537135ba3a` and `manual-lab-b4342575f7364976a8212d8d0f3ec512` as the truthful aligned-artifact baseline.
+- [ ] Compare the retained BS-48 `usable_playback` roots against the earlier kept dashboard baseline `manual-lab-b3f101cc771d46d9951760ff2a973c0c` and `manual-lab-76c2cab5e7cc42d89652a163d189c272` to explain exactly which aligned-artifact fields let the reducer stop failing closed on corruption.
 - [ ] Treat the discarded control root `manual-lab-33e6f627d26c4798af721b4cc4633359` and variant root `manual-lab-9887cb8379224000ab6b1dc970b99855` as a failed probe cycle, not as a new playback baseline.
 - [ ] Treat the discarded control root `manual-lab-30d51d70fd764fd7ad2fefa8a19ed30b` and variant root `manual-lab-c737a499646040b69fa718b8f8e2b74d` as an unexercised-retry cycle, not as proof that the early IronRDP failure is fixed.
-- [ ] Compare the retained control `sparse_pixels` versus variant `visible_frame` dashboard artifacts from the truthful run to explain why the reducer still collapses both lanes into the same unresolved corruption verdict.
-- [ ] Compare the new control `both_black` versus variant `browser_visible_artifact_black` dashboard artifacts from the kept retry run to see whether the player retry changed decode timing without changing the final verdict code.
-- [ ] Explain why the aligned probe regresses from parseable `all_black` to `analysis_failed` when the async seek path replays, with special attention to headless Chrome `--dump-dom` timing versus the final JSON marker write.
-- [ ] Decide whether the `manual-lab-025e...` control-lane hang is transient evaluator noise or a patch-related regression before retrying the council-selected finalizer-ordering hypothesis.
-- [ ] Decide whether the recurring `ironrdp-rdpgfx` `read frame by hint / not enough bytes` failure during `manual-lab-up` is true flake or needs a more directly observable timing experiment before retrying another artifact-probe tweak.
-- [ ] Reuse the now-recorded council conclusion about early DOM finalization if the next truthful compare seam survives long enough to judge that hypothesis.
+- [ ] Decide whether the next bounded cycle should lock in the BS-48 ordering with a narrower test or return to higher-level black-screen analysis now that the reducer-owned verdict surface is truthful again.
+- [ ] Decide whether the recurring `ironrdp-rdpgfx` `read frame by hint / not enough bytes` failure during `manual-lab-up` is true flake or needs a more directly observable timing experiment before touching the aligned probe again.
 - [ ] Keep the direct `/jet/jrec/play` page and the dashboard-root page as paired controls for future playback experiments.
 - [ ] Continue moving inline page JavaScript out of the template only when that cleanup directly helps the remaining corruption or alignment investigation.
 - [ ] Reuse the previously working direct-attach and `/session/{id}` findings from `target/run-20260329-043514/` and `target/run-20260329T180229Z/`.
@@ -64,7 +58,7 @@
 - [ ] Do not judge an aligned artifact probe tweak on a run that already lost steady browser visibility telemetry or player-websocket evidence.
 - [ ] Do not keep recovery logic that never fired during the evaluator; unexercised retries are not proof.
 - [ ] Do not keep aligned-probe replay tweaks that turn a parseable black verdict into `analysis_failed`; losing the JSON marker is a regression even when the live page shows video.
-- [ ] Do not treat a council-picked patch as validated if the evaluator dies earlier on control-lane instability and never writes recording artifacts.
+- [ ] Do not treat a council-picked patch as validated if the evaluator dies earlier on control-lane instability and never writes recording artifacts, but do retry the same bounded patch on a clean seam before discarding the underlying hypothesis forever.
 - [ ] Do not stop at markup-only frontend tests that assert iframe presence; the next proof must cover real player boot.
 - [ ] Do not lock in the missing-keyframe explanation as fact until the post-templatization playback investigation proves it.
 - [ ] Do not spend the next cycle on new driver variants, codec labels, or keyframe speculation unless the dashboard fix fails while the direct player page keeps working.
