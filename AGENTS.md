@@ -1103,11 +1103,13 @@ Current evidence after the repeated `BS-20` control proof: slot 3 no longer sits
 
 #### 6v.3 Driver And Non-RDPGFX Experiment Matrix
 
-- [ ] `BS-21` Keep `xfreerdp` as the control lane until a variant beats it on evidence.
+- [x] `BS-21` Keep `xfreerdp` as the control lane until a variant beats it on evidence.
 Pass when: all early experiments compare back to a current same-day `xfreerdp` control run, and no alternate driver becomes the implied default before the promotion criteria are met.
+Current evidence after the first driver-matrix comparison: the same-day `xfreerdp` control run `manual-lab-6a5e89848b704e4caab24d3bf159eced` remained the baseline for the explicit `xfreerdp-no-gfx` variant run `manual-lab-94c93a88756f44d9be454e76590bb400`, and the default control lane was not promoted or replaced.
 
-- [ ] `BS-22` Try an explicit `xfreerdp` control-minus lane that attempts to suppress `rdpgfx` without changing unrelated behavior.
+- [x] `BS-22` Try an explicit `xfreerdp` control-minus lane that attempts to suppress `rdpgfx` without changing unrelated behavior.
 Pass when: the experiment is opt-in, the exact flags are recorded, the control run exists first, and the result proves whether reduced graphics negotiation changes the black-screen outcome.
+Current evidence after the first control-minus proof: the opt-in lane recorded `driver_lane=xfreerdp-no-gfx` with exact `-gfx` flags in `driver_args`, but `rdpegfx_pdu_count` stayed nonzero on all three sessions (`1300`, `1215`, `801`). The third slot moved from control-lane `negotiation_loss` to teardown-refreshed `player_loss`, which proves the `-gfx` variant does not actually suppress RDPEGFX in this path and changes the failure branch instead of cleanly removing graphics negotiation.
 
 - [ ] `BS-23` Try an explicit `xfreerdp` `Rfx` or similarly scoped codec variant only after the control-minus result is archived.
 Pass when: the exact codec flags, lane identity, and comparison result are recorded so the repo never reopens a vague "maybe `Rfx` helps" experiment without evidence.
