@@ -1149,6 +1149,8 @@ pub struct ManualLabSessionDriverEvidence {
     #[serde(default)]
     pub playback_artifact_timeline_summary: ManualLabSessionPlaybackArtifactTimelineSummary,
     #[serde(default)]
+    pub recording_visibility_summary: ManualLabSessionRecordingVisibilitySummary,
+    #[serde(default)]
     pub gfx_filter_summary: Option<ManualLabSessionGfxFilterSummary>,
     #[serde(default)]
     pub fastpath_warning_summary: Option<ManualLabSessionFastPathWarningSummary>,
@@ -1397,6 +1399,51 @@ pub struct ManualLabSessionPlaybackArtifactTimelineSummary {
     pub recording_artifact_latest_modified_at_unix_ms: Option<u64>,
     #[serde(default)]
     pub timeline_gaps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabRecordingVisibilityVerdict {
+    VisibleFrame,
+    SparsePixels,
+    AllBlack,
+    MissingArtifact,
+    AnalysisUnavailable,
+    AnalysisFailed,
+    #[default]
+    Inconclusive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabSessionRecordingVisibilitySummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabRecordingVisibilityVerdict,
+    #[serde(default)]
+    pub confidence: ManualLabEvidenceConfidence,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub analysis_backend: Option<String>,
+    #[serde(default)]
+    pub recording_path: Option<PathBuf>,
+    #[serde(default)]
+    pub video_duration_ms: Option<u64>,
+    #[serde(default)]
+    pub ready_state: Option<u8>,
+    #[serde(default)]
+    pub sample_window_ms: u64,
+    #[serde(default)]
+    pub sample_interval_ms: u64,
+    #[serde(default)]
+    pub sampled_frame_count: u64,
+    #[serde(default)]
+    pub first_visible_offset_ms: Option<u64>,
+    #[serde(default)]
+    pub first_sparse_offset_ms: Option<u64>,
+    #[serde(default)]
+    pub max_non_black_ratio_per_mille: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4674,6 +4721,90 @@ const MANUAL_LAB_FASTPATH_WARNING_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYER_WEBSOCKET_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYER_PLAYBACK_PATH_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_PLAYBACK_ARTIFACT_TIMELINE_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_RECORDING_VISIBILITY_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS: u64 = 8_000;
+const MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS: u64 = 250;
+const MANUAL_LAB_RECORDING_VISIBILITY_VISIBLE_THRESHOLD_PER_MILLE: u16 = 10;
+const MANUAL_LAB_RECORDING_VISIBILITY_SPARSE_THRESHOLD_PER_MILLE: u16 = 1;
+
+const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
+<meta charset="utf-8">
+<body>
+<pre id="out">starting</pre>
+<video id="v" muted playsinline autoplay></video>
+<canvas id="c" width="64" height="36" style="display:none"></canvas>
+<script>
+(async () => {
+  const out = document.getElementById("out");
+  const video = document.getElementById("v");
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  const src = __SOURCE_FILE_URL__;
+  const maxMs = __MAX_MS__;
+  const intervalMs = __INTERVAL_MS__;
+  const visibleThreshold = __VISIBLE_THRESHOLD__;
+  const sparseThreshold = __SPARSE_THRESHOLD__;
+  const samples = [];
+  let firstVisibleAt = null;
+  let firstSparseAt = null;
+
+  function sample() {
+    if (video.readyState < 2) {
+      return;
+    }
+
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let nonBlack = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] > 8 || data[i + 1] > 8 || data[i + 2] > 8) {
+        nonBlack++;
+      }
+    }
+
+    const ratio = nonBlack / (data.length / 4);
+    samples.push({ t: video.currentTime, ratio });
+
+    if (firstVisibleAt === null && ratio > visibleThreshold) {
+      firstVisibleAt = video.currentTime;
+    }
+
+    if (firstSparseAt === null && ratio > sparseThreshold) {
+      firstSparseAt = video.currentTime;
+    }
+  }
+
+  video.src = src;
+  video.autoplay = true;
+  video.muted = true;
+
+  try {
+    await video.play();
+  } catch (_error) {}
+
+  const handle = setInterval(sample, intervalMs);
+
+  setTimeout(() => {
+    clearInterval(handle);
+
+    try {
+      sample();
+    } catch (_error) {}
+
+    const maxRatio = samples.reduce((max, sample) => Math.max(max, sample.ratio), 0);
+    out.textContent = JSON.stringify({
+      readyState: video.readyState,
+      duration: video.duration,
+      sampled: samples.length,
+      maxRatio,
+      firstVisibleAt,
+      firstSparseAt,
+      verdict: firstVisibleAt !== null ? "visible" : (firstSparseAt !== null ? "sparse" : "black")
+    });
+  }, maxMs);
+})();
+</script>
+"#;
 const MANUAL_LAB_PLAYBACK_BOOTSTRAP_REQUIRED_EVENTS: [&str; 11] = [
     "playback.bootstrap.requested",
     "playback.bootstrap.request_result",
@@ -4750,6 +4881,301 @@ struct ManualLabRecordingArtifactSample {
     path: PathBuf,
     size_bytes: u64,
     modified_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManualLabRecordingVisibilityProbePayload {
+    #[serde(default)]
+    ready_state: Option<u8>,
+    #[serde(default)]
+    duration: Option<f64>,
+    #[serde(default)]
+    sampled: u64,
+    #[serde(default)]
+    max_ratio: Option<f64>,
+    #[serde(default)]
+    first_visible_at: Option<f64>,
+    #[serde(default)]
+    first_sparse_at: Option<f64>,
+    #[serde(default)]
+    verdict: Option<String>,
+    #[serde(default)]
+    timeout: bool,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+fn render_manual_lab_recording_visibility_probe_html(recording_file_url: &str) -> anyhow::Result<String> {
+    let source_file_url =
+        serde_json::to_string(recording_file_url).context("serialize recording visibility file URL")?;
+    Ok(MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE
+        .replace("__SOURCE_FILE_URL__", &source_file_url)
+        .replace(
+            "__MAX_MS__",
+            &MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS.to_string(),
+        )
+        .replace(
+            "__INTERVAL_MS__",
+            &MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS.to_string(),
+        )
+        .replace(
+            "__VISIBLE_THRESHOLD__",
+            &format!(
+                "{:.6}",
+                f64::from(MANUAL_LAB_RECORDING_VISIBILITY_VISIBLE_THRESHOLD_PER_MILLE) / 1000.0
+            ),
+        )
+        .replace(
+            "__SPARSE_THRESHOLD__",
+            &format!(
+                "{:.6}",
+                f64::from(MANUAL_LAB_RECORDING_VISIBILITY_SPARSE_THRESHOLD_PER_MILLE) / 1000.0
+            ),
+        ))
+}
+
+fn extract_manual_lab_recording_visibility_probe_json(dom: &str) -> anyhow::Result<&str> {
+    let marker = r#"<pre id="out">"#;
+    let start = dom
+        .find(marker)
+        .map(|index| index + marker.len())
+        .context("find recording visibility probe output marker")?;
+    let end = dom[start..]
+        .find("</pre>")
+        .map(|index| start + index)
+        .context("find recording visibility probe closing tag")?;
+    Ok(dom[start..end].trim())
+}
+
+pub fn parse_manual_lab_recording_visibility_probe_result_from_dom(dom: &str) -> anyhow::Result<Value> {
+    let json = extract_manual_lab_recording_visibility_probe_json(dom)?;
+    serde_json::from_str(json).context("parse recording visibility probe JSON")
+}
+
+fn parse_manual_lab_recording_visibility_probe_payload(
+    dom: &str,
+) -> anyhow::Result<ManualLabRecordingVisibilityProbePayload> {
+    let json = extract_manual_lab_recording_visibility_probe_json(dom)?;
+    serde_json::from_str(json).context("parse recording visibility probe payload")
+}
+
+fn manual_lab_local_file_url(path: &Path) -> anyhow::Result<String> {
+    let absolute = path
+        .canonicalize()
+        .with_context(|| format!("canonicalize {}", path.display()))?;
+    Ok(format!("file://{}", absolute.display()))
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn manual_lab_recording_visibility_ratio_to_per_mille(ratio: Option<f64>) -> Option<u16> {
+    let ratio = ratio?;
+    if !ratio.is_finite() || ratio.is_sign_negative() {
+        return None;
+    }
+
+    let per_mille = (ratio * 1000.0).round().clamp(0.0, 1000.0);
+    Some(per_mille as u16)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn manual_lab_recording_visibility_seconds_to_ms(seconds: Option<f64>) -> Option<u64> {
+    let seconds = seconds?;
+    if !seconds.is_finite() || seconds.is_sign_negative() {
+        return None;
+    }
+
+    Some((seconds * 1000.0).round() as u64)
+}
+
+fn write_manual_lab_recording_visibility_summary_artifact(
+    output_path: &Path,
+    summary: &ManualLabSessionRecordingVisibilitySummary,
+) -> anyhow::Result<()> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+
+    fs::write(
+        output_path,
+        serde_json::to_vec_pretty(summary).context("serialize recording visibility summary")?,
+    )
+    .with_context(|| format!("write {}", output_path.display()))
+}
+
+fn run_manual_lab_recording_visibility_probe(
+    chrome_binary: &Path,
+    session_root: &Path,
+    recording_artifact_path: &Path,
+) -> anyhow::Result<ManualLabRecordingVisibilityProbePayload> {
+    let probe_page_path = session_root.join("recording-visibility-probe.html");
+    let probe_dom_path = session_root.join("recording-visibility-probe.dom.html");
+    let profile_dir = session_root.join("recording-visibility-chrome-profile");
+    if profile_dir.exists() {
+        fs::remove_dir_all(&profile_dir).with_context(|| format!("remove {}", profile_dir.display()))?;
+    }
+    fs::create_dir_all(&profile_dir).with_context(|| format!("create {}", profile_dir.display()))?;
+
+    let recording_file_url = manual_lab_local_file_url(recording_artifact_path)?;
+    let probe_page = render_manual_lab_recording_visibility_probe_html(&recording_file_url)?;
+    fs::write(&probe_page_path, probe_page).with_context(|| format!("write {}", probe_page_path.display()))?;
+
+    let probe_page_url = manual_lab_local_file_url(&probe_page_path)?;
+    let output = Command::new(chrome_binary)
+        .args([
+            OsString::from("--headless=new"),
+            OsString::from("--disable-gpu"),
+            OsString::from("--allow-file-access-from-files"),
+            OsString::from("--autoplay-policy=no-user-gesture-required"),
+            OsString::from("--mute-audio"),
+            OsString::from("--no-first-run"),
+            OsString::from("--no-default-browser-check"),
+            OsString::from(format!(
+                "--virtual-time-budget={}",
+                MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS + 2_000
+            )),
+            OsString::from(format!("--user-data-dir={}", profile_dir.display())),
+            OsString::from("--dump-dom"),
+            OsString::from(probe_page_url),
+        ])
+        .output()
+        .with_context(|| format!("run {}", chrome_binary.display()))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    fs::write(&probe_dom_path, &stdout).with_context(|| format!("write {}", probe_dom_path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else {
+            format!("{} exited with status {}", chrome_binary.display(), output.status)
+        };
+        bail!("{detail}");
+    }
+
+    parse_manual_lab_recording_visibility_probe_payload(&stdout)
+}
+
+fn build_manual_lab_recording_visibility_summary(
+    recordings_root: &Path,
+    session_id: &str,
+    chrome_binary: Option<&Path>,
+    teardown_started_at_unix_ms: Option<u64>,
+) -> ManualLabSessionRecordingVisibilitySummary {
+    let session_root = recordings_root.join(session_id);
+    let recording_artifact_path = session_root.join("recording-0.webm");
+    let mut summary = ManualLabSessionRecordingVisibilitySummary {
+        schema_version: MANUAL_LAB_RECORDING_VISIBILITY_SCHEMA_VERSION,
+        sample_window_ms: MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_WINDOW_MS,
+        sample_interval_ms: MANUAL_LAB_RECORDING_VISIBILITY_SAMPLE_INTERVAL_MS,
+        recording_path: recording_artifact_path
+            .is_file()
+            .then_some(recording_artifact_path.clone()),
+        ..Default::default()
+    };
+
+    let summary_artifact_path = session_root.join("recording-visibility-summary.json");
+    let should_write_summary_artifact = teardown_started_at_unix_ms.is_some() && session_root.exists();
+
+    if !recording_artifact_path.is_file() {
+        summary.verdict = ManualLabRecordingVisibilityVerdict::MissingArtifact;
+        summary.confidence = ManualLabEvidenceConfidence::High;
+        summary.detail = Some("recording-0.webm was not present for visibility analysis".to_owned());
+        if should_write_summary_artifact {
+            let _ = write_manual_lab_recording_visibility_summary_artifact(&summary_artifact_path, &summary);
+        }
+        return summary;
+    }
+
+    if teardown_started_at_unix_ms.is_none() {
+        summary.verdict = ManualLabRecordingVisibilityVerdict::AnalysisUnavailable;
+        summary.confidence = ManualLabEvidenceConfidence::Low;
+        summary.detail = Some("recording visibility analysis is deferred until teardown".to_owned());
+        if should_write_summary_artifact {
+            let _ = write_manual_lab_recording_visibility_summary_artifact(&summary_artifact_path, &summary);
+        }
+        return summary;
+    }
+
+    let Some(chrome_binary) = chrome_binary else {
+        summary.verdict = ManualLabRecordingVisibilityVerdict::AnalysisUnavailable;
+        summary.confidence = ManualLabEvidenceConfidence::Low;
+        summary.detail = Some("no Chrome-family browser was available for recording visibility analysis".to_owned());
+        if should_write_summary_artifact {
+            let _ = write_manual_lab_recording_visibility_summary_artifact(&summary_artifact_path, &summary);
+        }
+        return summary;
+    };
+
+    summary.analysis_backend =
+        probe_command_version(chrome_binary, &["--version"]).or_else(|| Some(chrome_binary.display().to_string()));
+
+    match run_manual_lab_recording_visibility_probe(
+        chrome_binary,
+        &recordings_root.join(session_id),
+        &recording_artifact_path,
+    ) {
+        Ok(payload) => {
+            summary.ready_state = payload.ready_state;
+            summary.video_duration_ms = manual_lab_recording_visibility_seconds_to_ms(payload.duration);
+            summary.sampled_frame_count = payload.sampled;
+            summary.first_visible_offset_ms = manual_lab_recording_visibility_seconds_to_ms(payload.first_visible_at);
+            summary.first_sparse_offset_ms = manual_lab_recording_visibility_seconds_to_ms(payload.first_sparse_at);
+            summary.max_non_black_ratio_per_mille =
+                manual_lab_recording_visibility_ratio_to_per_mille(payload.max_ratio);
+
+            if let Some(error) = payload.error {
+                summary.verdict = ManualLabRecordingVisibilityVerdict::AnalysisFailed;
+                summary.confidence = ManualLabEvidenceConfidence::Low;
+                summary.detail = Some(format!("recording visibility probe reported error: {error}"));
+            } else {
+                summary.verdict = match payload.verdict.as_deref() {
+                    Some("visible") => ManualLabRecordingVisibilityVerdict::VisibleFrame,
+                    Some("sparse") => ManualLabRecordingVisibilityVerdict::SparsePixels,
+                    Some("black") => ManualLabRecordingVisibilityVerdict::AllBlack,
+                    _ => ManualLabRecordingVisibilityVerdict::Inconclusive,
+                };
+                summary.confidence = if payload.sampled > 0 {
+                    ManualLabEvidenceConfidence::High
+                } else {
+                    ManualLabEvidenceConfidence::Low
+                };
+                summary.detail = Some(match summary.verdict {
+                    ManualLabRecordingVisibilityVerdict::VisibleFrame => format!(
+                        "headless chrome found a visible non-black frame within {}ms",
+                        summary.first_visible_offset_ms.unwrap_or_default()
+                    ),
+                    ManualLabRecordingVisibilityVerdict::SparsePixels => format!(
+                        "headless chrome only found sparse non-black pixels within {}ms (max={} per-mille)",
+                        summary.first_sparse_offset_ms.unwrap_or_default(),
+                        summary.max_non_black_ratio_per_mille.unwrap_or_default()
+                    ),
+                    ManualLabRecordingVisibilityVerdict::AllBlack => format!(
+                        "headless chrome kept recording-0.webm below the sparse threshold for {} sampled frames",
+                        summary.sampled_frame_count
+                    ),
+                    ManualLabRecordingVisibilityVerdict::Inconclusive => {
+                        "recording visibility probe completed without a stable verdict".to_owned()
+                    }
+                    ManualLabRecordingVisibilityVerdict::MissingArtifact
+                    | ManualLabRecordingVisibilityVerdict::AnalysisUnavailable
+                    | ManualLabRecordingVisibilityVerdict::AnalysisFailed => {
+                        "recording visibility probe ended without a usable result".to_owned()
+                    }
+                });
+            }
+        }
+        Err(error) => {
+            summary.verdict = ManualLabRecordingVisibilityVerdict::AnalysisFailed;
+            summary.confidence = ManualLabEvidenceConfidence::Low;
+            summary.detail = Some(format!("{error:#}"));
+        }
+    }
+
+    if should_write_summary_artifact {
+        let _ = write_manual_lab_recording_visibility_summary_artifact(&summary_artifact_path, &summary);
+    }
+    summary
 }
 
 fn parse_manual_lab_player_websocket_events(
@@ -6179,6 +6605,7 @@ fn persist_black_screen_evidence(
     let gfx_filter_summaries = parse_manual_lab_gfx_filter_summaries(&state.proxy.stdout_log)?;
     let fastpath_warning_events = parse_manual_lab_fastpath_warning_events(&state.proxy.stdout_log)?;
     let gfx_warning_summaries = parse_manual_lab_gfx_warning_summaries(&state.proxy.stdout_log)?;
+    let recording_visibility_chrome = state.chrome_binary.clone().or_else(|| resolve_chrome_binary().ok());
     let unattributed_fastpath_warning_count = fastpath_warning_events
         .iter()
         .filter(|event| event.session_id.is_none())
@@ -6275,6 +6702,12 @@ fn persist_black_screen_evidence(
                     &evidence.artifacts.recordings_root,
                     &session.session_id,
                 );
+                let recording_visibility_summary = build_manual_lab_recording_visibility_summary(
+                    &evidence.artifacts.recordings_root,
+                    &session.session_id,
+                    recording_visibility_chrome.as_deref(),
+                    evidence.teardown_started_at_unix_ms,
+                );
                 let fastpath_warning_summary = build_manual_lab_fastpath_warning_summary(
                     &fastpath_warnings,
                     unattributed_fastpath_warning_count,
@@ -6310,6 +6743,7 @@ fn persist_black_screen_evidence(
                     player_websocket_summary,
                     player_playback_path_summary,
                     playback_artifact_timeline_summary,
+                    recording_visibility_summary,
                     gfx_filter_summary,
                     fastpath_warning_summary: Some(fastpath_warning_summary),
                     gfx_warning_summary,

@@ -12,7 +12,8 @@ use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
 };
 use testsuite::honeypot_manual_lab::{
-    ManualLabProxyConfigOptions, active_state_path, honeypot_manual_lab_assert_cmd, render_manual_lab_proxy_config,
+    ManualLabProxyConfigOptions, active_state_path, honeypot_manual_lab_assert_cmd,
+    parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_proxy_config,
     render_three_host_trusted_image_manifest,
 };
 use testsuite::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path};
@@ -153,6 +154,18 @@ fn manual_lab_proxy_config_injects_loopback_runtime_overrides() {
         Some(&json!("/tmp/manual-lab/backend-credentials.json"))
     );
     assert!(document.pointer("/ProvisionerPrivateKeyData/Value").is_some());
+}
+
+#[test]
+fn manual_lab_parses_recording_visibility_probe_dom() {
+    let dom = r#"<!DOCTYPE html><html><body><pre id="out">{"readyState":4,"duration":478.84,"sampled":33,"maxRatio":0.006076388888888889,"firstVisibleAt":null,"firstSparseAt":0.751268,"verdict":"sparse"}</pre></body></html>"#;
+
+    let parsed =
+        parse_manual_lab_recording_visibility_probe_result_from_dom(dom).expect("parse recording visibility probe DOM");
+
+    assert_eq!(parsed.get("readyState"), Some(&json!(4)));
+    assert_eq!(parsed.get("sampled"), Some(&json!(33)));
+    assert_eq!(parsed.get("verdict"), Some(&json!("sparse")));
 }
 
 #[test]
