@@ -289,6 +289,7 @@ impl PlaybackObserver {
 
     fn log_summary(&self, session_id: uuid::Uuid) {
         self.wrapped_gfx.log_summary(session_id);
+        self.gfx.log_summary(session_id);
     }
 }
 

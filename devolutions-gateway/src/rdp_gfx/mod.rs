@@ -156,6 +156,23 @@ impl GfxFilter {
         }))
     }
 
+    pub fn log_summary(&self, session_id: uuid::Uuid) {
+        let emitted_surface_update_count = self
+            .surface_update_count
+            .saturating_add(u64::try_from(self.pending_surface_updates.len()).unwrap_or(u64::MAX));
+        info!(
+            session_id = %session_id,
+            server_chunk_count = self.server_chunk_count,
+            rdpegfx_pdu_count = self.rdpegfx_pdu_count,
+            emitted_surface_update_count,
+            pending_surface_update_count = self.pending_surface_updates.len(),
+            surface_count = self.surfaces.len(),
+            cached_tile_count = self.surface_cache.len(),
+            codec_context_surface_count = self.surface_codec_contexts.len(),
+            "GFX filter summary"
+        );
+    }
+
     fn queue_surface_update(
         &mut self,
         source: &'static str,

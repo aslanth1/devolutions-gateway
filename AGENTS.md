@@ -1037,13 +1037,13 @@ Do not rerun a disproven row unless the next run bundle names the new code, new 
 - [x] `BS-00` Freeze the black-screen investigation structure before changing playback lanes again.
 Pass when: this matrix exists in `AGENTS.md`, later playback work references `BS-*` rows instead of inventing ad hoc experiments, and the winning plan remains instrumentation-first with `xfreerdp` as the control lane until evidence says otherwise.
 
-- [ ] `BS-01` Record a baseline evidence stamp before each new troubleshooting branch.
+- [x] `BS-01` Record a baseline evidence stamp before each new troubleshooting branch.
 Pass when: every run bundle records `git rev`, row IDs exercised, driver lane, `DGW_HONEYPOT_*` env values, session count, artifact root, and whether the run is control or variant before code or config changes are evaluated.
 
-- [ ] `BS-02` Keep the `xfreerdp` control lane aligned with the pre-experiment HEAD defaults.
+- [x] `BS-02` Keep the `xfreerdp` control lane aligned with the pre-experiment HEAD defaults.
 Pass when: the default manual-lab `xfreerdp` invocation matches the pre-experiment argument set unless an explicit opt-in env changes it, and no prior `Rfx`, `-gfx`, or similar experiment silently becomes the new baseline.
 
-- [ ] `BS-03` Record the exact driver command line and binary identity for every run.
+- [x] `BS-03` Record the exact driver command line and binary identity for every run.
 Pass when: each run bundle preserves the driver executable path, version or build identity, full arguments, and any wrapper env so later comparisons never rely on memory or shell history.
 
 - [ ] `BS-04` Reset and verify a clean pre-experiment state before black-screen runs.
