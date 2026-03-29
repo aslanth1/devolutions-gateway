@@ -56,6 +56,10 @@ use ironrdp_session::{ActiveStage, ActiveStageOutput};
 #[cfg(unix)]
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 #[cfg(unix)]
+use testsuite::honeypot_manual_ironrdp_rdpgfx::{
+    ManualLabIronRdpRdpgfxProbe, ManualLabIronRdpRdpgfxProbeSummary, manual_lab_ironrdp_rdpgfx_dvc_client,
+};
+#[cfg(unix)]
 use tokio_rustls::rustls;
 #[cfg(unix)]
 use x509_cert::der::Decode as _;
@@ -72,6 +76,7 @@ struct Args {
     session_id: String,
     lifetime_secs: u64,
     security: Option<String>,
+    rdpgfx: bool,
 }
 
 #[cfg(unix)]
@@ -112,6 +117,7 @@ fn parse_run_args() -> anyhow::Result<Args> {
     let mut session_id = None;
     let mut lifetime_secs = 300u64;
     let mut security = None;
+    let mut rdpgfx = false;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -139,6 +145,7 @@ fn parse_run_args() -> anyhow::Result<Args> {
                     .context("parse --lifetime-secs")?;
             }
             "--security" => security = Some(args.next().context("missing value for --security")?),
+            "--rdpgfx" => rdpgfx = true,
             "--version" => {
                 println!("honeypot-manual-irondrdp-driver {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
@@ -157,6 +164,7 @@ fn parse_run_args() -> anyhow::Result<Args> {
         session_id: session_id.context("missing --session-id")?,
         lifetime_secs,
         security,
+        rdpgfx,
     })
 }
 
@@ -197,10 +205,13 @@ fn run(args: Args) -> anyhow::Result<()> {
 
     let mut framed = Framed::new(tcp_stream);
     let mut connector = connector::ClientConnector::new(config, client_addr);
+    if args.rdpgfx {
+        connector.attach_static_channel(manual_lab_ironrdp_rdpgfx_dvc_client());
+    }
 
     eprintln!(
-        "ironrdp driver phase=connect.begin session_id={} no_rdpgfx_client=true",
-        args.session_id
+        "ironrdp driver phase=connect.begin session_id={} no_rdpgfx_client={}",
+        args.session_id, !args.rdpgfx
     );
     let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("begin connection")?;
     let initial_stream = framed.into_inner_no_leftover();
@@ -266,9 +277,19 @@ fn run(args: Args) -> anyhow::Result<()> {
                     graphics_update_count += 1;
                 }
                 ActiveStageOutput::Terminate(reason) => {
+                    let rdpgfx_summary = active_stage_rdpgfx_summary(&mut active_stage);
                     eprintln!(
-                        "ironrdp driver phase=terminate session_id={} received_frames={} graphics_updates={} reason={reason:?}",
-                        args.session_id, received_frames, graphics_update_count
+                        "ironrdp driver phase=terminate session_id={} received_frames={} graphics_updates={} reason={reason:?} rdpgfx_caps_advertise={} rdpgfx_caps_confirm={} rdpgfx_start_frame={} rdpgfx_end_frame={} rdpgfx_frame_ack={} rdpgfx_wire_to_surface1={} rdpgfx_wire_to_surface2={}",
+                        args.session_id,
+                        received_frames,
+                        graphics_update_count,
+                        rdpgfx_summary.capabilities_advertise_count,
+                        rdpgfx_summary.capabilities_confirm_count,
+                        rdpgfx_summary.start_frame_count,
+                        rdpgfx_summary.end_frame_count,
+                        rdpgfx_summary.frame_ack_count,
+                        rdpgfx_summary.wire_to_surface1_count,
+                        rdpgfx_summary.wire_to_surface2_count
                     );
                     return Ok(());
                 }
@@ -277,9 +298,19 @@ fn run(args: Args) -> anyhow::Result<()> {
                 | ActiveStageOutput::PointerPosition { .. }
                 | ActiveStageOutput::PointerBitmap(_) => {}
                 ActiveStageOutput::DeactivateAll(_) => {
+                    let rdpgfx_summary = active_stage_rdpgfx_summary(&mut active_stage);
                     eprintln!(
-                        "ironrdp driver phase=deactivate-all session_id={} received_frames={} graphics_updates={}",
-                        args.session_id, received_frames, graphics_update_count
+                        "ironrdp driver phase=deactivate-all session_id={} received_frames={} graphics_updates={} rdpgfx_caps_advertise={} rdpgfx_caps_confirm={} rdpgfx_start_frame={} rdpgfx_end_frame={} rdpgfx_frame_ack={} rdpgfx_wire_to_surface1={} rdpgfx_wire_to_surface2={}",
+                        args.session_id,
+                        received_frames,
+                        graphics_update_count,
+                        rdpgfx_summary.capabilities_advertise_count,
+                        rdpgfx_summary.capabilities_confirm_count,
+                        rdpgfx_summary.start_frame_count,
+                        rdpgfx_summary.end_frame_count,
+                        rdpgfx_summary.frame_ack_count,
+                        rdpgfx_summary.wire_to_surface1_count,
+                        rdpgfx_summary.wire_to_surface2_count
                     );
                     return Ok(());
                 }
@@ -287,12 +318,32 @@ fn run(args: Args) -> anyhow::Result<()> {
         }
     }
 
+    let rdpgfx_summary = active_stage_rdpgfx_summary(&mut active_stage);
     eprintln!(
-        "ironrdp driver phase=lifetime.exit session_id={} received_frames={} graphics_updates={} lifetime_secs={}",
-        args.session_id, received_frames, graphics_update_count, args.lifetime_secs
+        "ironrdp driver phase=lifetime.exit session_id={} received_frames={} graphics_updates={} lifetime_secs={} rdpgfx_caps_advertise={} rdpgfx_caps_confirm={} rdpgfx_start_frame={} rdpgfx_end_frame={} rdpgfx_frame_ack={} rdpgfx_wire_to_surface1={} rdpgfx_wire_to_surface2={}",
+        args.session_id,
+        received_frames,
+        graphics_update_count,
+        args.lifetime_secs,
+        rdpgfx_summary.capabilities_advertise_count,
+        rdpgfx_summary.capabilities_confirm_count,
+        rdpgfx_summary.start_frame_count,
+        rdpgfx_summary.end_frame_count,
+        rdpgfx_summary.frame_ack_count,
+        rdpgfx_summary.wire_to_surface1_count,
+        rdpgfx_summary.wire_to_surface2_count
     );
 
     Ok(())
+}
+
+#[cfg(unix)]
+fn active_stage_rdpgfx_summary(active_stage: &mut ActiveStage) -> ManualLabIronRdpRdpgfxProbeSummary {
+    active_stage
+        .get_dvc::<ManualLabIronRdpRdpgfxProbe>()
+        .and_then(|dvc| dvc.channel_processor_downcast_ref::<ManualLabIronRdpRdpgfxProbe>())
+        .map(ManualLabIronRdpRdpgfxProbe::summary)
+        .unwrap_or_default()
 }
 
 #[cfg(unix)]

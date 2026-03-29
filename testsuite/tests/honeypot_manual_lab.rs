@@ -5,12 +5,19 @@ use std::path::{Path, PathBuf};
 #[cfg(unix)]
 use std::process::Command;
 
+use ironrdp_core::{Decode, ReadCursor, encode_vec};
+use ironrdp_dvc::{DvcEncode, DvcProcessor};
+use ironrdp_pdu::rdp::vc::dvc::gfx::{
+    CapabilitiesConfirmPdu, CapabilitiesV10Flags, CapabilitySet, ClientPdu as RdpgfxClientPdu, EndFramePdu,
+    ServerPdu as RdpgfxServerPdu, StartFramePdu, Timestamp,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
 };
+use testsuite::honeypot_manual_ironrdp_rdpgfx::ManualLabIronRdpRdpgfxProbe;
 use testsuite::honeypot_manual_lab::{
     ManualLabBlackScreenArtifactContractSummary, ManualLabBlackScreenBranchVerdict,
     ManualLabBlackScreenControlRunComparisonVerdict, ManualLabBlackScreenDoNotRetryLedgerVerdict,
@@ -26,10 +33,15 @@ use testsuite::honeypot_manual_lab::{
     build_manual_lab_black_screen_control_run_comparison_summary, build_manual_lab_black_screen_do_not_retry_ledger,
     build_manual_lab_black_screen_run_verdict_summary, build_manual_lab_multi_session_ready_path_summary,
     build_manual_lab_ready_path_sustain_summary, honeypot_manual_lab_assert_cmd,
-    parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_proxy_config,
-    render_manual_lab_xfreerdp_lane_contract, render_three_host_trusted_image_manifest,
+    parse_manual_lab_recording_visibility_probe_result_from_dom, render_manual_lab_ironrdp_lane_contract,
+    render_manual_lab_proxy_config, render_manual_lab_xfreerdp_lane_contract, render_three_host_trusted_image_manifest,
 };
 use testsuite::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path};
+
+fn decode_rdpgfx_client_pdu(message: &dyn DvcEncode) -> RdpgfxClientPdu {
+    let encoded = encode_vec(message).expect("encode rdpgfx client message");
+    RdpgfxClientPdu::decode(&mut ReadCursor::new(&encoded)).expect("decode rdpgfx client message")
+}
 
 fn create_fake_manual_lab_webplayer_bundle(root: &Path) -> PathBuf {
     let player_root = root.join("recording-player");
@@ -905,6 +917,82 @@ fn manual_lab_rfx_lane_records_exact_codec_flags_and_same_day_control_provenance
         assert!(slot.driver_args.iter().any(|arg| arg == "/dynamic-resolution"));
         assert!(slot.driver_args.iter().any(|arg| arg == "/gfx:RFX"));
     }
+}
+
+#[test]
+fn manual_lab_ironrdp_gfx_lane_contract_sets_rdpgfx_flag() {
+    let lane_contract = render_manual_lab_ironrdp_lane_contract(
+        "642e76af-caa3-487b-b3ed-8abe864a7bc9",
+        3389,
+        3391,
+        Some("nla"),
+        "ironrdp-gfx",
+        Some("LAB"),
+    )
+    .expect("render IronRDP gfx lane contract");
+
+    assert_eq!(lane_contract.driver_lane, "ironrdp-rdpgfx");
+    assert!(lane_contract.driver_args.iter().any(|arg| arg == "--rdpgfx"));
+}
+
+#[test]
+fn manual_lab_ironrdp_rdpgfx_probe_advertises_caps_and_acknowledges_frames() {
+    let mut probe = ManualLabIronRdpRdpgfxProbe::new();
+
+    let start_messages = probe.start(7).expect("start rdpgfx probe");
+    assert_eq!(start_messages.len(), 1);
+    let start_pdu = decode_rdpgfx_client_pdu(start_messages[0].as_ref());
+    match start_pdu {
+        RdpgfxClientPdu::CapabilitiesAdvertise(capabilities) => {
+            assert!(capabilities.0.contains(&CapabilitySet::V10 {
+                flags: CapabilitiesV10Flags::empty(),
+            }));
+        }
+        other => panic!("unexpected rdpgfx start pdu: {other:?}"),
+    }
+
+    let confirm = RdpgfxServerPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu(CapabilitySet::V10 {
+        flags: CapabilitiesV10Flags::empty(),
+    }));
+    let confirm_payload = encode_vec(&confirm).expect("encode capabilities confirm");
+    let confirm_responses = probe
+        .process(7, &confirm_payload)
+        .expect("process capabilities confirm");
+    assert!(confirm_responses.is_empty());
+
+    let start_frame = RdpgfxServerPdu::StartFrame(StartFramePdu {
+        timestamp: Timestamp {
+            milliseconds: 0,
+            seconds: 0,
+            minutes: 0,
+            hours: 0,
+        },
+        frame_id: 41,
+    });
+    let start_frame_payload = encode_vec(&start_frame).expect("encode start frame");
+    let start_frame_responses = probe.process(7, &start_frame_payload).expect("process start frame");
+    assert!(start_frame_responses.is_empty());
+
+    let end_frame = RdpgfxServerPdu::EndFrame(EndFramePdu { frame_id: 41 });
+    let end_frame_payload = encode_vec(&end_frame).expect("encode end frame");
+    let end_frame_responses = probe.process(7, &end_frame_payload).expect("process end frame");
+    assert_eq!(end_frame_responses.len(), 1);
+    let ack_pdu = decode_rdpgfx_client_pdu(end_frame_responses[0].as_ref());
+    match ack_pdu {
+        RdpgfxClientPdu::FrameAcknowledge(ack) => {
+            assert_eq!(ack.frame_id, 41);
+            assert_eq!(ack.total_frames_decoded, 1);
+        }
+        other => panic!("unexpected rdpgfx ack pdu: {other:?}"),
+    }
+
+    let summary = probe.summary();
+    assert_eq!(summary.capabilities_advertise_count, 1);
+    assert_eq!(summary.capabilities_confirm_count, 1);
+    assert_eq!(summary.start_frame_count, 1);
+    assert_eq!(summary.end_frame_count, 1);
+    assert_eq!(summary.frame_ack_count, 1);
+    assert!(probe.protocol_marker_detected());
 }
 
 #[test]

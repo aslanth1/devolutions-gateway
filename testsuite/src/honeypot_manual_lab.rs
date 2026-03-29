@@ -77,6 +77,7 @@ const HONEYPOT_INTEROP_DRIVER_KIND_ENV: &str = "DGW_HONEYPOT_INTEROP_DRIVER_KIND
 const HONEYPOT_INTEROP_XFREERDP_PATH_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_PATH";
 const HONEYPOT_INTEROP_XFREERDP_GFX_MODE_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_GFX_MODE";
 const HONEYPOT_INTEROP_XFREERDP_RDPGFX_ENV: &str = "DGW_HONEYPOT_INTEROP_XFREERDP_RDPGFX";
+const MANUAL_LAB_IRONRDP_RDPGFX_DRIVER_FLAG: &str = "--rdpgfx";
 const GATEWAY_WEBAPP_PATH_ENV: &str = "DGATEWAY_WEBAPP_PATH";
 const GATEWAY_WEBPLAYER_PATH_ENV: &str = "DGATEWAY_WEBPLAYER_PATH";
 const MANUAL_LAB_SOURCE_MANIFEST_DISCOVERY_PATHS: [&str; 2] = [
@@ -899,6 +900,7 @@ struct ManualLabInteropConfig {
 enum ManualLabDriverKind {
     Xfreerdp,
     IronRdpNoGfx,
+    IronRdpGfx,
 }
 
 impl ManualLabDriverKind {
@@ -906,8 +908,9 @@ impl ManualLabDriverKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "xfreerdp" | "control" => Ok(Self::Xfreerdp),
             "ironrdp" | "ironrdp-no-gfx" | "ironrdp-no-rdpgfx" => Ok(Self::IronRdpNoGfx),
+            "ironrdp-gfx" | "ironrdp-rdpgfx" => Ok(Self::IronRdpGfx),
             other => Err(anyhow::anyhow!(
-                "unsupported driver kind {other:?}; expected xfreerdp or ironrdp-no-gfx"
+                "unsupported driver kind {other:?}; expected xfreerdp, ironrdp-no-gfx, or ironrdp-gfx"
             )),
         }
     }
@@ -916,6 +919,7 @@ impl ManualLabDriverKind {
         match self {
             Self::Xfreerdp => "xfreerdp",
             Self::IronRdpNoGfx => "ironrdp",
+            Self::IronRdpGfx => "ironrdp",
         }
     }
 
@@ -923,6 +927,7 @@ impl ManualLabDriverKind {
         match self {
             Self::Xfreerdp => "xfreerdp",
             Self::IronRdpNoGfx => "ironrdp-no-gfx",
+            Self::IronRdpGfx => "ironrdp-gfx",
         }
     }
 
@@ -930,6 +935,7 @@ impl ManualLabDriverKind {
         match self {
             Self::Xfreerdp => xfreerdp_graphics_mode.lane_name(),
             Self::IronRdpNoGfx => "ironrdp-no-rdpgfx",
+            Self::IronRdpGfx => "ironrdp-rdpgfx",
         }
     }
 
@@ -937,6 +943,7 @@ impl ManualLabDriverKind {
         match self {
             Self::Xfreerdp => xfreerdp_graphics_mode.is_control_lane(),
             Self::IronRdpNoGfx => false,
+            Self::IronRdpGfx => false,
         }
     }
 
@@ -945,7 +952,7 @@ impl ManualLabDriverKind {
     }
 
     fn enforces_single_session_gate(self) -> bool {
-        matches!(self, Self::IronRdpNoGfx)
+        matches!(self, Self::IronRdpNoGfx | Self::IronRdpGfx)
     }
 }
 
@@ -990,6 +997,12 @@ pub struct ManualLabXfreerdpLaneContract {
     pub driver_args: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManualLabIronRdpLaneContract {
+    pub driver_lane: String,
+    pub driver_args: Vec<String>,
+}
+
 pub fn render_manual_lab_xfreerdp_lane_contract(
     association_token: &str,
     proxy_tcp_port: u16,
@@ -1009,6 +1022,36 @@ pub fn render_manual_lab_xfreerdp_lane_contract(
 
     Ok(ManualLabXfreerdpLaneContract {
         driver_lane: graphics_mode.lane_name().to_owned(),
+        driver_args,
+    })
+}
+
+pub fn render_manual_lab_ironrdp_lane_contract(
+    session_id: &str,
+    proxy_tcp_port: u16,
+    guest_rdp_port: u16,
+    rdp_security: Option<&str>,
+    driver_kind_name: &str,
+    rdp_domain: Option<&str>,
+) -> anyhow::Result<ManualLabIronRdpLaneContract> {
+    let driver_kind = ManualLabDriverKind::parse(driver_kind_name)
+        .with_context(|| format!("parse IronRDP driver kind {driver_kind_name:?}"))?;
+    let driver_args = match driver_kind {
+        ManualLabDriverKind::IronRdpNoGfx | ManualLabDriverKind::IronRdpGfx => ironrdp_driver_args(
+            session_id,
+            guest_rdp_port,
+            proxy_tcp_port,
+            rdp_security,
+            &rdp_domain.map(ToOwned::to_owned),
+            matches!(driver_kind, ManualLabDriverKind::IronRdpGfx),
+        ),
+        ManualLabDriverKind::Xfreerdp => {
+            anyhow::bail!("IronRDP lane contract only supports IronRDP driver kinds")
+        }
+    };
+
+    Ok(ManualLabIronRdpLaneContract {
+        driver_lane: driver_kind.lane_name(ManualLabXfreerdpGraphicsMode::Default).to_owned(),
         driver_args,
     })
 }
@@ -3291,7 +3334,7 @@ fn wait_for_services_ready(state: &ManualLabState, service_ready_timeout: Durati
 fn manual_lab_driver_binary(interop: &ManualLabInteropConfig) -> &Path {
     match interop.driver_kind {
         ManualLabDriverKind::Xfreerdp => &interop.xfreerdp_path,
-        ManualLabDriverKind::IronRdpNoGfx => &interop.ironrdp_driver_path,
+        ManualLabDriverKind::IronRdpNoGfx | ManualLabDriverKind::IronRdpGfx => &interop.ironrdp_driver_path,
     }
 }
 
@@ -3311,7 +3354,7 @@ fn spawn_manual_lab_driver(
             session.stderr_log.clone(),
         )
         .with_context(|| format!("spawn xfreerdp driver for session {}", session.session_id)),
-        ManualLabDriverKind::IronRdpNoGfx => spawn_logged_process(
+        ManualLabDriverKind::IronRdpNoGfx | ManualLabDriverKind::IronRdpGfx => spawn_logged_process(
             &interop.ironrdp_driver_path,
             &driver_args.iter().map(OsString::from).collect::<Vec<_>>(),
             &[],
@@ -3336,12 +3379,13 @@ fn manual_lab_driver_args(
             interop.rdp_security.as_deref(),
             interop.xfreerdp_graphics_mode,
         ),
-        ManualLabDriverKind::IronRdpNoGfx => ironrdp_no_gfx_driver_args(
+        ManualLabDriverKind::IronRdpNoGfx | ManualLabDriverKind::IronRdpGfx => ironrdp_driver_args(
             session_id,
             expected_guest_rdp_port,
             proxy_tcp_port,
             interop.rdp_security.as_deref(),
             &interop.rdp_domain,
+            matches!(interop.driver_kind, ManualLabDriverKind::IronRdpGfx),
         ),
     }
 }
@@ -3387,12 +3431,13 @@ fn xfreerdp_driver_args(
     args
 }
 
-fn ironrdp_no_gfx_driver_args(
+fn ironrdp_driver_args(
     session_id: &str,
     expected_guest_rdp_port: u16,
     proxy_tcp_port: u16,
     rdp_security: Option<&str>,
     rdp_domain: &Option<String>,
+    enable_rdpgfx: bool,
 ) -> Vec<String> {
     let association_token = association_token(session_id, &format!("127.0.0.1:{expected_guest_rdp_port}"));
     let mut args = vec![
@@ -3411,6 +3456,10 @@ fn ironrdp_no_gfx_driver_args(
         "--lifetime-secs".to_owned(),
         "300".to_owned(),
     ];
+
+    if enable_rdpgfx {
+        args.push(MANUAL_LAB_IRONRDP_RDPGFX_DRIVER_FLAG.to_owned());
+    }
 
     if let Some(domain) = rdp_domain {
         args.push("--domain".to_owned());
@@ -3845,7 +3894,7 @@ fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateI
             ),
             paths.xfreerdp_path.clone(),
         ),
-        ManualLabDriverKind::IronRdpNoGfx => Tiny11LabRuntimeInput::existing_path(
+        ManualLabDriverKind::IronRdpNoGfx | ManualLabDriverKind::IronRdpGfx => Tiny11LabRuntimeInput::existing_path(
             format!(
                 "{HONEYPOT_INTEROP_DRIVER_KIND_ENV}={} ({})",
                 paths.driver_kind.kind_name(),
@@ -8569,7 +8618,7 @@ mod tests {
         build_manual_lab_playback_bootstrap_timeline, build_manual_lab_playback_ready_correlation,
         build_manual_lab_player_playback_path_summary, build_manual_lab_player_websocket_summary,
         build_session_records, discover_manual_lab_source_manifest_candidates_in_root, display_socket_path,
-        evaluate_manual_lab_source_manifest_candidate, ironrdp_no_gfx_driver_args, manual_lab_manifest_path,
+        evaluate_manual_lab_source_manifest_candidate, ironrdp_driver_args, manual_lab_manifest_path,
         manual_lab_service_ready_timeout, parse_manual_lab_fastpath_warning_line,
         parse_manual_lab_gfx_filter_summary_line, parse_manual_lab_gfx_warning_summary_line,
         parse_manual_lab_playback_bootstrap_trace_line, parse_manual_lab_player_websocket_events,
@@ -10200,16 +10249,21 @@ mod tests {
             ManualLabDriverKind::parse("ironrdp-no-rdpgfx").expect("parse ironrdp-no-rdpgfx"),
             ManualLabDriverKind::IronRdpNoGfx
         );
+        assert_eq!(
+            ManualLabDriverKind::parse("ironrdp-gfx").expect("parse ironrdp-gfx"),
+            ManualLabDriverKind::IronRdpGfx
+        );
     }
 
     #[test]
     fn manual_lab_irondrdp_driver_args_include_association_token() {
-        let args = ironrdp_no_gfx_driver_args(
+        let args = ironrdp_driver_args(
             "642e76af-caa3-487b-b3ed-8abe864a7bc9",
             3391,
             3389,
             Some("nla"),
             &Some("LAB".to_owned()),
+            false,
         );
 
         assert!(args.windows(2).any(|window| window == ["--host", "127.0.0.1"]));
@@ -10221,6 +10275,20 @@ mod tests {
             args.windows(2)
                 .any(|window| window == ["--session-id", "642e76af-caa3-487b-b3ed-8abe864a7bc9"])
         );
+    }
+
+    #[test]
+    fn manual_lab_irondrdp_gfx_driver_args_include_rdpgfx_flag() {
+        let args = ironrdp_driver_args(
+            "642e76af-caa3-487b-b3ed-8abe864a7bc9",
+            3391,
+            3389,
+            Some("nla"),
+            &Some("LAB".to_owned()),
+            true,
+        );
+
+        assert!(args.iter().any(|arg| arg == MANUAL_LAB_IRONRDP_RDPGFX_DRIVER_FLAG));
     }
 
     #[test]

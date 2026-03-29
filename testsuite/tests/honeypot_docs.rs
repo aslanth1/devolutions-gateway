@@ -1137,12 +1137,17 @@ fn honeypot_docs_keep_black_screen_runbook_contract_canonical() {
     assert_contains(
         runbook_path,
         &runbook,
-        "the current sanctioned names are `xfreerdp-control-default`, `xfreerdp-no-gfx`, `xfreerdp-rfx`, `xfreerdp-progressive`, and `ironrdp-no-rdpgfx`.",
+        "the current sanctioned names are `xfreerdp-control-default`, `xfreerdp-no-gfx`, `xfreerdp-rfx`, `xfreerdp-progressive`, `ironrdp-no-rdpgfx`, and `ironrdp-rdpgfx`.",
     );
     assert_contains(
         runbook_path,
         &runbook,
         "The explicit `BS-23` codec lane uses `DGW_HONEYPOT_INTEROP_XFREERDP_GFX_MODE=rfx`, which must emit `driver_lane=xfreerdp-rfx` plus `/dynamic-resolution` and `/gfx:RFX`, and it must still archive a same-day control companion through `DGW_HONEYPOT_BS_CONTROL_ARTIFACT_ROOT` before the result counts.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The explicit `BS-25` IronRDP comparison lane uses `DGW_HONEYPOT_INTEROP_DRIVER_KIND=ironrdp-gfx`, which must emit `driver_lane=ironrdp-rdpgfx`, pass `--rdpgfx` to the repo-owned manual IronRDP driver, and attach the repo-owned rdpgfx DVC probe on `Microsoft::Windows::RDS::Graphics` before the result counts.",
     );
     assert_contains(
         runbook_path,

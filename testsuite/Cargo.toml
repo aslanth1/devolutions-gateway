@@ -50,6 +50,7 @@ honeypot-frontend.path = "../honeypot/frontend"
 ironrdp-blocking = "0.8"
 ironrdp-connector = "0.8"
 ironrdp-core = { version = "0.1", features = ["std"] }
+ironrdp-dvc = "0.5"
 ironrdp-graphics = "0.7"
 ironrdp-pdu = { version = "0.7", features = ["std"] }
 ironrdp-session = "0.8"
