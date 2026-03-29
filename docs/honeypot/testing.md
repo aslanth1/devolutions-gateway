@@ -201,7 +201,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 ## Manual Three-Host Observation Deck
 
 - The sanctioned live operator deck launcher is `cargo run -p testsuite --bin honeypot-manual-lab -- preflight|ensure-artifacts|remember-source-manifest|bootstrap-store|up|status|down`.
-- The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-webplayer-auth-check`, `make manual-lab-webplayer-status`, `make manual-lab-ensure-webplayer`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
+- The repo root `Makefile` provides `make manual-lab-preflight`, `make manual-lab-webplayer-auth-check`, `make manual-lab-webplayer-status`, `make manual-lab-webplayer-validate-bundle`, `make manual-lab-ensure-webplayer`, `make manual-lab-ensure-artifacts`, `make manual-lab-remember-source-manifest`, `make manual-lab-bootstrap-store`, `make manual-lab-bootstrap-store-exec`, `make manual-lab-up`, `make manual-lab-up-no-browser`, `make manual-lab-status`, and `make manual-lab-down` as thin wrappers around that same Rust launcher.
 - For manual self-test on a non-root operator host, the preferred convenience lane is `make manual-lab-selftest` or `make manual-lab-selftest-no-browser`.
 - The granular local aliases `make manual-lab-selftest-ensure-webplayer`, `make manual-lab-selftest-preflight`, `make manual-lab-selftest-preflight-no-browser`, `make manual-lab-selftest-ensure-artifacts`, `make manual-lab-selftest-bootstrap-store`, `make manual-lab-selftest-bootstrap-store-exec`, `make manual-lab-selftest-up`, `make manual-lab-selftest-up-no-browser`, `make manual-lab-selftest-status`, and `make manual-lab-selftest-down` still exist for debugging or stepwise recovery.
 - `make manual-lab-show-profile` is the read-only helper that prints the effective profile, config path, store root, manifest dir, and masked guest-auth state.
@@ -209,9 +209,11 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - `manual-lab-preflight`, `manual-lab-preflight-no-browser`, `manual-lab-ensure-artifacts`, `manual-lab-bootstrap-store`, `manual-lab-bootstrap-store-exec`, `manual-lab-up`, and `manual-lab-up-no-browser` now also inject wrapper defaults `DGW_HONEYPOT_INTEROP_RDP_USERNAME=jf` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD=ChangeMe123!`.
 - Override those wrapper defaults with `MANUAL_LAB_INTEROP_RDP_USERNAME=<value>`, `MANUAL_LAB_INTEROP_RDP_PASSWORD=<value>`, or raw exported `DGW_HONEYPOT_INTEROP_RDP_USERNAME` and `DGW_HONEYPOT_INTEROP_RDP_PASSWORD` when an imported image uses different guest credentials.
 - The same live deck also needs a built recording-player bundle for the gateway-owned `/jet/jrec/play` route.
-- By default the launcher checks for `webapp/dist/recording-player/index.html` and stages it into a temporary `player/` root before spawning the proxy.
+- By default the launcher expects the built bundle root at `webapp/dist/recording-player` and stages it into a temporary `player/` root before spawning the proxy.
+- A valid prebuilt bundle root contains `index.html` and a non-empty `assets/` directory from the Vite production build.
 - Override the source player bundle path with `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` when the build output lives outside the repo default.
 - Run `make manual-lab-webplayer-status` for a read-only report on the selected bundle path, whether it is missing or stale, container-runtime availability, and private-registry scope plus auth readiness.
+- Run `make manual-lab-webplayer-validate-bundle` for a read-only pass or fail check on that selected bundle root before launch.
 - Run `make manual-lab-webplayer-auth-check` when you want to exercise the same scoped-registry and auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.
 - Run `make manual-lab-ensure-webplayer` to build that bundle in the containerized webplayer builder.
 - `make manual-lab-selftest` and `make manual-lab-selftest-no-browser` already run that containerized builder automatically.
@@ -220,7 +222,7 @@ The exact operator bring-up and recovery procedure lives in [runbook.md](runbook
 - If `webapp/pnpm-lock.yaml` references private Devolutions packages, set `MANUAL_LAB_WEBPLAYER_NPMRC=/path/to/.npmrc` or `NPM_CONFIG_USERCONFIG=/path/to/.npmrc`; the containerized builder mounts that file read-only into the build container.
 - That `.npmrc` must both map `@devolutions:registry` to `devolutions.jfrog.io` and include credentials for that host, otherwise the containerized build falls back to `registry.npmjs.org` for private packages such as `@devolutions/icons`.
 - `make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs.
-- If the bundle is still missing after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>`, then rerun `make manual-lab-preflight`.
+- If the bundle is still missing or invalid after that build, or when the build output lives elsewhere, set `DGATEWAY_WEBPLAYER_PATH=<recording-player-dir>` to a built bundle root with `index.html` and `assets/`, then rerun `make manual-lab-preflight`.
 - `MANUAL_LAB_PROFILE=canonical|local` selects which sanctioned host-state lane those wrappers use.
 - `canonical` is the default `/srv/honeypot/...` lane.
 - `local` is the explicit non-root lane and binds the same Rust authority to repo-local state under `target/manual-lab/state/`.

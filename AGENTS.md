@@ -983,6 +983,17 @@ Pass when: a readable `.npmrc` that omits `@devolutions:registry`, points that s
 - [x] Add docs and contract tests for the webplayer auth and status helpers.
 Pass when: the runbook and testing docs explain when to run `make manual-lab-webplayer-auth-check` and `make manual-lab-webplayer-status`, and tests pin the new command surface plus the updated troubleshooting text.
 
+### Milestone 6t: Manual-Deck Webplayer Bundle Validation
+
+- [x] Validate selected prebuilt webplayer bundle roots before launch instead of trusting `index.html` alone.
+Pass when: the repo root `Makefile` exposes a read-only `manual-lab-webplayer-validate-bundle` helper, explicit or default bundle roots must include `index.html` plus a non-empty `assets/` directory, and the containerized build lane still remains the default remediation for missing or invalid local bundles.
+
+- [x] Keep Rust preflight aligned with the stronger bundle contract.
+Pass when: the manual-lab readiness gate checks both `webapp/dist/recording-player/index.html` and the sibling `assets/` directory, so Make and Rust reject the same invalid prebuilt bundle shapes before launch.
+
+- [x] Add docs and contract tests for the stronger prebuilt bundle contract.
+Pass when: the runbook and testing docs explain the `index.html` plus `assets/` requirement, `make manual-lab-webplayer-validate-bundle`, and the updated `DGATEWAY_WEBPLAYER_PATH` remediation path, while tests pin the new command surface and invalid-bundle failure mode.
+
 ## Verification Matrix
 
 - [x] Standard repo verification remains green with `cargo +nightly fmt --all`, `cargo clippy --workspace --tests -- -D warnings`, and `cargo test -p testsuite --test integration_tests`.

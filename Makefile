@@ -136,19 +136,55 @@ manual-lab-webplayer-builder-image:
 		-t "$(MANUAL_LAB_WEBPLAYER_BUILDER_IMAGE)" \
 		"$(MANUAL_LAB_WEBPLAYER_BUILDER_CONTEXT)"
 
+.PHONY: manual-lab-webplayer-validate-bundle
+manual-lab-webplayer-validate-bundle:
+	@set -e; \
+	webplayer_path="$(if $(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_DEFAULT_PATH))"; \
+	explicit_path="$(MANUAL_LAB_WEBPLAYER_PATH)"; \
+	index_html="$$webplayer_path/index.html"; \
+	assets_dir="$$webplayer_path/assets"; \
+	asset_file="$$(find "$$assets_dir" -type f -print -quit 2>/dev/null || true)"; \
+	if [[ -n "$$explicit_path" ]]; then \
+		if [[ ! -f "$$index_html" ]]; then \
+			printf 'explicit manual-lab webplayer path %s is missing index.html; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
+			exit 1; \
+		fi; \
+		if [[ -z "$$asset_file" ]]; then \
+			printf 'explicit manual-lab webplayer path %s is missing a non-empty assets/ directory; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root with index.html and generated assets/ or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
+			exit 1; \
+		fi; \
+		printf 'using explicit manual-lab webplayer path %s\n' "$$webplayer_path"; \
+		exit 0; \
+	fi; \
+	if [[ ! -f "$$index_html" ]]; then \
+		printf 'manual-lab webplayer bundle %s is missing index.html; run `make manual-lab-ensure-webplayer` or set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root\n' "$$webplayer_path"; \
+		exit 1; \
+	fi; \
+	if [[ -z "$$asset_file" ]]; then \
+		printf 'manual-lab webplayer bundle %s is missing a non-empty assets/ directory; run `make manual-lab-ensure-webplayer` or set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root with index.html and generated assets/\n' "$$webplayer_path"; \
+		exit 1; \
+	fi; \
+	printf 'manual-lab webplayer bundle ready at %s\n' "$$webplayer_path"
+
 .PHONY: manual-lab-webplayer-auth-check
 manual-lab-webplayer-auth-check:
 	@set -e; \
 	webplayer_path="$(if $(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_DEFAULT_PATH))"; \
 	explicit_path="$(MANUAL_LAB_WEBPLAYER_PATH)"; \
 	index_html="$$webplayer_path/index.html"; \
+	assets_dir="$$webplayer_path/assets"; \
+	asset_file="$$(find "$$assets_dir" -type f -print -quit 2>/dev/null || true)"; \
 	if [[ -n "$$explicit_path" ]]; then \
-		if [[ -f "$$index_html" ]]; then \
-			printf 'manual-lab webplayer auth-check skipped because explicit bundle path %s is already selected\n' "$$webplayer_path"; \
-			exit 0; \
+		if [[ ! -f "$$index_html" ]]; then \
+			printf 'explicit manual-lab webplayer path %s is missing index.html; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
+			exit 1; \
 		fi; \
-		printf 'explicit manual-lab webplayer path %s is missing index.html; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
-		exit 1; \
+		if [[ -z "$$asset_file" ]]; then \
+			printf 'explicit manual-lab webplayer path %s is missing a non-empty assets/ directory; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root with index.html and generated assets/ or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
+			exit 1; \
+		fi; \
+		printf 'manual-lab webplayer auth-check skipped because explicit bundle path %s is already selected\n' "$$webplayer_path"; \
+		exit 0; \
 	fi; \
 	if ! command -v "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)" >/dev/null 2>&1; then \
 		printf 'manual-lab webplayer builder needs container runtime `%s`; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to use a prebuilt bundle instead\n' "$(MANUAL_LAB_WEBPLAYER_CONTAINER_RUNTIME)"; \
@@ -196,6 +232,7 @@ manual-lab-webplayer-status:
 	webplayer_path="$(if $(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_DEFAULT_PATH))"; \
 	explicit_path="$(MANUAL_LAB_WEBPLAYER_PATH)"; \
 	index_html="$$webplayer_path/index.html"; \
+	assets_dir="$$webplayer_path/assets"; \
 	status='missing'; \
 	reason='index.html is absent'; \
 	printf 'manual-lab webplayer path: %s\n' "$$webplayer_path"; \
@@ -240,16 +277,22 @@ manual-lab-webplayer-status:
 		printf 'manual-lab webplayer private registry deps: no\n'; \
 	fi; \
 	if [[ -f "$$index_html" ]]; then \
-		status='current'; \
-		reason='bundle is present'; \
-		if [[ "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/package.json" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-workspace.yaml" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/biome.json" -nt "$$index_html" ]]; then \
-			status='stale'; \
-			reason='bundle is older than the webapp workspace metadata'; \
+		asset_file="$$(find "$$assets_dir" -type f -print -quit 2>/dev/null || true)"; \
+		if [[ -z "$$asset_file" ]]; then \
+			status='invalid'; \
+			reason='bundle is missing a non-empty assets/ directory'; \
 		else \
-			newer_source="$$(find "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/apps/recording-player" "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/packages" -type f -newer "$$index_html" -print -quit 2>/dev/null)"; \
-			if [[ -n "$$newer_source" ]]; then \
+			status='current'; \
+			reason='bundle is present'; \
+			if [[ "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/package.json" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-workspace.yaml" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/biome.json" -nt "$$index_html" ]]; then \
 				status='stale'; \
-				reason='bundle is older than the recording-player sources'; \
+				reason='bundle is older than the webapp workspace metadata'; \
+			else \
+				newer_source="$$(find "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/apps/recording-player" "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/packages" -type f -newer "$$index_html" -print -quit 2>/dev/null)"; \
+				if [[ -n "$$newer_source" ]]; then \
+					status='stale'; \
+					reason='bundle is older than the recording-player sources'; \
+				fi; \
 			fi; \
 		fi; \
 	fi; \
@@ -261,19 +304,32 @@ manual-lab-ensure-webplayer:
 	webplayer_path="$(if $(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_PATH),$(MANUAL_LAB_WEBPLAYER_DEFAULT_PATH))"; \
 	explicit_path="$(MANUAL_LAB_WEBPLAYER_PATH)"; \
 	index_html="$$webplayer_path/index.html"; \
+	assets_dir="$$webplayer_path/assets"; \
+	asset_file="$$(find "$$assets_dir" -type f -print -quit 2>/dev/null || true)"; \
 	if [[ -n "$$explicit_path" ]]; then \
-		if [[ -f "$$index_html" ]]; then \
-			printf 'using explicit manual-lab webplayer path %s\n' "$$webplayer_path"; \
-			exit 0; \
+		if [[ ! -f "$$index_html" ]]; then \
+			printf 'explicit manual-lab webplayer path %s is missing index.html; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
+			exit 1; \
 		fi; \
-		printf 'explicit manual-lab webplayer path %s is missing index.html; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
-		exit 1; \
+		if [[ -z "$$asset_file" ]]; then \
+			printf 'explicit manual-lab webplayer path %s is missing a non-empty assets/ directory; set DGATEWAY_WEBPLAYER_PATH=<recording-player-dir> to a built bundle root with index.html and generated assets/ or rerun without the override to use the containerized builder\n' "$$webplayer_path"; \
+			exit 1; \
+		fi; \
+		printf 'using explicit manual-lab webplayer path %s\n' "$$webplayer_path"; \
+		exit 0; \
 	fi; \
 	needs_build=0; \
 	reason=''; \
 	if [[ ! -f "$$index_html" ]]; then \
 		needs_build=1; \
 		reason='is missing'; \
+	fi; \
+	if [[ "$$needs_build" == "0" ]]; then \
+		asset_file="$$(find "$$assets_dir" -type f -print -quit 2>/dev/null || true)"; \
+		if [[ -z "$$asset_file" ]]; then \
+			needs_build=1; \
+			reason='is missing a non-empty assets/ directory'; \
+		fi; \
 	fi; \
 	if [[ "$$needs_build" == "0" ]]; then \
 		if [[ "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/package.json" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-lock.yaml" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/pnpm-workspace.yaml" -nt "$$index_html" || "$(MANUAL_LAB_WEBPLAYER_BUILD_ROOT)/biome.json" -nt "$$index_html" ]]; then \

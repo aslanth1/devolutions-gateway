@@ -19,6 +19,21 @@ use testsuite::honeypot_release::{HONEYPOT_PROXY_CONFIG_PATH, repo_relative_path
 
 fn create_fake_manual_lab_webplayer_bundle(root: &Path) -> PathBuf {
     let player_root = root.join("recording-player");
+    let assets_root = player_root.join("assets");
+    fs::create_dir_all(&player_root).expect("create fake manual-lab webplayer root");
+    fs::create_dir_all(&assets_root).expect("create fake manual-lab webplayer assets root");
+    fs::write(
+        player_root.join("index.html"),
+        "<!doctype html><script type=\"module\" src=\"./assets/player.js\"></script><title>manual-lab player</title>",
+    )
+    .expect("write fake manual-lab webplayer index");
+    fs::write(assets_root.join("player.js"), "console.log('manual-lab player');")
+        .expect("write fake manual-lab webplayer asset");
+    player_root
+}
+
+fn create_fake_manual_lab_webplayer_index_only_bundle(root: &Path) -> PathBuf {
+    let player_root = root.join("recording-player");
     fs::create_dir_all(&player_root).expect("create fake manual-lab webplayer root");
     fs::write(
         player_root.join("index.html"),
@@ -222,6 +237,36 @@ fn make_manual_lab_webplayer_status_reports_bundle_state() {
     assert!(
         rendered.contains("manual-lab webplayer npm scope registry:"),
         "webplayer-status should report the effective scoped registry state:\n{rendered}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn make_manual_lab_webplayer_validate_bundle_rejects_index_only_override() {
+    let tempdir = tempdir().expect("create tempdir");
+    let webplayer_path = create_fake_manual_lab_webplayer_index_only_bundle(tempdir.path());
+
+    let output = Command::new("make")
+        .arg("manual-lab-webplayer-validate-bundle")
+        .env("DGATEWAY_WEBPLAYER_PATH", &webplayer_path)
+        .current_dir(repo_relative_path("."))
+        .output()
+        .expect("run make manual-lab-webplayer-validate-bundle");
+    assert!(
+        !output.status.success(),
+        "validate-bundle should reject an index-only override:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    assert!(
+        rendered.contains("missing a non-empty assets/ directory"),
+        "validate-bundle should explain the stronger bundle contract:\n{rendered}"
     );
 }
 

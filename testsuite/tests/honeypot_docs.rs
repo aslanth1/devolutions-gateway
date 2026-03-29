@@ -533,6 +533,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(runbook_path, &runbook, "make manual-lab-preflight");
     assert_contains(runbook_path, &runbook, "make manual-lab-webplayer-auth-check");
     assert_contains(runbook_path, &runbook, "make manual-lab-webplayer-status");
+    assert_contains(runbook_path, &runbook, "make manual-lab-webplayer-validate-bundle");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-webplayer");
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(runbook_path, &runbook, "make manual-lab-bootstrap-store");
@@ -659,6 +660,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         runbook_path,
         &runbook,
+        "Run `make manual-lab-webplayer-validate-bundle` when you want a read-only pass or fail check for that selected bundle root before launch.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "Run `make manual-lab-webplayer-auth-check` when you want the same private-registry scope and auth gate that `make manual-lab-ensure-webplayer` will use before it attempts `pnpm install`.",
     );
     assert_contains(
@@ -685,6 +691,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         runbook_path,
         &runbook,
         "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "A valid prebuilt bundle root contains `index.html` and a non-empty `assets/` directory from the Vite production build.",
     );
     assert_contains(runbook_path, &runbook, "make manual-lab-ensure-artifacts");
     assert_contains(
@@ -747,6 +758,7 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     );
     assert_contains(testing_path, &testing, "make manual-lab-webplayer-auth-check");
     assert_contains(testing_path, &testing, "make manual-lab-webplayer-status");
+    assert_contains(testing_path, &testing, "make manual-lab-webplayer-validate-bundle");
     assert_contains(testing_path, &testing, "MANUAL_LAB_PROFILE=canonical|local");
     assert_contains(testing_path, &testing, "make manual-lab-ensure-webplayer");
     assert_contains(testing_path, &testing, "make manual-lab-ensure-artifacts");
@@ -839,6 +851,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
     assert_contains(
         testing_path,
         &testing,
+        "Run `make manual-lab-webplayer-validate-bundle` for a read-only pass or fail check on that selected bundle root before launch.",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
         "Run `make manual-lab-webplayer-auth-check` when you want to exercise the same scoped-registry and auth gate that `make manual-lab-ensure-webplayer` will use before a containerized build.",
     );
     assert_contains(
@@ -865,6 +882,11 @@ fn honeypot_docs_define_manual_lab_preflight_first_flow() {
         testing_path,
         &testing,
         "`make manual-lab-webplayer-auth-check` fails early with the same `MANUAL_LAB_WEBPLAYER_NPMRC`, `NPM_CONFIG_USERCONFIG`, and `DGATEWAY_WEBPLAYER_PATH` remediation anchors when the scoped registry would otherwise fall back to npmjs",
+    );
+    assert_contains(
+        testing_path,
+        &testing,
+        "A valid prebuilt bundle root contains `index.html` and a non-empty `assets/` directory from the Vite production build.",
     );
     assert_contains(
         testing_path,

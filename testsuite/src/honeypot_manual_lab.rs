@@ -2459,6 +2459,13 @@ fn build_manual_lab_gate_inputs(paths: &ManualLabInteropPaths) -> Tiny11LabGateI
                 ),
                 paths.web_player_root.join("index.html"),
             ),
+            Tiny11LabRuntimeInput::existing_path(
+                format!(
+                    "{GATEWAY_WEBPLAYER_PATH_ENV} ({})",
+                    paths.web_player_root.join("assets").display()
+                ),
+                paths.web_player_root.join("assets"),
+            ),
         ],
         consume_image_config_path: Some(default_manual_lab_control_plane_config_path()),
         source_manifest_path: None,
