@@ -1168,8 +1168,9 @@ Current evidence after the slot-accounting reducer: `testsuite/src/honeypot_manu
 
 #### 6v.5 Decision Gates, Anti-Duplication, And Escalation
 
-- [ ] `BS-36` Define green, amber, and red verdicts for black-screen runs.
+- [x] `BS-36` Define green, amber, and red verdicts for black-screen runs.
 Pass when: the repo can classify a run as "usable playback", "producer ready but corruption unresolved", or "contract violation or missing proof" without inventing a new label each time.
+Current evidence after the run-verdict reducer: `testsuite/src/honeypot_manual_lab.rs` now persists a JSON-owned `run_verdict_summary` inside `ManualLabBlackScreenEvidence`, with exactly three top-level verdicts: `usable_playback`, `producer_ready_but_corruption_unresolved`, and `contract_violation_or_missing_proof`. The reducer stays fail-closed by consuming the existing slot-aware ready-path summary, browser/artifact correlation, and black-screen branch verdicts rather than inventing a new runtime surface, and `testsuite/tests/honeypot_manual_lab.rs` now proves green, amber, missing-slot red, duplicate-slot red, and alignment-gap red outcomes through the real `integration_tests` harness.
 
 - [ ] `BS-37` Add a do-not-retry ledger for disproven hypotheses.
 Pass when: every disproven hypothesis records the failing lane, evidence artifact root, reason it was rejected, and the condition required before the row may be retried.

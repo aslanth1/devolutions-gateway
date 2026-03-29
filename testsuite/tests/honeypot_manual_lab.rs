@@ -12,12 +12,14 @@ use testsuite::honeypot_control_plane::{
     HoneypotControlPlaneTestConfig, fake_qemu_bin_path, write_honeypot_control_plane_config,
 };
 use testsuite::honeypot_manual_lab::{
-    ManualLabBlackScreenBranchVerdict, ManualLabBrowserPlayerMode, ManualLabBrowserVisibilityDataStatus,
-    ManualLabMultiSessionReadyPathSlotReason, ManualLabMultiSessionReadyPathVerdict, ManualLabPlaybackReadyVerdict,
-    ManualLabPlayerPlaybackModeVerdict, ManualLabProxyConfigOptions, ManualLabReadyPathSustainVerdict,
-    ManualLabRecordingVisibilityVerdict, ManualLabSessionBrowserVisibilitySummary,
-    ManualLabSessionBrowserVisibilityWindowSummary, ManualLabSessionDriverEvidence,
-    ManualLabSessionPlaybackReadyCorrelation, ManualLabSessionPlayerPlaybackPathSummary, active_state_path,
+    ManualLabBlackScreenBranchVerdict, ManualLabBlackScreenEvidence, ManualLabBlackScreenRunReason,
+    ManualLabBlackScreenRunVerdict, ManualLabBrowserArtifactCorrelationVerdict, ManualLabBrowserPlayerMode,
+    ManualLabBrowserVisibilityDataStatus, ManualLabMultiSessionReadyPathSlotReason,
+    ManualLabMultiSessionReadyPathVerdict, ManualLabPlaybackReadyVerdict, ManualLabPlayerPlaybackModeVerdict,
+    ManualLabProxyConfigOptions, ManualLabReadyPathSustainVerdict, ManualLabRecordingVisibilityVerdict,
+    ManualLabSessionBrowserVisibilitySummary, ManualLabSessionBrowserVisibilityWindowSummary,
+    ManualLabSessionDriverEvidence, ManualLabSessionPlaybackReadyCorrelation,
+    ManualLabSessionPlayerPlaybackPathSummary, active_state_path, build_manual_lab_black_screen_run_verdict_summary,
     build_manual_lab_multi_session_ready_path_summary, build_manual_lab_ready_path_sustain_summary,
     honeypot_manual_lab_assert_cmd, parse_manual_lab_recording_visibility_probe_result_from_dom,
     render_manual_lab_proxy_config, render_three_host_trusted_image_manifest,
@@ -230,6 +232,37 @@ fn sample_ready_path_evidence() -> ManualLabSessionDriverEvidence {
     }
 }
 
+fn sample_run_slot_evidence(slot: usize) -> ManualLabSessionDriverEvidence {
+    let mut evidence = sample_ready_path_evidence();
+    evidence.slot = slot;
+    evidence.session_id = format!("session-{slot}");
+    evidence.black_screen_branch.verdict = ManualLabBlackScreenBranchVerdict::AlignedReady;
+    evidence.browser_visibility_summary.verdict = ManualLabRecordingVisibilityVerdict::VisibleFrame;
+    for window in &mut evidence.browser_visibility_summary.windows {
+        window.verdict = ManualLabRecordingVisibilityVerdict::VisibleFrame;
+    }
+    evidence.artifact_visibility_at_browser_time.verdict = ManualLabRecordingVisibilityVerdict::VisibleFrame;
+    evidence.browser_artifact_correlation_summary.verdict = ManualLabBrowserArtifactCorrelationVerdict::BothVisible;
+    evidence.browser_artifact_correlation_summary.browser_verdict = ManualLabRecordingVisibilityVerdict::VisibleFrame;
+    evidence.browser_artifact_correlation_summary.artifact_verdict = ManualLabRecordingVisibilityVerdict::VisibleFrame;
+    evidence
+}
+
+fn sample_black_screen_run_evidence(
+    session_invocations: Vec<ManualLabSessionDriverEvidence>,
+    session_count: usize,
+) -> ManualLabBlackScreenEvidence {
+    let multi_session_ready_path_summary =
+        build_manual_lab_multi_session_ready_path_summary(&session_invocations, session_count);
+
+    ManualLabBlackScreenEvidence {
+        session_count,
+        session_invocations,
+        multi_session_ready_path_summary,
+        ..Default::default()
+    }
+}
+
 #[test]
 fn manual_lab_ready_path_sustain_accepts_steady_active_live_window() {
     let evidence = sample_ready_path_evidence();
@@ -357,6 +390,143 @@ fn manual_lab_multi_session_ready_path_summary_marks_missing_slot_evidence() {
     assert_eq!(
         summary.slot_summaries[2].ready_path_sustain_summary.verdict,
         ManualLabReadyPathSustainVerdict::Inconclusive
+    );
+}
+
+#[test]
+fn manual_lab_black_screen_run_verdict_is_green_for_slot_stable_visible_playback() {
+    let evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(2),
+            sample_run_slot_evidence(3),
+            sample_run_slot_evidence(1),
+        ],
+        3,
+    );
+
+    let summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    assert_eq!(summary.verdict, ManualLabBlackScreenRunVerdict::UsablePlayback);
+    assert_eq!(
+        summary.primary_reason,
+        ManualLabBlackScreenRunReason::AllSlotsUsablePlayback
+    );
+    assert_eq!(
+        summary.reason_codes,
+        vec![ManualLabBlackScreenRunReason::AllSlotsUsablePlayback]
+    );
+    assert_eq!(summary.slot_summaries.len(), 3);
+    assert_eq!(summary.slot_summaries[0].slot, 1);
+    assert_eq!(summary.slot_summaries[1].slot, 2);
+    assert_eq!(summary.slot_summaries[2].slot, 3);
+}
+
+#[test]
+fn manual_lab_black_screen_run_verdict_is_amber_for_ready_but_black_artifact_correlation() {
+    let mut slot_two = sample_run_slot_evidence(2);
+    slot_two.browser_visibility_summary.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    for window in &mut slot_two.browser_visibility_summary.windows {
+        window.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    }
+    slot_two.artifact_visibility_at_browser_time.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    slot_two.browser_artifact_correlation_summary.verdict = ManualLabBrowserArtifactCorrelationVerdict::BothBlack;
+    slot_two.browser_artifact_correlation_summary.browser_verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+    slot_two.browser_artifact_correlation_summary.artifact_verdict = ManualLabRecordingVisibilityVerdict::AllBlack;
+
+    let evidence = sample_black_screen_run_evidence(
+        vec![sample_run_slot_evidence(1), slot_two, sample_run_slot_evidence(3)],
+        3,
+    );
+
+    let summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenRunVerdict::ProducerReadyButCorruptionUnresolved
+    );
+    assert_eq!(
+        summary.primary_reason,
+        ManualLabBlackScreenRunReason::ProducerReadyCorruptionUnresolved
+    );
+    assert!(
+        summary
+            .reason_codes
+            .contains(&ManualLabBlackScreenRunReason::BrowserArtifactBothBlack)
+    );
+}
+
+#[test]
+fn manual_lab_black_screen_run_verdict_is_red_for_missing_third_slot() {
+    let evidence = sample_black_screen_run_evidence(vec![sample_run_slot_evidence(1), sample_run_slot_evidence(2)], 3);
+
+    let summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenRunVerdict::ContractViolationOrMissingProof
+    );
+    assert_eq!(
+        summary.primary_reason,
+        ManualLabBlackScreenRunReason::MissingSlotEvidence
+    );
+    assert_eq!(
+        summary.reason_codes,
+        vec![ManualLabBlackScreenRunReason::MissingSlotEvidence]
+    );
+}
+
+#[test]
+fn manual_lab_black_screen_run_verdict_is_red_for_duplicate_slot_evidence() {
+    let evidence = sample_black_screen_run_evidence(
+        vec![
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(1),
+            sample_run_slot_evidence(2),
+        ],
+        3,
+    );
+
+    let summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenRunVerdict::ContractViolationOrMissingProof
+    );
+    assert_eq!(
+        summary.primary_reason,
+        ManualLabBlackScreenRunReason::DuplicateSlotEvidence
+    );
+    assert_eq!(
+        summary.reason_codes,
+        vec![ManualLabBlackScreenRunReason::DuplicateSlotEvidence]
+    );
+}
+
+#[test]
+fn manual_lab_black_screen_run_verdict_is_red_for_browser_artifact_alignment_gap() {
+    let mut slot_three = sample_run_slot_evidence(3);
+    slot_three.browser_artifact_correlation_summary.verdict =
+        ManualLabBrowserArtifactCorrelationVerdict::InconclusiveAlignmentGap;
+
+    let evidence = sample_black_screen_run_evidence(
+        vec![sample_run_slot_evidence(1), sample_run_slot_evidence(2), slot_three],
+        3,
+    );
+
+    let summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    assert_eq!(
+        summary.verdict,
+        ManualLabBlackScreenRunVerdict::ContractViolationOrMissingProof
+    );
+    assert_eq!(
+        summary.primary_reason,
+        ManualLabBlackScreenRunReason::BrowserArtifactAlignmentGap
+    );
+    assert!(
+        summary
+            .reason_codes
+            .contains(&ManualLabBlackScreenRunReason::BrowserArtifactAlignmentGap)
     );
 }
 

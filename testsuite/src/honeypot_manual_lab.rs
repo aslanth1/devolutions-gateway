@@ -1053,6 +1053,8 @@ pub struct ManualLabBlackScreenEvidence {
     pub session_invocations: Vec<ManualLabSessionDriverEvidence>,
     #[serde(default)]
     pub multi_session_ready_path_summary: ManualLabMultiSessionReadyPathSummary,
+    #[serde(default)]
+    pub run_verdict_summary: ManualLabBlackScreenRunVerdictSummary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1676,6 +1678,72 @@ pub struct ManualLabMultiSessionReadyPathSummary {
     pub observed_session_count: usize,
     #[serde(default)]
     pub slot_summaries: Vec<ManualLabMultiSessionReadyPathSlotSummary>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBlackScreenRunVerdict {
+    UsablePlayback,
+    ProducerReadyButCorruptionUnresolved,
+    #[default]
+    ContractViolationOrMissingProof,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ManualLabBlackScreenRunReason {
+    AllSlotsUsablePlayback,
+    ProducerReadyCorruptionUnresolved,
+    MissingSlotEvidence,
+    DuplicateSlotEvidence,
+    MissingReadyAlignment,
+    MissingActiveIntent,
+    StaticFallbackObserved,
+    MissingSteadyActiveWindow,
+    TelemetryGap,
+    BrowserArtifactAlignmentGap,
+    BrowserArtifactInsufficientEvidence,
+    BrowserArtifactBothBlack,
+    BrowserArtifactContradiction,
+    DecodeCorruption,
+    NoReadyTruthfulness,
+    ContradictorySignal,
+    #[default]
+    InsufficientEvidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenRunSlotSummary {
+    #[serde(default)]
+    pub slot: usize,
+    #[serde(default)]
+    pub session_id: String,
+    #[serde(default)]
+    pub ready_path_reason: ManualLabMultiSessionReadyPathSlotReason,
+    #[serde(default)]
+    pub browser_artifact_correlation_verdict: ManualLabBrowserArtifactCorrelationVerdict,
+    #[serde(default)]
+    pub black_screen_branch_verdict: ManualLabBlackScreenBranchVerdict,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ManualLabBlackScreenRunVerdictSummary {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub verdict: ManualLabBlackScreenRunVerdict,
+    #[serde(default)]
+    pub primary_reason: ManualLabBlackScreenRunReason,
+    #[serde(default)]
+    pub reason_codes: Vec<ManualLabBlackScreenRunReason>,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub expected_slot_count: usize,
+    #[serde(default)]
+    pub observed_session_count: usize,
+    #[serde(default)]
+    pub slot_summaries: Vec<ManualLabBlackScreenRunSlotSummary>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -4871,6 +4939,7 @@ fn build_black_screen_evidence(
         env,
         session_invocations: Vec::new(),
         multi_session_ready_path_summary: ManualLabMultiSessionReadyPathSummary::default(),
+        run_verdict_summary: ManualLabBlackScreenRunVerdictSummary::default(),
     }
 }
 
@@ -4959,6 +5028,7 @@ const MANUAL_LAB_BROWSER_VISIBILITY_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_BROWSER_ARTIFACT_CORRELATION_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_READY_PATH_SUSTAIN_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_MULTI_SESSION_READY_PATH_SCHEMA_VERSION: u32 = 1;
+const MANUAL_LAB_BLACK_SCREEN_RUN_VERDICT_SCHEMA_VERSION: u32 = 1;
 const MANUAL_LAB_RECORDING_VISIBILITY_SUMMARY_FILENAME: &str = "recording-visibility-summary.json";
 const MANUAL_LAB_RECORDING_VISIBILITY_AT_BROWSER_TIME_SUMMARY_FILENAME: &str =
     "recording-visibility-at-browser-time-summary.json";
@@ -6253,6 +6323,258 @@ pub fn build_manual_lab_multi_session_ready_path_summary(
     summary.detail = Some(format!(
         "manual-lab ready-path evidence accounted for slots 1..={expected_slot_count}"
     ));
+    summary
+}
+
+fn manual_lab_push_black_screen_run_reason(
+    reasons: &mut Vec<ManualLabBlackScreenRunReason>,
+    reason: ManualLabBlackScreenRunReason,
+) {
+    if !reasons.contains(&reason) {
+        reasons.push(reason);
+    }
+}
+
+fn manual_lab_black_screen_run_reason_for_slot_reason(
+    reason: ManualLabMultiSessionReadyPathSlotReason,
+) -> Option<ManualLabBlackScreenRunReason> {
+    match reason {
+        ManualLabMultiSessionReadyPathSlotReason::UsableLivePlayback => None,
+        ManualLabMultiSessionReadyPathSlotReason::MissingReadyAlignment => {
+            Some(ManualLabBlackScreenRunReason::MissingReadyAlignment)
+        }
+        ManualLabMultiSessionReadyPathSlotReason::MissingActiveIntent => {
+            Some(ManualLabBlackScreenRunReason::MissingActiveIntent)
+        }
+        ManualLabMultiSessionReadyPathSlotReason::StaticFallbackObserved => {
+            Some(ManualLabBlackScreenRunReason::StaticFallbackObserved)
+        }
+        ManualLabMultiSessionReadyPathSlotReason::MissingSteadyActiveWindow => {
+            Some(ManualLabBlackScreenRunReason::MissingSteadyActiveWindow)
+        }
+        ManualLabMultiSessionReadyPathSlotReason::TelemetryGap => Some(ManualLabBlackScreenRunReason::TelemetryGap),
+        ManualLabMultiSessionReadyPathSlotReason::MissingSlotEvidence => {
+            Some(ManualLabBlackScreenRunReason::MissingSlotEvidence)
+        }
+        ManualLabMultiSessionReadyPathSlotReason::Inconclusive => {
+            Some(ManualLabBlackScreenRunReason::InsufficientEvidence)
+        }
+    }
+}
+
+fn manual_lab_black_screen_run_reason_for_browser_artifact_verdict(
+    verdict: ManualLabBrowserArtifactCorrelationVerdict,
+) -> Option<ManualLabBlackScreenRunReason> {
+    match verdict {
+        ManualLabBrowserArtifactCorrelationVerdict::BothVisible => None,
+        ManualLabBrowserArtifactCorrelationVerdict::BothBlack => {
+            Some(ManualLabBlackScreenRunReason::BrowserArtifactBothBlack)
+        }
+        ManualLabBrowserArtifactCorrelationVerdict::BrowserBlackArtifactVisible
+        | ManualLabBrowserArtifactCorrelationVerdict::BrowserVisibleArtifactBlack => {
+            Some(ManualLabBlackScreenRunReason::BrowserArtifactContradiction)
+        }
+        ManualLabBrowserArtifactCorrelationVerdict::InconclusiveAlignmentGap => {
+            Some(ManualLabBlackScreenRunReason::BrowserArtifactAlignmentGap)
+        }
+        ManualLabBrowserArtifactCorrelationVerdict::InconclusiveInsufficientData
+        | ManualLabBrowserArtifactCorrelationVerdict::InconclusiveTransition
+        | ManualLabBrowserArtifactCorrelationVerdict::Inconclusive => {
+            Some(ManualLabBlackScreenRunReason::BrowserArtifactInsufficientEvidence)
+        }
+    }
+}
+
+fn manual_lab_black_screen_run_reason_for_branch_verdict(
+    verdict: ManualLabBlackScreenBranchVerdict,
+) -> Option<ManualLabBlackScreenRunReason> {
+    match verdict {
+        ManualLabBlackScreenBranchVerdict::AlignedReady => None,
+        ManualLabBlackScreenBranchVerdict::DecodeCorruption => Some(ManualLabBlackScreenRunReason::DecodeCorruption),
+        ManualLabBlackScreenBranchVerdict::NoReadyTruthfulness => {
+            Some(ManualLabBlackScreenRunReason::NoReadyTruthfulness)
+        }
+        ManualLabBlackScreenBranchVerdict::NegotiationLoss
+        | ManualLabBlackScreenBranchVerdict::ProducerLoss
+        | ManualLabBlackScreenBranchVerdict::PlayerLoss
+        | ManualLabBlackScreenBranchVerdict::Inconclusive => Some(ManualLabBlackScreenRunReason::ContradictorySignal),
+    }
+}
+
+fn build_manual_lab_black_screen_run_slot_summaries(
+    evidence: &ManualLabBlackScreenEvidence,
+) -> Vec<ManualLabBlackScreenRunSlotSummary> {
+    let session_by_slot = evidence
+        .session_invocations
+        .iter()
+        .map(|session| (session.slot, session))
+        .collect::<BTreeMap<_, _>>();
+    let multi_session_by_slot = evidence
+        .multi_session_ready_path_summary
+        .slot_summaries
+        .iter()
+        .map(|summary| (summary.slot, summary))
+        .collect::<BTreeMap<_, _>>();
+
+    (1..=evidence.session_count)
+        .map(|slot| {
+            let multi_session_summary = multi_session_by_slot.get(&slot).copied();
+            let session = session_by_slot.get(&slot).copied();
+            let session_id = multi_session_summary
+                .map(|summary| summary.session_id.clone())
+                .filter(|session_id| !session_id.is_empty())
+                .or_else(|| session.map(|session| session.session_id.clone()))
+                .unwrap_or_default();
+
+            ManualLabBlackScreenRunSlotSummary {
+                slot,
+                session_id,
+                ready_path_reason: multi_session_summary
+                    .map(|summary| summary.reason)
+                    .unwrap_or(ManualLabMultiSessionReadyPathSlotReason::MissingSlotEvidence),
+                browser_artifact_correlation_verdict: session
+                    .map(|session| session.browser_artifact_correlation_summary.verdict)
+                    .unwrap_or(ManualLabBrowserArtifactCorrelationVerdict::Inconclusive),
+                black_screen_branch_verdict: session
+                    .map(|session| session.black_screen_branch.verdict)
+                    .unwrap_or(ManualLabBlackScreenBranchVerdict::Inconclusive),
+            }
+        })
+        .collect()
+}
+
+pub fn build_manual_lab_black_screen_run_verdict_summary(
+    evidence: &ManualLabBlackScreenEvidence,
+) -> ManualLabBlackScreenRunVerdictSummary {
+    let mut summary = ManualLabBlackScreenRunVerdictSummary {
+        schema_version: MANUAL_LAB_BLACK_SCREEN_RUN_VERDICT_SCHEMA_VERSION,
+        expected_slot_count: evidence.session_count,
+        observed_session_count: evidence.session_invocations.len(),
+        slot_summaries: build_manual_lab_black_screen_run_slot_summaries(evidence),
+        ..Default::default()
+    };
+
+    if summary.expected_slot_count == 0 {
+        summary.primary_reason = ManualLabBlackScreenRunReason::InsufficientEvidence;
+        summary.reason_codes = vec![ManualLabBlackScreenRunReason::InsufficientEvidence];
+        summary.detail = Some("run verdict requires at least one expected session slot".to_owned());
+        return summary;
+    }
+
+    let duplicate_slots = evidence
+        .session_invocations
+        .iter()
+        .fold(BTreeMap::<usize, usize>::new(), |mut counts, session| {
+            *counts.entry(session.slot).or_default() += 1;
+            counts
+        })
+        .into_iter()
+        .filter_map(|(slot, count)| (count > 1).then_some(slot))
+        .collect::<Vec<_>>();
+
+    if !duplicate_slots.is_empty() {
+        summary.primary_reason = ManualLabBlackScreenRunReason::DuplicateSlotEvidence;
+        summary.reason_codes = vec![ManualLabBlackScreenRunReason::DuplicateSlotEvidence];
+        summary.detail = Some(format!(
+            "run verdict failed closed because duplicate evidence was recorded for slot(s) {}",
+            duplicate_slots
+                .iter()
+                .map(|slot| slot.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        return summary;
+    }
+
+    if evidence.multi_session_ready_path_summary.expected_slot_count != evidence.session_count {
+        summary.primary_reason = ManualLabBlackScreenRunReason::ContradictorySignal;
+        summary.reason_codes = vec![ManualLabBlackScreenRunReason::ContradictorySignal];
+        summary.detail = Some(format!(
+            "run verdict failed closed because multi-session evidence expected {} slot(s) while the run expected {}",
+            evidence.multi_session_ready_path_summary.expected_slot_count, evidence.session_count
+        ));
+        return summary;
+    }
+
+    let mut red_reasons = Vec::new();
+    let mut amber_reasons = Vec::new();
+    let mut missing_slots = Vec::new();
+
+    for slot_summary in &summary.slot_summaries {
+        if slot_summary.ready_path_reason == ManualLabMultiSessionReadyPathSlotReason::MissingSlotEvidence {
+            missing_slots.push(slot_summary.slot);
+        }
+
+        if let Some(reason) = manual_lab_black_screen_run_reason_for_slot_reason(slot_summary.ready_path_reason) {
+            manual_lab_push_black_screen_run_reason(&mut red_reasons, reason);
+        }
+
+        if let Some(reason) = manual_lab_black_screen_run_reason_for_browser_artifact_verdict(
+            slot_summary.browser_artifact_correlation_verdict,
+        ) {
+            match reason {
+                ManualLabBlackScreenRunReason::BrowserArtifactBothBlack
+                | ManualLabBlackScreenRunReason::BrowserArtifactContradiction => {
+                    manual_lab_push_black_screen_run_reason(&mut amber_reasons, reason);
+                }
+                _ => manual_lab_push_black_screen_run_reason(&mut red_reasons, reason),
+            }
+        }
+
+        if let Some(reason) =
+            manual_lab_black_screen_run_reason_for_branch_verdict(slot_summary.black_screen_branch_verdict)
+        {
+            match reason {
+                ManualLabBlackScreenRunReason::DecodeCorruption => {
+                    manual_lab_push_black_screen_run_reason(&mut amber_reasons, reason);
+                }
+                _ => manual_lab_push_black_screen_run_reason(&mut red_reasons, reason),
+            }
+        }
+    }
+
+    if !missing_slots.is_empty() {
+        summary.primary_reason = ManualLabBlackScreenRunReason::MissingSlotEvidence;
+        summary.reason_codes = vec![ManualLabBlackScreenRunReason::MissingSlotEvidence];
+        summary.detail = Some(format!(
+            "run verdict failed closed because evidence is missing for slot(s) {}",
+            missing_slots
+                .iter()
+                .map(|slot| slot.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+        return summary;
+    }
+
+    if !red_reasons.is_empty() {
+        summary.primary_reason = red_reasons[0];
+        summary.reason_codes = red_reasons;
+        summary.detail = Some(format!("run verdict failed closed due to {:?}", summary.primary_reason));
+        return summary;
+    }
+
+    if !amber_reasons.is_empty() {
+        summary.verdict = ManualLabBlackScreenRunVerdict::ProducerReadyButCorruptionUnresolved;
+        summary.primary_reason = ManualLabBlackScreenRunReason::ProducerReadyCorruptionUnresolved;
+        summary
+            .reason_codes
+            .push(ManualLabBlackScreenRunReason::ProducerReadyCorruptionUnresolved);
+        for reason in amber_reasons {
+            manual_lab_push_black_screen_run_reason(&mut summary.reason_codes, reason);
+        }
+        summary.detail = Some(
+            "all expected slots were accounted for, but ready playback still showed unresolved corruption signals"
+                .to_owned(),
+        );
+        return summary;
+    }
+
+    summary.verdict = ManualLabBlackScreenRunVerdict::UsablePlayback;
+    summary.primary_reason = ManualLabBlackScreenRunReason::AllSlotsUsablePlayback;
+    summary.reason_codes = vec![ManualLabBlackScreenRunReason::AllSlotsUsablePlayback];
+    summary.detail =
+        Some("all expected slots reached usable live playback without unresolved corruption signals".to_owned());
     summary
 }
 
@@ -7645,6 +7967,7 @@ fn persist_black_screen_evidence(
         .collect();
     evidence.multi_session_ready_path_summary =
         build_manual_lab_multi_session_ready_path_summary(&evidence.session_invocations, evidence.session_count);
+    evidence.run_verdict_summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
     if let Some(parent) = evidence_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
