@@ -422,6 +422,12 @@ struct AppState {
     runtime: Arc<FrontendRuntime>,
 }
 
+struct SessionFocus {
+    session: BootstrapSession,
+    stream_preview: Option<StreamPreview>,
+    player_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 enum FrontendServiceState {
@@ -482,6 +488,7 @@ pub async fn run_frontend(config: FrontendConfig) -> anyhow::Result<()> {
         .route("/events", get(events_handler))
         .route("/tile/{id}", get(tile_handler))
         .route("/session/{id}", get(session_handler))
+        .route("/session/{id}/frame", get(session_frame_handler))
         .route("/session/{id}/clipboard", post(clipboard_handler))
         .route("/session/{id}/keyboard", post(keyboard_handler))
         .route("/session/{id}/propose", post(propose_handler))
@@ -604,53 +611,44 @@ async fn session_handler(
         Err(error) => return auth_error(error),
     };
 
-    let session = match state.runtime.fetch_session(&session_id).await {
-        Ok(Some(session)) if session_is_live_for_dashboard(session.state) => session,
-        Ok(Some(_)) => return frontend_error(StatusCode::NOT_FOUND, "session not found"),
+    let focus = match resolve_session_focus(&state.runtime, &session_id, access.raw_token()).await {
+        Ok(Some(focus)) => focus,
         Ok(None) => return frontend_error(StatusCode::NOT_FOUND, "session not found"),
-        Err(error) => {
-            return frontend_error(StatusCode::BAD_GATEWAY, &format!("session lookup failed: {error:#}"));
-        }
-    };
-
-    let stream_preview = if matches!(session.state, SessionState::Assigned | SessionState::Ready)
-        || session.stream_state == StreamState::Ready
-        || session.stream_preview.is_some()
-    {
-        match state.runtime.fetch_stream_token(&session.session_id).await {
-            Ok(response) => Some(StreamPreview {
-                stream_id: response.stream_id,
-                transport: response.transport,
-                stream_endpoint: response.stream_endpoint,
-                token_expires_at: response.expires_at,
-            }),
-            Err(error) => {
-                tracing::warn!(session_id = %session.session_id, error = %error, "stream token request failed");
-                session.stream_preview.clone()
-            }
-        }
-    } else {
-        None
-    };
-    let player_url = match stream_preview.as_ref() {
-        Some(preview) => match state.runtime.stream_player_url(preview, access.raw_token()).await {
-            Ok(player_url) => Some(player_url),
-            Err(error) => {
-                tracing::warn!(session_id = %session.session_id, error = %error, "stream player url build failed");
-                None
-            }
-        },
-        None => None,
+        Err(error) => return frontend_error(StatusCode::BAD_GATEWAY, &format!("session lookup failed: {error:#}")),
     };
 
     Html(render_focus_panel(
-        &session,
-        stream_preview.as_ref(),
-        player_url.as_deref(),
+        &focus.session,
+        focus.stream_preview.as_ref(),
+        focus.player_url.as_deref(),
         &access,
-        !is_fragment_request && player_url.is_none(),
+        !is_fragment_request && focus.player_url.is_none(),
     ))
     .into_response()
+}
+
+async fn session_frame_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+    Query(query): Query<OperatorTokenQuery>,
+) -> Response {
+    let access = match state
+        .runtime
+        .authorize_operator(&headers, query.token.as_deref(), RequiredScope::StreamRead)
+    {
+        Ok(access) => access,
+        Err(error) => return auth_error(error),
+    };
+
+    let focus = match resolve_session_focus(&state.runtime, &session_id, access.raw_token()).await {
+        Ok(Some(focus)) => focus,
+        Ok(None) => return frontend_error(StatusCode::NOT_FOUND, "session not found"),
+        Err(error) => return frontend_error(StatusCode::BAD_GATEWAY, &format!("session lookup failed: {error:#}")),
+    };
+
+    Html(render_player_frame(&focus.session.session_id, focus.player_url.as_deref()))
+        .into_response()
 }
 
 async fn kill_handler(
@@ -963,6 +961,14 @@ struct FocusPanelTemplate<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "player_frame.html")]
+struct PlayerFrameTemplate<'a> {
+    session_id: &'a str,
+    has_player_url: bool,
+    player_url: &'a str,
+}
+
+#[derive(Template)]
 #[template(path = "focus_notice.html")]
 struct FocusNoticeTemplate<'a> {
     title: &'a str,
@@ -1133,6 +1139,7 @@ fn render_focus_panel(
     let state_label = session_state_label(session.state);
     let stream_label = stream_state_label(session.stream_state);
     let auth_query = operator_token_query(access.raw_token());
+    let frame_url = session_frame_url(session_id, access.raw_token());
     let (
         has_stream_preview,
         has_player_url,
@@ -1156,7 +1163,11 @@ fn render_focus_panel(
             (
                 true,
                 player_url.is_some(),
-                player_url.unwrap_or(""),
+                if player_url.is_some() {
+                    frame_url.as_str()
+                } else {
+                    ""
+                },
                 missing_note,
                 stream_transport_label(preview.transport),
                 preview.stream_id.as_str(),
@@ -1184,6 +1195,16 @@ fn render_focus_panel(
     }
     .render()
     .unwrap_or_else(|error| format!("focus panel template render failed: {error}"))
+}
+
+fn render_player_frame(session_id: &str, player_url: Option<&str>) -> String {
+    PlayerFrameTemplate {
+        session_id,
+        has_player_url: player_url.is_some(),
+        player_url: player_url.unwrap_or(""),
+    }
+    .render()
+    .unwrap_or_else(|error| format!("player frame template render failed: {error}"))
 }
 
 fn render_kill_notice(session_id: &str, operator_token: &str) -> String {
@@ -1434,6 +1455,58 @@ fn operator_token_query(operator_token: &str) -> String {
     query.finish()
 }
 
+fn session_frame_url(session_id: &str, operator_token: &str) -> String {
+    format!("/session/{session_id}/frame?{}", operator_token_query(operator_token))
+}
+
+async fn resolve_session_focus(
+    runtime: &FrontendRuntime,
+    session_id: &str,
+    operator_token: &str,
+) -> anyhow::Result<Option<SessionFocus>> {
+    let session = match runtime.fetch_session(session_id).await? {
+        Some(session) if session_is_live_for_dashboard(session.state) => session,
+        Some(_) => return Ok(None),
+        None => return Ok(None),
+    };
+
+    let stream_preview = if matches!(session.state, SessionState::Assigned | SessionState::Ready)
+        || session.stream_state == StreamState::Ready
+        || session.stream_preview.is_some()
+    {
+        match runtime.fetch_stream_token(&session.session_id).await {
+            Ok(response) => Some(StreamPreview {
+                stream_id: response.stream_id,
+                transport: response.transport,
+                stream_endpoint: response.stream_endpoint,
+                token_expires_at: response.expires_at,
+            }),
+            Err(error) => {
+                tracing::warn!(session_id = %session.session_id, error = %error, "stream token request failed");
+                session.stream_preview.clone()
+            }
+        }
+    } else {
+        None
+    };
+    let player_url = match stream_preview.as_ref() {
+        Some(preview) => match runtime.stream_player_url(preview, operator_token).await {
+            Ok(player_url) => Some(player_url),
+            Err(error) => {
+                tracing::warn!(session_id = %session.session_id, error = %error, "stream player url build failed");
+                None
+            }
+        },
+        None => None,
+    };
+
+    Ok(Some(SessionFocus {
+        session,
+        stream_preview,
+        player_url,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use devolutions_gateway::token::AccessScope;
@@ -1495,7 +1568,7 @@ mod tests {
 
         assert!(html.contains("stream-1"));
         assert!(html.contains("iframe"));
-        assert!(html.contains("stream_id=stream-1&amp;token=operator-token"));
+        assert!(html.contains("/session/session-1/frame?token=operator-token"));
         assert!(html.contains("Refresh reconnects near the live tail"));
         assert!(html.contains("Kill session"));
     }
