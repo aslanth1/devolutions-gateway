@@ -1051,13 +1051,9 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         .iter()
         .filter(|session| session_is_live_for_dashboard(session.state))
         .count();
-    let boot_session_id_json = serde_json::to_string(
-        &live_sessions
-            .first()
-            .map(|session| session.session_id.as_str())
-            .filter(|_| live_sessions.len() == 1),
-    )
-    .unwrap_or_else(|_| "null".to_owned());
+    let boot_session_id_json =
+        serde_json::to_string(&live_sessions.first().map(|session| session.session_id.as_str()))
+            .unwrap_or_else(|_| "null".to_owned());
     let operator_token_json = serde_json::to_string(operator_token).unwrap_or_else(|_| "\"invalid-token\"".to_owned());
     let replay_cursor_json = serde_json::to_string(&bootstrap.replay_cursor).unwrap_or_else(|_| "\"0\"".to_owned());
 
