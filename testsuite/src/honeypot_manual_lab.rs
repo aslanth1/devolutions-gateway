@@ -2870,11 +2870,16 @@ pub fn status() -> anyhow::Result<Option<ManualLabStatusReport>> {
 }
 
 fn wait_for_browser_backed_steady_window_after_active_intent(state: &ManualLabState) -> anyhow::Result<()> {
-    if state.chrome_pid.is_none() || state.sessions.len() != 1 {
+    if state.chrome_pid.is_none() || state.sessions.is_empty() {
         return Ok(());
     }
 
-    let session = &state.sessions[0];
+    let dashboard_root = format!("http://127.0.0.1:{}/?token=", state.ports.frontend_http);
+    let session = if state.sessions.len() == 1 || state.browser_url.starts_with(&dashboard_root) {
+        &state.sessions[0]
+    } else {
+        return Ok(());
+    };
     let recordings_root = state.run_root.join("config/proxy/recordings");
     let session_id = session.session_id.clone();
 
