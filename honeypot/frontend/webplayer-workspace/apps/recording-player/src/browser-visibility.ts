@@ -83,6 +83,21 @@ function representativeValue<T>(values: T[]) {
   return values[Math.floor(values.length / 2)];
 }
 
+function formatPlaybackStateDetail(
+  readyState: number,
+  currentTimeMs: number | undefined,
+  videoWidth: number | undefined,
+  videoHeight: number | undefined,
+) {
+  const currentTimeDetail =
+    currentTimeMs === undefined ? 'currentTimeMs=unavailable' : `currentTimeMs=${currentTimeMs}`;
+  const videoWidthDetail = videoWidth === undefined ? 'videoWidth=unavailable' : `videoWidth=${videoWidth}`;
+  const videoHeightDetail =
+    videoHeight === undefined ? 'videoHeight=unavailable' : `videoHeight=${videoHeight}`;
+
+  return `readyState=${readyState} ${currentTimeDetail} ${videoWidthDetail} ${videoHeightDetail}`;
+}
+
 function resolvePlayerVideo() {
   const activePlayer = document.querySelector('shadow-player') as HTMLElement & {
     shadowRoot?: ShadowRoot | null;
@@ -144,7 +159,12 @@ function samplePlayerVideo(): BrowserVisibilitySample {
       videoWidth,
       videoHeight,
       transitionObserved,
-      detail: 'video did not have a decodable frame available yet',
+      detail: `video did not have a decodable frame available yet (${formatPlaybackStateDetail(
+        readyState,
+        currentTimeMs,
+        videoWidth,
+        videoHeight,
+      )})`,
     };
   }
 
