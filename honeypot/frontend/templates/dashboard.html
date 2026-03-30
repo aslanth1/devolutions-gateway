@@ -309,6 +309,9 @@
   </div>
   <script>
     (() => {
+      const maxActiveTilePreviews = 1;
+      const focusedPreviewMessage = "Focused live in operator pane.";
+      const deferredPreviewMessage = "Additional live preview paused.";
       let replayCursor = {{ replay_cursor_json|safe }};
       const bootSessionId = {{ boot_session_id_json|safe }};
       const operatorToken = {{ operator_token_json|safe }};
@@ -364,6 +367,7 @@
 
       function syncFocusedTilePreviews() {
         const focusedSessionId = currentFocusedSessionId();
+        let activePreviewCount = 0;
         tileGrid.querySelectorAll(".session-tile").forEach((tile) => {
           const sessionId = tile.id.replace("session-tile-", "");
           const stage = tile.querySelector(".tile-preview-stage");
@@ -374,13 +378,19 @@
             return;
           }
 
-          const shouldSuppress = focusedSessionId !== null && sessionId === focusedSessionId;
+          const isFocused = focusedSessionId !== null && sessionId === focusedSessionId;
+          const canStayActive = !isFocused && activePreviewCount < maxActiveTilePreviews;
+          const shouldSuppress = isFocused || !canStayActive;
           stage.classList.toggle("is-suppressed", shouldSuppress);
           overlay.classList.toggle("is-hidden", !shouldSuppress);
+          overlay.textContent = isFocused ? focusedPreviewMessage : deferredPreviewMessage;
           if (shouldSuppress) {
             frame.removeAttribute("src");
           } else if (!frame.getAttribute("src")) {
             frame.setAttribute("src", previewSrc);
+            activePreviewCount += 1;
+          } else {
+            activePreviewCount += 1;
           }
         });
       }

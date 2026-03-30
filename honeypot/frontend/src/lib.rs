@@ -1047,13 +1047,27 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         .filter(|session| session_is_live_for_dashboard(session.state))
         .collect::<Vec<_>>();
     let initial_focus_session_id = live_sessions.first().map(|session| session.session_id.as_str());
+    let mut active_tile_preview_count = 0usize;
     let tiles = live_sessions
         .iter()
         .map(|session| {
+            let preview_state = if session.stream_preview.is_some() {
+                if initial_focus_session_id == Some(session.session_id.as_str()) {
+                    Some("Focused live in operator pane.")
+                } else if active_tile_preview_count >= 1 {
+                    Some("Additional live preview paused.")
+                } else {
+                    active_tile_preview_count += 1;
+                    None
+                }
+            } else {
+                None
+            };
             build_session_tile_view(
                 session,
                 access,
-                initial_focus_session_id == Some(session.session_id.as_str()),
+                preview_state.is_some(),
+                preview_state,
             )
         })
         .collect::<Vec<_>>();
@@ -1098,7 +1112,12 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
     .unwrap_or_else(|error| format!("dashboard template render failed: {error}"))
 }
 
-fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess, preview_suppressed: bool) -> SessionTileView {
+fn build_session_tile_view(
+    session: &BootstrapSession,
+    access: &OperatorAccess,
+    preview_suppressed: bool,
+    preview_message_override: Option<&str>,
+) -> SessionTileView {
     let operator_token = access.raw_token();
     let vm_lease_id = session.vm_lease_id.as_deref().unwrap_or("pending-lease");
     let state_label = session_state_label(session.state);
@@ -1122,7 +1141,7 @@ fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess, 
                     preview.stream_id.as_str(),
                     stream_transport_label(preview.transport),
                     if preview_suppressed {
-                        "Focused live in operator pane."
+                        preview_message_override.unwrap_or("Live preview paused.")
                     } else {
                         ""
                     },
@@ -1150,7 +1169,7 @@ fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess, 
 
 fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> String {
     SessionTileTemplate {
-        tile: build_session_tile_view(session, access, false),
+        tile: build_session_tile_view(session, access, false, None),
     }
     .render()
     .unwrap_or_else(|error| format!("session tile template render failed: {error}"))
