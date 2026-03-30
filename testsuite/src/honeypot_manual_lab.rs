@@ -2227,6 +2227,82 @@ fn manual_lab_browser_url(
     format!("http://127.0.0.1:{frontend_http_port}/?token={wildcard_token}")
 }
 
+fn resolve_manual_lab_direct_playback_url(
+    proxy_http_port: u16,
+    session_id: &str,
+    stream_id: &str,
+    wildcard_token: &str,
+) -> anyhow::Result<String> {
+    let path = format!("/jet/honeypot/session/{session_id}/stream?stream_id={stream_id}");
+    let (status, headers, _) = send_http_request_with_headers(
+        proxy_http_port,
+        "GET",
+        &path,
+        &[authorization_header(wildcard_token.to_owned())],
+        None,
+    )?;
+    let http_status = parse_http_status_code(&status)
+        .with_context(|| format!("parse HTTP status for GET {path} on port {proxy_http_port}: {status}"))?;
+    ensure!(
+        matches!(http_status, 302 | 307),
+        "unexpected HTTP status for GET {path} on port {proxy_http_port}: {status}"
+    );
+    let location = parse_http_header_value(&headers, "location")
+        .context("extract Location header from honeypot stream redirect")?;
+    let browser_url = if location.starts_with("http://") || location.starts_with("https://") {
+        location.to_owned()
+    } else {
+        format!("http://127.0.0.1:{proxy_http_port}{location}")
+    };
+    ensure!(
+        browser_url.contains("/jet/jrec/play"),
+        "honeypot stream redirect did not target /jet/jrec/play: {browser_url}"
+    );
+    Ok(browser_url)
+}
+
+fn resolve_manual_lab_browser_url(state: &mut ManualLabState, wildcard_token: &str) -> anyhow::Result<String> {
+    if state.sessions.len() != 1 {
+        return Ok(manual_lab_browser_url(
+            state.ports.frontend_http,
+            wildcard_token,
+            &state.sessions,
+        ));
+    }
+
+    if state.sessions[0].stream_probe_status.as_deref() != Some("ready") {
+        let session_id = state.sessions[0].session_id.clone();
+        let refreshed_outcome = wait_for_condition(
+            MANUAL_LAB_STREAM_READY_TIMEOUT,
+            || match probe_stream_token(state.ports.proxy_http, &session_id, wildcard_token)? {
+                outcome @ ManualLabStreamProbeOutcome::Ready { .. } => Ok(outcome),
+                ManualLabStreamProbeOutcome::Unavailable {
+                    detail,
+                    http_status,
+                    observed_at_unix_ms,
+                } => bail!(
+                    "stream probe is still unavailable for session {session_id}: status={http_status} observed_at_unix_ms={observed_at_unix_ms} detail={detail}"
+                ),
+            },
+            &format!("direct browser target stream probe for session {session_id}"),
+        )?;
+        record_stream_probe_outcome(state, 0, refreshed_outcome, "session.stream.browser_target")?;
+    }
+
+    let session_id = state.sessions[0].session_id.clone();
+    let stream_id = state.sessions[0]
+        .stream_id
+        .clone()
+        .context("manual lab direct browser target requires a ready stream_id")?;
+    let browser_url =
+        resolve_manual_lab_direct_playback_url(state.ports.proxy_http, &session_id, &stream_id, wildcard_token)?;
+    eprintln!(
+        "manual lab phase=browser.target.ready run_id={} slot={} session_id={} url={}",
+        state.run_id, state.sessions[0].slot, session_id, browser_url
+    );
+    Ok(browser_url)
+}
+
 pub fn honeypot_manual_lab_assert_cmd() -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::new(&*HONEYPOT_MANUAL_LAB_BIN_PATH);
     cmd.env("RUST_BACKTRACE", "0");
@@ -2517,7 +2593,13 @@ pub fn up(options: ManualLabUpOptions) -> anyhow::Result<ManualLabState> {
         wait_for_frontend_tiles(state.ports.frontend_http, state.sessions.len())?;
         eprintln!("manual lab phase=frontend.tiles.ready run_id={}", state.run_id);
 
-        if let Some(chrome_binary) = &state.chrome_binary {
+        if state.chrome_binary.is_some() {
+            state.browser_url = resolve_manual_lab_browser_url(&mut state, &wildcard_token)?;
+            persist_active_state(&state)?;
+            let chrome_binary = state
+                .chrome_binary
+                .as_ref()
+                .expect("chrome binary set when open_browser is enabled");
             let chrome = spawn_chrome(chrome_binary, &layout, &state.browser_url)?;
             state.chrome_pid = Some(chrome.pid);
             state.chrome_stdout_log = Some(chrome.stdout_log);
@@ -4087,8 +4169,8 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
         .unwrap_or_else(|| PathBuf::from(CANONICAL_TINY11_IMAGE_STORE_ROOT));
     let manifest_dir =
         optional_env_path(HONEYPOT_INTEROP_MANIFEST_DIR_ENV).unwrap_or_else(|| image_store.join("manifests"));
-    let web_player_root = optional_env_path(GATEWAY_WEBPLAYER_PATH_ENV)
-        .unwrap_or_else(default_manual_lab_webplayer_root);
+    let web_player_root =
+        optional_env_path(GATEWAY_WEBPLAYER_PATH_ENV).unwrap_or_else(default_manual_lab_webplayer_root);
     let qemu_binary_path = optional_env_path(HONEYPOT_INTEROP_QEMU_BINARY_ENV)
         .unwrap_or_else(|| PathBuf::from("/usr/bin/qemu-system-x86_64"));
     let kvm_path = optional_env_path(HONEYPOT_INTEROP_KVM_PATH_ENV).unwrap_or_else(|| PathBuf::from("/dev/kvm"));
@@ -4153,13 +4235,14 @@ fn manual_lab_webplayer_bundle_staleness_detail(paths: &ManualLabInteropPaths) -
     Ok(None)
 }
 
-fn manual_lab_find_first_newer_path(search_root: &Path, bundle_modified_at: SystemTime) -> anyhow::Result<Option<PathBuf>> {
+fn manual_lab_find_first_newer_path(
+    search_root: &Path,
+    bundle_modified_at: SystemTime,
+) -> anyhow::Result<Option<PathBuf>> {
     for entry in fs::read_dir(search_root).with_context(|| format!("read {}", search_root.display()))? {
         let entry = entry.with_context(|| format!("read entry under {}", search_root.display()))?;
         let path = entry.path();
-        let metadata = entry
-            .metadata()
-            .with_context(|| format!("stat {}", path.display()))?;
+        let metadata = entry.metadata().with_context(|| format!("stat {}", path.display()))?;
 
         if metadata.is_dir() {
             if let Some(newer_path) = manual_lab_find_first_newer_path(&path, bundle_modified_at)? {
@@ -5041,6 +5124,17 @@ fn send_http_request(
     headers: &[(String, String)],
     body: Option<&[u8]>,
 ) -> anyhow::Result<(String, Vec<u8>)> {
+    let (status, _, body) = send_http_request_with_headers(port, method, path, headers, body)?;
+    Ok((status, body))
+}
+
+fn send_http_request_with_headers(
+    port: u16,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+    body: Option<&[u8]>,
+) -> anyhow::Result<(String, String, Vec<u8>)> {
     let mut stream =
         TcpStream::connect((Ipv4Addr::LOCALHOST, port)).with_context(|| format!("connect to 127.0.0.1:{port}"))?;
     stream
@@ -5112,14 +5206,16 @@ fn send_http_request(
     }
 
     let header_end = header_end.context("split HTTP response headers and body")?;
-    let headers = std::str::from_utf8(&response[..header_end]).context("decode HTTP response headers")?;
+    let headers = std::str::from_utf8(&response[..header_end])
+        .context("decode HTTP response headers")?
+        .to_owned();
     let status_line = headers.lines().next().context("extract HTTP status line")?.to_owned();
     let body_start = header_end + 4;
     let body = match content_length {
         Some(expected_body_len) => response[body_start..(body_start + expected_body_len)].to_vec(),
         None => response[body_start..].to_vec(),
     };
-    Ok((status_line, body))
+    Ok((status_line, headers, body))
 }
 
 fn parse_content_length(headers: &str) -> anyhow::Result<Option<usize>> {
@@ -5144,6 +5240,17 @@ fn parse_transfer_encoding_chunked(headers: &str) -> bool {
         line.split_once(':').is_some_and(|(name, value)| {
             name.trim().eq_ignore_ascii_case("transfer-encoding") && value.to_ascii_lowercase().contains("chunked")
         })
+    })
+}
+
+fn parse_http_header_value<'a>(headers: &'a str, header_name: &str) -> Option<&'a str> {
+    headers.lines().skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        if name.trim().eq_ignore_ascii_case(header_name) {
+            Some(value.trim())
+        } else {
+            None
+        }
     })
 }
 
@@ -9075,6 +9182,52 @@ mod tests {
         );
 
         server.join().expect("join manual-lab test server");
+    }
+
+    #[test]
+    fn manual_lab_direct_playback_url_uses_proxy_redirect_location() {
+        use std::io::{Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind localhost listener");
+        let port = listener.local_addr().expect("read local addr").port();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept manual-lab redirect connection");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let read_len = stream.read(&mut chunk).expect("read manual-lab redirect request");
+                if read_len == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..read_len]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let request_text = String::from_utf8(request).expect("decode manual-lab redirect request");
+            assert!(
+                request_text.starts_with("GET /jet/honeypot/session/session-1/stream?stream_id=stream-1 HTTP/1.1"),
+                "{request_text}"
+            );
+
+            write!(
+                stream,
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: /jet/jrec/play?sessionId=session-1&token=test-token&isActive=true\r\nContent-Length: 0\r\n\r\n"
+            )
+            .expect("write manual-lab redirect response");
+            stream.flush().expect("flush manual-lab redirect response");
+        });
+
+        let browser_url = super::resolve_manual_lab_direct_playback_url(port, "session-1", "stream-1", "wildcard")
+            .expect("resolve manual-lab direct playback url");
+        assert_eq!(
+            browser_url,
+            format!("http://127.0.0.1:{port}/jet/jrec/play?sessionId=session-1&token=test-token&isActive=true")
+        );
+
+        server.join().expect("join manual-lab redirect server");
     }
 
     #[test]
