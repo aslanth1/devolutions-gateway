@@ -13,3 +13,6 @@ dist/
 # Downloaded build dependencies
 tun2socks.exe
 wintun.dll
+
+# Local autoresearch control files
+agent-paused.lock
