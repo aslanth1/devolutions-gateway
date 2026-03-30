@@ -23,6 +23,15 @@ type BrowserSampleStatus =
   | 'insufficient_samples'
   | 'transitional';
 type BrowserVisibilityVerdict = 'visible_frame' | 'sparse_pixels' | 'all_black' | 'inconclusive';
+type TrackedMediaEvent =
+  | 'loadstart'
+  | 'loadedmetadata'
+  | 'loadeddata'
+  | 'progress'
+  | 'stalled'
+  | 'waiting'
+  | 'canplay'
+  | 'playing';
 
 type BrowserVisibilitySample = {
   mode: BrowserPlayerMode;
@@ -44,6 +53,10 @@ const context = canvas.getContext('2d', { willReadFrequently: true });
 
 let browserVisibilityProbeStarted = false;
 let lastResolvedMode: BrowserPlayerMode | null = null;
+const mediaEventStates = new WeakMap<HTMLVideoElement, {
+  lastEvent?: TrackedMediaEvent;
+  counts: Partial<Record<TrackedMediaEvent, number>>;
+}>();
 
 function sleep(durationMs: number) {
   return new Promise((resolve) => {
@@ -81,6 +94,54 @@ function representativeValue<T>(values: T[]) {
   }
 
   return values[Math.floor(values.length / 2)];
+}
+
+function ensureMediaEventState(video: HTMLVideoElement) {
+  const existingState = mediaEventStates.get(video);
+  if (existingState) {
+    return existingState;
+  }
+
+  const state: {
+    lastEvent?: TrackedMediaEvent;
+    counts: Partial<Record<TrackedMediaEvent, number>>;
+  } = {
+    counts: {},
+  };
+
+  const trackedEvents: TrackedMediaEvent[] = [
+    'loadstart',
+    'loadedmetadata',
+    'loadeddata',
+    'progress',
+    'stalled',
+    'waiting',
+    'canplay',
+    'playing',
+  ];
+
+  for (const eventName of trackedEvents) {
+    video.addEventListener(eventName, () => {
+      state.lastEvent = eventName;
+      state.counts[eventName] = (state.counts[eventName] ?? 0) + 1;
+    });
+  }
+
+  mediaEventStates.set(video, state);
+  return state;
+}
+
+function formatMediaEventDetail(video: HTMLVideoElement) {
+  const state = ensureMediaEventState(video);
+  const lastEventDetail = state.lastEvent === undefined ? 'lastMediaEvent=none' : `lastMediaEvent=${state.lastEvent}`;
+  const progressDetail = `progressEvents=${state.counts.progress ?? 0}`;
+  const stalledDetail = `stalledEvents=${state.counts.stalled ?? 0}`;
+  const waitingDetail = `waitingEvents=${state.counts.waiting ?? 0}`;
+  const loadedDataDetail = `loadeddataEvents=${state.counts.loadeddata ?? 0}`;
+  const canPlayDetail = `canplayEvents=${state.counts.canplay ?? 0}`;
+  const playingDetail = `playingEvents=${state.counts.playing ?? 0}`;
+
+  return `${lastEventDetail} ${progressDetail} ${stalledDetail} ${waitingDetail} ${loadedDataDetail} ${canPlayDetail} ${playingDetail}`;
 }
 
 function formatNetworkStateDetail(networkState: number) {
@@ -124,8 +185,9 @@ function formatPlaybackStateDetail(
   const seekingDetail = `seeking=${video.seeking}`;
   const networkStateDetail = formatNetworkStateDetail(video.networkState);
   const bufferedDetail = formatBufferedDetail(video);
+  const mediaEventDetail = formatMediaEventDetail(video);
 
-  return `${pausedDetail} ${endedDetail} ${seekingDetail} ${networkStateDetail} ${bufferedDetail} readyState=${readyState} ${currentTimeDetail} ${videoWidthDetail} ${videoHeightDetail}`;
+  return `${pausedDetail} ${endedDetail} ${seekingDetail} ${networkStateDetail} ${bufferedDetail} ${mediaEventDetail} readyState=${readyState} ${currentTimeDetail} ${videoWidthDetail} ${videoHeightDetail}`;
 }
 
 function resolvePlayerVideo() {
