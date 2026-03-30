@@ -34,20 +34,12 @@ pub fn webm_stream(
     config: StreamingConfig,
     when_new_chunk_appended: impl Fn() -> tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
-    let mut raw_itr = WebmIterator::new(input_stream, &[MatroskaSpec::BlockGroup(Master::Start)]);
-    let mut headers = vec![];
-
-    // we extract all the headers before the first cluster
-    for tag in raw_itr.by_ref() {
-        let tag = tag?;
-        if matches!(tag, MatroskaSpec::Cluster(Master::Start)) {
-            break;
-        }
-
-        headers.push(tag);
-    }
-    let encode_writer_config = EncodeWriterConfig::try_from((headers.as_slice(), &config))?;
-    let cluster_start_position = raw_itr.last_emitted_tag_offset();
+    let (headers, encode_writer_config, raw_itr, cluster_start_position) = load_headers_with_retry(
+        input_stream,
+        &config,
+        Arc::clone(&shutdown_signal),
+        &when_new_chunk_appended,
+    )?;
     let mut webm_itr = WebmPositionedIterator::new(raw_itr, encode_writer_config.codec, cluster_start_position);
 
     // we run to the last cluster, skipping everything that has been played
@@ -230,6 +222,120 @@ pub fn webm_stream(
         Continue,
         Break,
     }
+}
+
+fn load_headers_with_retry<R>(
+    input_stream: R,
+    config: &StreamingConfig,
+    shutdown_signal: Arc<Notify>,
+    when_new_chunk_appended: &impl Fn() -> tokio::sync::oneshot::Receiver<()>,
+) -> anyhow::Result<(Vec<MatroskaSpec>, EncodeWriterConfig, WebmIterator<R>, usize)>
+where
+    R: std::io::Read + Reopenable,
+{
+    const MAX_HEADER_RETRY_COUNT: usize = 25;
+
+    let mut raw_itr = WebmIterator::new(input_stream, &[MatroskaSpec::BlockGroup(Master::Start)]);
+    raw_itr.emit_master_end_when_eof(false);
+    let mut retry_count = 0;
+
+    loop {
+        let mut headers = vec![];
+        let mut cluster_start_position = None;
+
+        loop {
+            match raw_itr.next() {
+                Some(Ok(tag)) => {
+                    if matches!(tag, MatroskaSpec::Cluster(Master::Start)) {
+                        cluster_start_position = Some(raw_itr.last_emitted_tag_offset());
+                        break;
+                    }
+
+                    headers.push(tag);
+                }
+                Some(Err(TagIteratorError::UnexpectedEOF { .. })) | None => {
+                    break;
+                }
+                Some(Err(error)) => {
+                    return Err(error.into());
+                }
+            }
+        }
+
+        match EncodeWriterConfig::try_from((headers.as_slice(), config)) {
+            Ok(encode_writer_config) => {
+                if let Some(cluster_start_position) = cluster_start_position {
+                    return Ok((headers, encode_writer_config, raw_itr, cluster_start_position));
+                }
+            }
+            Err(error) if cluster_start_position.is_none() && is_retryable_incomplete_header_error(&error) => {}
+            Err(error) => {
+                return Err(error);
+            }
+        }
+
+        if retry_count >= MAX_HEADER_RETRY_COUNT {
+            anyhow::bail!("webm headers or first cluster stayed incomplete before streaming could start");
+        }
+
+        retry_count += 1;
+        warn!(
+            retry_count,
+            headers_complete = cluster_start_position.is_some(),
+            "webm headers or first cluster incomplete before streaming start; waiting for more recording bytes"
+        );
+
+        match wait_for_header_growth(when_new_chunk_appended, Arc::clone(&shutdown_signal)) {
+            HeaderWaitControlFlow::Continue => {
+                let mut file = raw_itr.into_inner();
+                file.reopen()?;
+                file.seek(std::io::SeekFrom::Start(0))?;
+                raw_itr = WebmIterator::new(file, &[MatroskaSpec::BlockGroup(Master::Start)]);
+                raw_itr.emit_master_end_when_eof(false);
+            }
+            HeaderWaitControlFlow::Break => {
+                anyhow::bail!("streaming stopped while waiting for complete webm headers");
+            }
+        }
+    }
+}
+
+fn is_retryable_incomplete_header_error(error: &anyhow::Error) -> bool {
+    matches!(
+        error.root_cause().to_string().as_str(),
+        "no width specified in headers" | "no height specified in headers" | "no codec specified in headers"
+    )
+}
+
+enum HeaderWaitControlFlow {
+    Continue,
+    Break,
+}
+
+fn wait_for_header_growth(
+    when_new_chunk_appended: &impl Fn() -> tokio::sync::oneshot::Receiver<()>,
+    shutdown_signal: Arc<Notify>,
+) -> HeaderWaitControlFlow {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let when_new_chunk_appended_receiver = when_new_chunk_appended();
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = when_new_chunk_appended_receiver => {
+                let _ = tx.send(HeaderWaitControlFlow::Continue);
+            },
+            _ = shutdown_signal.notified() => {
+                let _ = tx.send(HeaderWaitControlFlow::Break);
+            },
+            _ = tokio::time::sleep(std::time::Duration::from_secs(3)) => {
+                trace!("header wait timed out, retrying");
+                let _ = tx.send(HeaderWaitControlFlow::Continue);
+            }
+        }
+    });
+    rx.blocking_recv().unwrap_or_else(|_| {
+        warn!("header wait sender dropped unexpectedly, treating as shutdown");
+        HeaderWaitControlFlow::Break
+    })
 }
 
 fn spawn_sending_task<W>(
