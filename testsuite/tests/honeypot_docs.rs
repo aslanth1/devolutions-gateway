@@ -1184,6 +1184,21 @@ fn honeypot_docs_keep_black_screen_runbook_contract_canonical() {
         &runbook,
         "Control comparison is meaningful for variant lanes only when `control_run_comparison_summary.verdict=meaningful_with_same_day_control`; the control lane itself records `not_required_for_control_lane`.",
     );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The frontend focus-player wrapper route is `GET /session/{id}/frame`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "The dashboard focus panel uses that same-origin wrapper to resolve the current proxy player URL before the browser boots the shared `/jet/jrec/play` runtime.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Treat `GET /session/{id}/frame` as the canonical dashboard-root playback seam because it preserves the operator-facing contract while booting the same player-owned startup path as the direct player page.",
+    );
 
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);

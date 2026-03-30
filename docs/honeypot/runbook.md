@@ -269,6 +269,10 @@ docker compose -f honeypot/docker/compose.yaml exec proxy curl -fsS http://127.0
 - The frontend health route is `GET /health`.
 - The proxy bootstrap route is `GET /jet/honeypot/bootstrap`.
 - The proxy replay and live update route is `GET /jet/honeypot/events`.
+- The frontend standalone session route is `GET /session/{id}`.
+- The frontend focus-player wrapper route is `GET /session/{id}/frame`.
+- The dashboard focus panel uses that same-origin wrapper to resolve the current proxy player URL before the browser boots the shared `/jet/jrec/play` runtime.
+- Treat `GET /session/{id}/frame` as the canonical dashboard-root playback seam because it preserves the operator-facing contract while booting the same player-owned startup path as the direct player page.
 - The proxy session list route is `GET /jet/sessions`.
 - The canonical correlation keys for logs, events, and evidence are `session_id`, `vm_lease_id`, `stream_id`, `event_id`, and `correlation_id`.
 - The current audit surface is the existing typed control-plane request and response envelopes plus the honeypot lifecycle events, not a second browser-facing audit API.
