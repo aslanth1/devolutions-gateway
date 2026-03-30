@@ -1686,6 +1686,163 @@ async fn frontend_dashboard_renders_initial_focus_panel_for_first_live_session_w
 }
 
 #[tokio::test]
+async fn frontend_dashboard_caps_live_tile_previews_to_focus_plus_one_non_focused_session() {
+    let first_session_id = Uuid::new_v4().to_string();
+    let second_session_id = Uuid::new_v4().to_string();
+    let third_session_id = Uuid::new_v4().to_string();
+    let (
+        proxy_addr,
+        proxy_handle,
+        _observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-multi-capped-previews".to_owned(),
+            generated_at: "2026-03-30T16:10:00Z".to_owned(),
+            replay_cursor: "17".to_owned(),
+            sessions: vec![
+                BootstrapSession {
+                    session_id: first_session_id.clone(),
+                    vm_lease_id: Some("lease-first".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-first".to_owned(),
+                    last_session_seq: 2,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-first".to_owned(),
+                        transport: StreamTransport::Websocket,
+                        stream_endpoint: format!(
+                            "/jet/honeypot/session/{first_session_id}/stream?stream_id=stream-first"
+                        ),
+                        token_expires_at: "2026-03-30T16:15:00Z".to_owned(),
+                    }),
+                },
+                BootstrapSession {
+                    session_id: second_session_id.clone(),
+                    vm_lease_id: Some("lease-second".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-second".to_owned(),
+                    last_session_seq: 3,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-second".to_owned(),
+                        transport: StreamTransport::Websocket,
+                        stream_endpoint: format!(
+                            "/jet/honeypot/session/{second_session_id}/stream?stream_id=stream-second"
+                        ),
+                        token_expires_at: "2026-03-30T16:15:00Z".to_owned(),
+                    }),
+                },
+                BootstrapSession {
+                    session_id: third_session_id.clone(),
+                    vm_lease_id: Some("lease-third".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-third".to_owned(),
+                    last_session_seq: 4,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-third".to_owned(),
+                        transport: StreamTransport::Websocket,
+                        stream_endpoint: format!(
+                            "/jet/honeypot/session/{third_session_id}/stream?stream_id=stream-third"
+                        ),
+                        token_expires_at: "2026-03-30T16:15:00Z".to_owned(),
+                    }),
+                },
+            ],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let (status_line, _headers, body) = read_http_response(port, &authed_path("/", HONEYPOT_WATCH_SCOPE_TOKEN))
+        .await
+        .expect("read dashboard");
+    let body = String::from_utf8(body).expect("decode dashboard html");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains("const maxActiveTilePreviews = 1;"), "{body}");
+    assert!(body.contains("Focused live in operator pane."), "{body}");
+    assert!(body.contains("Additional live preview paused."), "{body}");
+
+    let first_preview_url = format!("/session/{first_session_id}/frame?token={HONEYPOT_WATCH_SCOPE_TOKEN}");
+    let second_preview_url = format!("/session/{second_session_id}/frame?token={HONEYPOT_WATCH_SCOPE_TOKEN}");
+    let third_preview_url = format!("/session/{third_session_id}/frame?token={HONEYPOT_WATCH_SCOPE_TOKEN}");
+
+    let first_tile_start = body
+        .find(&format!("id=\"session-tile-{first_session_id}\""))
+        .expect("first tile present");
+    let second_tile_start = body
+        .find(&format!("id=\"session-tile-{second_session_id}\""))
+        .expect("second tile present");
+    let third_tile_start = body
+        .find(&format!("id=\"session-tile-{third_session_id}\""))
+        .expect("third tile present");
+    let first_tile = &body[first_tile_start..second_tile_start];
+    let second_tile = &body[second_tile_start..third_tile_start];
+    let third_tile = &body[third_tile_start..];
+
+    let suppressed_first_iframe = format!(
+        "<iframe class=\"tile-preview-frame\" data-preview-src=\"{first_preview_url}\" tabindex=\"-1\"></iframe>"
+    );
+    let active_second_iframe = format!(
+        "<iframe class=\"tile-preview-frame\" src=\"{second_preview_url}\" data-preview-src=\"{second_preview_url}\" loading=\"lazy\" tabindex=\"-1\"></iframe>"
+    );
+    let suppressed_third_iframe = format!(
+        "<iframe class=\"tile-preview-frame\" data-preview-src=\"{third_preview_url}\" tabindex=\"-1\"></iframe>"
+    );
+
+    assert!(first_tile.contains("tile-preview-stage is-suppressed"), "{first_tile}");
+    assert!(first_tile.contains(&suppressed_first_iframe), "{first_tile}");
+    assert!(!first_tile.contains(&format!("class=\"tile-preview-frame\" src=\"{first_preview_url}\"")), "{first_tile}");
+    assert!(first_tile.contains("Focused live in operator pane."), "{first_tile}");
+
+    assert!(!second_tile.contains("tile-preview-stage is-suppressed"), "{second_tile}");
+    assert!(second_tile.contains(&active_second_iframe), "{second_tile}");
+    assert!(second_tile.contains("tile-preview-overlay is-hidden"), "{second_tile}");
+    assert!(!second_tile.contains("Additional live preview paused."), "{second_tile}");
+
+    assert!(third_tile.contains("tile-preview-stage is-suppressed"), "{third_tile}");
+    assert!(third_tile.contains(&suppressed_third_iframe), "{third_tile}");
+    assert!(!third_tile.contains(&format!("class=\"tile-preview-frame\" src=\"{third_preview_url}\"")), "{third_tile}");
+    assert!(third_tile.contains("Additional live preview paused."), "{third_tile}");
+
+    assert_eq!(body.matches("class=\"tile-preview-stage is-suppressed\"").count(), 2, "{body}");
+    assert_eq!(body.matches("class=\"tile-preview-frame\" src=\"").count(), 1, "{body}");
+    assert!(
+        body.contains(&format!("data-focused-session-id=\"{first_session_id}\"")),
+        "{body}"
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
 async fn frontend_tile_route_rejects_terminal_sessions() {
     let disconnected_session_id = Uuid::new_v4().to_string();
     let recycled_session_id = Uuid::new_v4().to_string();
