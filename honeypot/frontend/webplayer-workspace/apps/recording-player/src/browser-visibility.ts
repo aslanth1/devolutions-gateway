@@ -83,7 +83,32 @@ function representativeValue<T>(values: T[]) {
   return values[Math.floor(values.length / 2)];
 }
 
+function formatNetworkStateDetail(networkState: number) {
+  switch (networkState) {
+    case HTMLMediaElement.NETWORK_EMPTY:
+      return 'networkState=empty';
+    case HTMLMediaElement.NETWORK_IDLE:
+      return 'networkState=idle';
+    case HTMLMediaElement.NETWORK_LOADING:
+      return 'networkState=loading';
+    case HTMLMediaElement.NETWORK_NO_SOURCE:
+      return 'networkState=no_source';
+    default:
+      return `networkState=${networkState}`;
+  }
+}
+
+function formatBufferedDetail(video: HTMLVideoElement) {
+  if (video.buffered.length === 0) {
+    return 'bufferedRanges=0';
+  }
+
+  const bufferedEndMs = Math.round(video.buffered.end(video.buffered.length - 1) * 1000);
+  return `bufferedRanges=${video.buffered.length} bufferedEndMs=${bufferedEndMs}`;
+}
+
 function formatPlaybackStateDetail(
+  video: HTMLVideoElement,
   readyState: number,
   currentTimeMs: number | undefined,
   videoWidth: number | undefined,
@@ -94,8 +119,13 @@ function formatPlaybackStateDetail(
   const videoWidthDetail = videoWidth === undefined ? 'videoWidth=unavailable' : `videoWidth=${videoWidth}`;
   const videoHeightDetail =
     videoHeight === undefined ? 'videoHeight=unavailable' : `videoHeight=${videoHeight}`;
+  const pausedDetail = `paused=${video.paused}`;
+  const endedDetail = `ended=${video.ended}`;
+  const seekingDetail = `seeking=${video.seeking}`;
+  const networkStateDetail = formatNetworkStateDetail(video.networkState);
+  const bufferedDetail = formatBufferedDetail(video);
 
-  return `readyState=${readyState} ${currentTimeDetail} ${videoWidthDetail} ${videoHeightDetail}`;
+  return `${pausedDetail} ${endedDetail} ${seekingDetail} ${networkStateDetail} ${bufferedDetail} readyState=${readyState} ${currentTimeDetail} ${videoWidthDetail} ${videoHeightDetail}`;
 }
 
 function resolvePlayerVideo() {
@@ -160,6 +190,7 @@ function samplePlayerVideo(): BrowserVisibilitySample {
       videoHeight,
       transitionObserved,
       detail: `video did not have a decodable frame available yet (${formatPlaybackStateDetail(
+        video,
         readyState,
         currentTimeMs,
         videoWidth,
