@@ -876,7 +876,8 @@ struct DashboardPageTemplate<'a> {
     boot_session_id_json: &'a str,
     operator_token_json: &'a str,
     has_live_sessions: bool,
-    system_kill_button_html: &'a str,
+    can_trigger_system_kill: bool,
+    system_kill_auth_query: &'a str,
     tiles_html: &'a str,
 }
 
@@ -894,7 +895,7 @@ struct SessionTileTemplate<'a> {
     preview_stream_id: &'a str,
     preview_transport_label: &'a str,
     preview_message: &'a str,
-    action_buttons_html: &'a str,
+    can_kill_session: bool,
 }
 
 #[derive(Template)]
@@ -903,7 +904,8 @@ struct FocusPanelTemplate<'a> {
     session_id: &'a str,
     state_label: &'a str,
     stream_label: &'a str,
-    focus_actions_html: &'a str,
+    can_kill_session: bool,
+    auth_query: &'a str,
     has_stream_preview: bool,
     has_player_url: bool,
     player_url: &'a str,
@@ -917,7 +919,7 @@ struct FocusPanelTemplate<'a> {
 
 fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse, access: &OperatorAccess) -> String {
     let operator_token = access.raw_token();
-    let system_kill_button = render_system_kill_button(access);
+    let system_kill_auth_query = operator_token_query(operator_token);
     let live_sessions = bootstrap
         .sessions
         .iter()
@@ -955,7 +957,8 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         boot_session_id_json: &boot_session_id_json,
         operator_token_json: &operator_token_json,
         has_live_sessions: !live_sessions.is_empty(),
-        system_kill_button_html: &system_kill_button,
+        can_trigger_system_kill: access.can_trigger_system_kill(),
+        system_kill_auth_query: &system_kill_auth_query,
         tiles_html: &tiles,
     }
     .render()
@@ -969,7 +972,6 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
     let stream_label = stream_state_label(session.stream_state);
     let state_class = state_label.replace(' ', "-").to_ascii_lowercase();
     let auth_query = operator_token_query(operator_token);
-    let action_buttons = render_session_action_buttons(session, operator_token, access.can_kill_sessions());
     let (has_preview, preview_stream_id, preview_transport_label, preview_message) =
         session.stream_preview.as_ref().map_or_else(
             || {
@@ -1002,7 +1004,7 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
         preview_stream_id,
         preview_transport_label,
         preview_message,
-        action_buttons_html: &action_buttons,
+        can_kill_session: access.can_kill_sessions() && session_can_be_killed(session.state),
     }
     .render()
     .unwrap_or_else(|error| format!("session tile template render failed: {error}"))
@@ -1018,7 +1020,7 @@ fn render_focus_panel(
     let session_id = session.session_id.as_str();
     let state_label = session_state_label(session.state);
     let stream_label = stream_state_label(session.stream_state);
-    let focus_actions = render_focus_action_buttons(session, access);
+    let auth_query = operator_token_query(access.raw_token());
     let (
         has_stream_preview,
         has_player_url,
@@ -1056,7 +1058,8 @@ fn render_focus_panel(
         session_id: &session_id,
         state_label: &state_label,
         stream_label: &stream_label,
-        focus_actions_html: &focus_actions,
+        can_kill_session: access.can_kill_sessions() && session_can_be_killed(session.state),
+        auth_query: &auth_query,
         has_stream_preview,
         has_player_url,
         player_url,
@@ -1312,90 +1315,6 @@ fn proposal_nonce() -> u128 {
         .map_or(0, |duration| duration.as_nanos())
 }
 
-fn render_session_action_buttons(session: &BootstrapSession, operator_token: &str, can_kill_sessions: bool) -> String {
-    if !can_kill_sessions || !session_can_be_killed(session.state) {
-        return String::new();
-    }
-
-    let session_id = escape_html(&session.session_id);
-    let auth_query = operator_token_query(operator_token);
-
-    format!(
-        r##"<div class="tile-actions">
-  <button
-    class="quarantine-button"
-    type="button"
-    hx-post="/session/{session_id}/quarantine?{auth_query}"
-    hx-target="#focus-panel"
-    hx-swap="innerHTML"
-    hx-confirm="Quarantine guest for session {session_id}?">
-    Quarantine guest
-  </button>
-  <button
-    class="kill-button"
-    type="button"
-    hx-post="/session/{session_id}/kill?{auth_query}"
-    hx-target="#focus-panel"
-    hx-swap="innerHTML"
-    hx-confirm="Kill session {session_id}?">
-    Kill session
-  </button>
-</div>"##
-    )
-}
-
-fn render_system_kill_button(access: &OperatorAccess) -> String {
-    if !access.can_trigger_system_kill() {
-        return String::new();
-    }
-
-    let auth_query = operator_token_query(access.raw_token());
-
-    format!(
-        r##"<button
-  class="kill-button"
-  type="button"
-  hx-post="/system/kill?{auth_query}"
-  hx-target="#focus-panel"
-  hx-swap="innerHTML"
-  hx-confirm="Kill all active honeypot sessions?">
-  Global kill
-</button>"##
-    )
-}
-
-fn render_focus_action_buttons(session: &BootstrapSession, access: &OperatorAccess) -> String {
-    if !access.can_kill_sessions() || !session_can_be_killed(session.state) {
-        return String::new();
-    }
-
-    let session_id = escape_html(&session.session_id);
-    let auth_query = operator_token_query(access.raw_token());
-
-    format!(
-        r##"<div class="focus-actions">
-  <button
-    class="quarantine-button"
-    type="button"
-    hx-post="/session/{session_id}/quarantine?{auth_query}"
-    hx-target="#focus-panel"
-    hx-swap="innerHTML"
-    hx-confirm="Quarantine guest for session {session_id}?">
-    Quarantine guest
-  </button>
-  <button
-    class="kill-button"
-    type="button"
-    hx-post="/session/{session_id}/kill?{auth_query}"
-    hx-target="#focus-panel"
-    hx-swap="innerHTML"
-    hx-confirm="Kill session {session_id}?">
-    Kill session
-  </button>
-</div>"##
-    )
-}
-
 fn session_can_be_killed(state: SessionState) -> bool {
     matches!(
         state,
@@ -1581,6 +1500,11 @@ mod tests {
         assert!(html.contains("const bootSessionId = \"session-1\";"), "{html}");
         assert!(html.contains("refreshFocus(bootSessionId)"), "{html}");
         assert!(html.contains("function scheduleFocusRetry(sessionId)"), "{html}");
-        assert!(html.contains("document.body.addEventListener(\"htmx:afterSwap\""), "{html}");
+        assert!(html.contains("Global kill"), "{html}");
+        assert!(html.contains("hx-post=\"/system/kill?token=operator-token\""), "{html}");
+        assert!(
+            html.contains("document.body.addEventListener(\"htmx:afterSwap\""),
+            "{html}"
+        );
     }
 }

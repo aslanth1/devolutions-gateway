@@ -15,5 +15,26 @@
     <div class="tile-meta"><strong>Stream</strong><span>{{ preview_message }}</span></div>
     {% endif %}
   </a>
-  {{ action_buttons_html|safe }}
+  {% if can_kill_session %}
+  <div class="tile-actions">
+    <button
+      class="quarantine-button"
+      type="button"
+      hx-post="/session/{{ session_id }}/quarantine?{{ auth_query }}"
+      hx-target="#focus-panel"
+      hx-swap="innerHTML"
+      hx-confirm="Quarantine guest for session {{ session_id }}?">
+      Quarantine guest
+    </button>
+    <button
+      class="kill-button"
+      type="button"
+      hx-post="/session/{{ session_id }}/kill?{{ auth_query }}"
+      hx-target="#focus-panel"
+      hx-swap="innerHTML"
+      hx-confirm="Kill session {{ session_id }}?">
+      Kill session
+    </button>
+  </div>
+  {% endif %}
 </article>

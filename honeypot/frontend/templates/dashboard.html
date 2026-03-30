@@ -227,7 +227,17 @@
       <section class="status-bar">
         <div class="status-metric">Live sessions: <strong>{{ session_count }}</strong></div>
         <div class="status-metric">Replay cursor: <code id="cursor-value">{{ replay_cursor }}</code></div>
-        {{ system_kill_button_html|safe }}
+        {% if can_trigger_system_kill %}
+        <button
+          class="kill-button"
+          type="button"
+          hx-post="/system/kill?{{ system_kill_auth_query }}"
+          hx-target="#focus-panel"
+          hx-swap="innerHTML"
+          hx-confirm="Kill all active honeypot sessions?">
+          Global kill
+        </button>
+        {% endif %}
       </section>
     </header>
     <main class="layout">

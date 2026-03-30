@@ -2,7 +2,28 @@
   <div class="tile-meta"><strong>Session</strong><code>{{ session_id }}</code></div>
   <div class="tile-meta"><strong>State</strong><span>{{ state_label }}</span></div>
   <div class="tile-meta"><strong>Stream state</strong><span>{{ stream_label }}</span></div>
-  {{ focus_actions_html|safe }}
+  {% if can_kill_session %}
+  <div class="focus-actions">
+    <button
+      class="quarantine-button"
+      type="button"
+      hx-post="/session/{{ session_id }}/quarantine?{{ auth_query }}"
+      hx-target="#focus-panel"
+      hx-swap="innerHTML"
+      hx-confirm="Quarantine guest for session {{ session_id }}?">
+      Quarantine guest
+    </button>
+    <button
+      class="kill-button"
+      type="button"
+      hx-post="/session/{{ session_id }}/kill?{{ auth_query }}"
+      hx-target="#focus-panel"
+      hx-swap="innerHTML"
+      hx-confirm="Kill session {{ session_id }}?">
+      Kill session
+    </button>
+  </div>
+  {% endif %}
   {% if has_stream_preview %}
   <div class="stream-stage">
     {% if has_player_url %}
