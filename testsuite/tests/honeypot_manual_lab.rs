@@ -463,6 +463,70 @@ fn manual_lab_black_screen_run_verdict_is_green_for_slot_stable_visible_playback
 }
 
 #[test]
+fn manual_lab_black_screen_run_verdict_accepts_dashboard_focused_slot_playback() {
+    let slot_one = sample_run_slot_evidence(1);
+
+    let mut slot_two = sample_run_slot_evidence(2);
+    slot_two.player_playback_path_summary.active_intent_observed = false;
+    slot_two.player_playback_path_summary.active_intent_at_unix_ms = None;
+    slot_two.player_playback_path_summary.verdict = ManualLabPlayerPlaybackModeVerdict::Inconclusive;
+    slot_two.player_playback_path_summary.detail = Some("slot two never became the focused player path".to_owned());
+    slot_two.browser_visibility_summary.windows.clear();
+    slot_two.browser_visibility_summary.valid_window_count = 0;
+    slot_two.browser_visibility_summary.representative_current_time_ms = None;
+    slot_two.browser_visibility_summary.data_status = ManualLabBrowserVisibilityDataStatus::InsufficientSamples;
+    slot_two.browser_visibility_summary.verdict = ManualLabRecordingVisibilityVerdict::Inconclusive;
+    slot_two.browser_artifact_correlation_summary.verdict =
+        ManualLabBrowserArtifactCorrelationVerdict::InconclusiveInsufficientData;
+    slot_two.browser_artifact_correlation_summary.browser_verdict = ManualLabRecordingVisibilityVerdict::Inconclusive;
+    slot_two.browser_artifact_correlation_summary.artifact_verdict = ManualLabRecordingVisibilityVerdict::Inconclusive;
+
+    let mut slot_three = sample_run_slot_evidence(3);
+    slot_three.playback_ready_correlation.verdict = ManualLabPlaybackReadyVerdict::ProbeBeforeReady;
+    slot_three.player_playback_path_summary.active_intent_observed = false;
+    slot_three.player_playback_path_summary.active_intent_at_unix_ms = None;
+    slot_three.player_playback_path_summary.verdict = ManualLabPlayerPlaybackModeVerdict::Inconclusive;
+    slot_three.player_playback_path_summary.detail = Some("slot three never became the focused player path".to_owned());
+    slot_three.browser_visibility_summary.windows.clear();
+    slot_three.browser_visibility_summary.valid_window_count = 0;
+    slot_three.browser_visibility_summary.representative_current_time_ms = None;
+    slot_three.browser_visibility_summary.data_status = ManualLabBrowserVisibilityDataStatus::InsufficientSamples;
+    slot_three.browser_visibility_summary.verdict = ManualLabRecordingVisibilityVerdict::Inconclusive;
+    slot_three.browser_artifact_correlation_summary.verdict =
+        ManualLabBrowserArtifactCorrelationVerdict::InconclusiveInsufficientData;
+    slot_three.browser_artifact_correlation_summary.browser_verdict =
+        ManualLabRecordingVisibilityVerdict::Inconclusive;
+    slot_three.browser_artifact_correlation_summary.artifact_verdict =
+        ManualLabRecordingVisibilityVerdict::Inconclusive;
+    slot_three.black_screen_branch.verdict = ManualLabBlackScreenBranchVerdict::PlayerLoss;
+
+    let mut evidence = sample_black_screen_run_evidence(vec![slot_one, slot_two, slot_three], 3);
+    evidence
+        .env
+        .insert("DGW_HONEYPOT_MANUAL_LAB_BROWSER_TARGET".to_owned(), "dashboard".to_owned());
+
+    let summary = build_manual_lab_black_screen_run_verdict_summary(&evidence);
+
+    assert_eq!(summary.verdict, ManualLabBlackScreenRunVerdict::UsablePlayback);
+    assert_eq!(
+        summary.primary_reason,
+        ManualLabBlackScreenRunReason::AllSlotsUsablePlayback
+    );
+    assert_eq!(
+        summary.detail.as_deref(),
+        Some("dashboard-root run focused slot(s) 1 reached usable live playback without unresolved corruption signals")
+    );
+    assert_eq!(
+        summary.slot_summaries[1].ready_path_reason,
+        ManualLabMultiSessionReadyPathSlotReason::MissingActiveIntent
+    );
+    assert_eq!(
+        summary.slot_summaries[2].ready_path_reason,
+        ManualLabMultiSessionReadyPathSlotReason::MissingReadyAlignment
+    );
+}
+
+#[test]
 fn manual_lab_black_screen_run_verdict_is_amber_for_ready_but_black_artifact_correlation() {
     let mut slot_two = sample_run_slot_evidence(2);
     slot_two.browser_visibility_summary.verdict = ManualLabRecordingVisibilityVerdict::AllBlack;

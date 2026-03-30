@@ -7189,6 +7189,32 @@ fn manual_lab_black_screen_run_reason_for_branch_verdict(
     }
 }
 
+fn manual_lab_dashboard_focused_run_slots(evidence: &ManualLabBlackScreenEvidence) -> Option<BTreeSet<usize>> {
+    if evidence.session_count <= 1 {
+        return None;
+    }
+
+    let Some(browser_target) = evidence.env.get(MANUAL_LAB_BROWSER_TARGET_ENV) else {
+        return None;
+    };
+    if !browser_target.trim().eq_ignore_ascii_case("dashboard") {
+        return None;
+    }
+
+    let active_slots = evidence
+        .session_invocations
+        .iter()
+        .filter(|session| session.player_playback_path_summary.active_intent_observed)
+        .map(|session| session.slot)
+        .collect::<BTreeSet<_>>();
+
+    (!active_slots.is_empty()).then_some(active_slots)
+}
+
+fn manual_lab_format_slot_list(slots: &BTreeSet<usize>) -> String {
+    slots.iter().map(|slot| slot.to_string()).collect::<Vec<_>>().join(", ")
+}
+
 fn build_manual_lab_black_screen_run_slot_summaries(
     evidence: &ManualLabBlackScreenEvidence,
 ) -> Vec<ManualLabBlackScreenRunSlotSummary> {
@@ -7284,11 +7310,20 @@ pub fn build_manual_lab_black_screen_run_verdict_summary(
         return summary;
     }
 
+    let focused_run_slots = manual_lab_dashboard_focused_run_slots(evidence);
+    let required_slots = focused_run_slots
+        .clone()
+        .unwrap_or_else(|| (1..=evidence.session_count).collect::<BTreeSet<_>>());
+
     let mut red_reasons = Vec::new();
     let mut amber_reasons = Vec::new();
     let mut missing_slots = Vec::new();
 
     for slot_summary in &summary.slot_summaries {
+        if !required_slots.contains(&slot_summary.slot) {
+            continue;
+        }
+
         if slot_summary.ready_path_reason == ManualLabMultiSessionReadyPathSlotReason::MissingSlotEvidence {
             missing_slots.push(slot_summary.slot);
         }
@@ -7324,21 +7359,45 @@ pub fn build_manual_lab_black_screen_run_verdict_summary(
     if !missing_slots.is_empty() {
         summary.primary_reason = ManualLabBlackScreenRunReason::MissingSlotEvidence;
         summary.reason_codes = vec![ManualLabBlackScreenRunReason::MissingSlotEvidence];
-        summary.detail = Some(format!(
-            "run verdict failed closed because evidence is missing for slot(s) {}",
-            missing_slots
-                .iter()
-                .map(|slot| slot.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        summary.detail = focused_run_slots.as_ref().map_or_else(
+            || {
+                Some(format!(
+                    "run verdict failed closed because evidence is missing for slot(s) {}",
+                    missing_slots
+                        .iter()
+                        .map(|slot| slot.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            },
+            |focused_slots| {
+                Some(format!(
+                    "dashboard-root run failed closed because focused slot(s) {} were missing evidence for slot(s) {}",
+                    manual_lab_format_slot_list(focused_slots),
+                    missing_slots
+                        .iter()
+                        .map(|slot| slot.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+            },
+        );
         return summary;
     }
 
     if !red_reasons.is_empty() {
         summary.primary_reason = red_reasons[0];
         summary.reason_codes = red_reasons;
-        summary.detail = Some(format!("run verdict failed closed due to {:?}", summary.primary_reason));
+        summary.detail = focused_run_slots.as_ref().map_or_else(
+            || Some(format!("run verdict failed closed due to {:?}", summary.primary_reason)),
+            |focused_slots| {
+                Some(format!(
+                    "dashboard-root run failed closed for focused slot(s) {} due to {:?}",
+                    manual_lab_format_slot_list(focused_slots),
+                    summary.primary_reason
+                ))
+            },
+        );
         return summary;
     }
 
@@ -7351,9 +7410,19 @@ pub fn build_manual_lab_black_screen_run_verdict_summary(
         for reason in amber_reasons {
             manual_lab_push_black_screen_run_reason(&mut summary.reason_codes, reason);
         }
-        summary.detail = Some(
-            "all expected slots were accounted for, but ready playback still showed unresolved corruption signals"
-                .to_owned(),
+        summary.detail = focused_run_slots.as_ref().map_or_else(
+            || {
+                Some(
+                    "all expected slots were accounted for, but ready playback still showed unresolved corruption signals"
+                        .to_owned(),
+                )
+            },
+            |focused_slots| {
+                Some(format!(
+                    "dashboard-root run focused slot(s) {} reached ready playback, but unresolved corruption signals remained",
+                    manual_lab_format_slot_list(focused_slots)
+                ))
+            },
         );
         return summary;
     }
@@ -7361,8 +7430,15 @@ pub fn build_manual_lab_black_screen_run_verdict_summary(
     summary.verdict = ManualLabBlackScreenRunVerdict::UsablePlayback;
     summary.primary_reason = ManualLabBlackScreenRunReason::AllSlotsUsablePlayback;
     summary.reason_codes = vec![ManualLabBlackScreenRunReason::AllSlotsUsablePlayback];
-    summary.detail =
-        Some("all expected slots reached usable live playback without unresolved corruption signals".to_owned());
+    summary.detail = focused_run_slots.as_ref().map_or_else(
+        || Some("all expected slots reached usable live playback without unresolved corruption signals".to_owned()),
+        |focused_slots| {
+            Some(format!(
+                "dashboard-root run focused slot(s) {} reached usable live playback without unresolved corruption signals",
+                manual_lab_format_slot_list(focused_slots)
+            ))
+        },
+    );
     summary
 }
 
