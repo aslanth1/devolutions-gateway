@@ -112,6 +112,33 @@
       gap: 1rem;
       align-items: start;
     }
+    .tile-preview-stage {
+      overflow: hidden;
+      border-radius: 1rem;
+      border: 1px solid rgba(13, 106, 115, 0.24);
+      background: #17130f;
+      box-shadow: 0 0.8rem 1.6rem rgba(23, 19, 15, 0.16);
+      aspect-ratio: 16 / 9;
+    }
+    .tile-preview-frame {
+      width: 100%;
+      height: 100%;
+      display: block;
+      border: 0;
+      background: #17130f;
+      pointer-events: none;
+    }
+    .tile-preview-note {
+      display: grid;
+      place-items: center;
+      min-height: 10rem;
+      padding: 1rem;
+      border-radius: 1rem;
+      border: 1px dashed rgba(31, 27, 22, 0.16);
+      background: linear-gradient(135deg, rgba(13, 106, 115, 0.08), rgba(197, 77, 32, 0.1));
+      color: rgba(31, 27, 22, 0.62);
+      text-align: center;
+    }
     .badge {
       display: inline-flex;
       align-items: center;

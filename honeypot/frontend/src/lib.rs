@@ -931,6 +931,7 @@ struct SessionTileView {
     last_event_id: String,
     auth_query: String,
     has_preview: bool,
+    preview_frame_url: String,
     preview_stream_id: String,
     preview_transport_label: String,
     preview_message: String,
@@ -1096,6 +1097,7 @@ fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess) 
     let stream_label = stream_state_label(session.stream_state);
     let state_class = state_label.replace(' ', "-").to_ascii_lowercase();
     let auth_query = operator_token_query(operator_token);
+    let preview_frame_url = session_frame_url(&session.session_id, operator_token);
     let (has_preview, preview_stream_id, preview_transport_label, preview_message) =
         session.stream_preview.as_ref().map_or_else(
             || {
@@ -1125,6 +1127,7 @@ fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess) 
         last_event_id: session.last_event_id.clone(),
         auth_query,
         has_preview,
+        preview_frame_url,
         preview_stream_id: preview_stream_id.to_owned(),
         preview_transport_label: preview_transport_label.to_owned(),
         preview_message: preview_message.to_owned(),

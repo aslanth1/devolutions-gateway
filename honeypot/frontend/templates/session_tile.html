@@ -1,5 +1,12 @@
 <article class="session-tile state-{{ tile.state_class }}" id="session-tile-{{ tile.session_id }}">
   <a class="tile-hit" href="/session/{{ tile.session_id }}?{{ tile.auth_query }}" hx-get="/session/{{ tile.session_id }}?{{ tile.auth_query }}" hx-target="#focus-panel" hx-swap="innerHTML">
+    {% if tile.has_preview %}
+    <div class="tile-preview-stage">
+      <iframe class="tile-preview-frame" src="{{ tile.preview_frame_url }}" loading="lazy" tabindex="-1"></iframe>
+    </div>
+    {% else %}
+    <div class="tile-preview-note">{{ tile.preview_message }}</div>
+    {% endif %}
     <div class="tile-head">
       <div>
         <div class="badge">{{ tile.state_label }}</div>
@@ -11,8 +18,6 @@
     <div class="tile-meta"><strong>Last event</strong><code>{{ tile.last_event_id }}</code></div>
     {% if tile.has_preview %}
     <div class="tile-meta"><strong>Stream</strong><code>{{ tile.preview_stream_id }}</code><span>{{ tile.preview_transport_label }}</span></div>
-    {% else %}
-    <div class="tile-meta"><strong>Stream</strong><span>{{ tile.preview_message }}</span></div>
     {% endif %}
   </a>
   {% if tile.can_kill_session %}
