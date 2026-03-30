@@ -59,6 +59,7 @@ const MANUAL_LAB_CHROME_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_CHROME";
 const MANUAL_LAB_XVFB_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_XVFB";
 const MANUAL_LAB_XEPHYR_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_XEPHYR";
 const MANUAL_LAB_SESSION_COUNT_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_SESSION_COUNT";
+const MANUAL_LAB_BROWSER_TARGET_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_BROWSER_TARGET";
 const MANUAL_LAB_SELECTED_SOURCE_MANIFEST_ENV: &str = "DGW_HONEYPOT_MANUAL_LAB_SELECTED_SOURCE_MANIFEST";
 const MANUAL_LAB_FRONTEND_CONFIG_ENV: &str = "HONEYPOT_FRONTEND_CONFIG_PATH";
 const HONEYPOT_BS_ROWS_ENV: &str = "DGW_HONEYPOT_BS_ROWS";
@@ -2227,6 +2228,26 @@ fn manual_lab_browser_url(
     format!("http://127.0.0.1:{frontend_http_port}/?token={wildcard_token}")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualLabBrowserTarget {
+    Auto,
+    Dashboard,
+}
+
+fn manual_lab_browser_target_from_env() -> anyhow::Result<ManualLabBrowserTarget> {
+    let Some(value) = optional_env_string(MANUAL_LAB_BROWSER_TARGET_ENV) else {
+        return Ok(ManualLabBrowserTarget::Auto);
+    };
+
+    match value.trim().to_ascii_lowercase().as_str() {
+        "auto" => Ok(ManualLabBrowserTarget::Auto),
+        "dashboard" => Ok(ManualLabBrowserTarget::Dashboard),
+        other => bail!(
+            "{MANUAL_LAB_BROWSER_TARGET_ENV} must be one of auto or dashboard, got {other}"
+        ),
+    }
+}
+
 fn resolve_manual_lab_direct_playback_url(
     proxy_http_port: u16,
     session_id: &str,
@@ -2262,6 +2283,15 @@ fn resolve_manual_lab_direct_playback_url(
 }
 
 fn resolve_manual_lab_browser_url(state: &mut ManualLabState, wildcard_token: &str) -> anyhow::Result<String> {
+    if manual_lab_browser_target_from_env()? == ManualLabBrowserTarget::Dashboard {
+        let browser_url = manual_lab_browser_url(state.ports.frontend_http, wildcard_token, &state.sessions);
+        eprintln!(
+            "manual lab phase=browser.target.dashboard run_id={} url={}",
+            state.run_id, browser_url
+        );
+        return Ok(browser_url);
+    }
+
     if state.sessions.len() != 1 {
         return Ok(manual_lab_browser_url(
             state.ports.frontend_http,
@@ -5537,6 +5567,7 @@ fn collect_black_screen_env_snapshot() -> BTreeMap<String, String> {
         "MANUAL_LAB_PROFILE",
         MANUAL_LAB_CONTROL_PLANE_CONFIG_ENV,
         MANUAL_LAB_SESSION_COUNT_ENV,
+        MANUAL_LAB_BROWSER_TARGET_ENV,
         HONEYPOT_BS_ROWS_ENV,
         HONEYPOT_BS_HYPOTHESIS_ID_ENV,
         HONEYPOT_BS_HYPOTHESIS_TEXT_ENV,
