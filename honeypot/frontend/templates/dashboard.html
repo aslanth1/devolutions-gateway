@@ -80,6 +80,7 @@
     .tile-grid {
       display: grid;
       gap: 0.9rem;
+      grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
       align-content: start;
       min-height: 22rem;
     }
@@ -258,6 +259,7 @@
     @media (max-width: 900px) {
       .shell { padding: 1rem; }
       .layout { grid-template-columns: 1fr; }
+      .tile-grid { grid-template-columns: 1fr; }
       .masthead { align-items: start; flex-direction: column; }
       .status-bar { min-width: 0; width: 100%; }
     }
