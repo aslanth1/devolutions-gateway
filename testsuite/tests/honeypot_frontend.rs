@@ -1588,6 +1588,104 @@ async fn frontend_dashboard_bootstraps_first_live_session_when_multiple_live_ses
 }
 
 #[tokio::test]
+async fn frontend_dashboard_renders_initial_focus_panel_for_first_live_session_when_multiple_live_sessions_exist() {
+    let first_session_id = Uuid::new_v4().to_string();
+    let second_session_id = Uuid::new_v4().to_string();
+    let (
+        proxy_addr,
+        proxy_handle,
+        _observed_tokens,
+        _terminated_sessions,
+        _quarantined_sessions,
+        _system_terminate_requests,
+    ) = start_mock_proxy(mock_state(
+        BootstrapResponse {
+            schema_version: honeypot_contracts::SCHEMA_VERSION,
+            correlation_id: "bootstrap-multi-initial-focus".to_owned(),
+            generated_at: "2026-03-30T14:05:00Z".to_owned(),
+            replay_cursor: "16".to_owned(),
+            sessions: vec![
+                BootstrapSession {
+                    session_id: first_session_id.clone(),
+                    vm_lease_id: Some("lease-first".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-first".to_owned(),
+                    last_session_seq: 2,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-first".to_owned(),
+                        transport: StreamTransport::Websocket,
+                        stream_endpoint: format!(
+                            "/jet/honeypot/session/{first_session_id}/stream?stream_id=stream-first"
+                        ),
+                        token_expires_at: "2026-03-30T14:10:00Z".to_owned(),
+                    }),
+                },
+                BootstrapSession {
+                    session_id: second_session_id.clone(),
+                    vm_lease_id: Some("lease-second".to_owned()),
+                    state: SessionState::Ready,
+                    last_event_id: "event-second".to_owned(),
+                    last_session_seq: 3,
+                    stream_state: StreamState::Ready,
+                    stream_preview: Some(StreamPreview {
+                        stream_id: "stream-second".to_owned(),
+                        transport: StreamTransport::Websocket,
+                        stream_endpoint: format!(
+                            "/jet/honeypot/session/{second_session_id}/stream?stream_id=stream-second"
+                        ),
+                        token_expires_at: "2026-03-30T14:10:00Z".to_owned(),
+                    }),
+                },
+            ],
+        },
+        String::new(),
+        HashMap::new(),
+    ))
+    .await;
+
+    let tempdir = tempfile::tempdir().expect("create frontend tempdir");
+    let config_path = tempdir.path().join("frontend.toml");
+    let port = find_unused_port();
+    write_honeypot_frontend_config(
+        &config_path,
+        &HoneypotFrontendTestConfig::builder()
+            .bind_addr(format!("127.0.0.1:{port}"))
+            .proxy_base_url(format!("http://{proxy_addr}/"))
+            .build(),
+    )
+    .expect("write frontend config");
+
+    let mut child = honeypot_frontend_tokio_cmd();
+    child.env("HONEYPOT_FRONTEND_CONFIG_PATH", &config_path);
+    let mut child = child.spawn().expect("spawn frontend");
+
+    wait_for_tcp_port(port).await.expect("wait for frontend port");
+
+    let (status_line, _headers, body) = read_http_response(port, &authed_path("/", HONEYPOT_WATCH_SCOPE_TOKEN))
+        .await
+        .expect("read dashboard");
+    let body = String::from_utf8(body).expect("decode dashboard html");
+
+    assert!(status_line.contains("200"), "{status_line}");
+    assert!(body.contains(&format!("data-focused-session-id=\"{first_session_id}\"")), "{body}");
+    assert!(
+        body.contains(&format!("/session/{first_session_id}/frame?token={HONEYPOT_WATCH_SCOPE_TOKEN}")),
+        "{body}"
+    );
+    assert!(!body.contains("Choose a live tile to inspect stream metadata and session state."), "{body}");
+    assert!(
+        !body.contains(&format!("data-focused-session-id=\"{second_session_id}\"")),
+        "{body}"
+    );
+
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+    proxy_handle.abort();
+    let _ = proxy_handle.await;
+}
+
+#[tokio::test]
 async fn frontend_tile_route_rejects_terminal_sessions() {
     let disconnected_session_id = Uuid::new_v4().to_string();
     let recycled_session_id = Uuid::new_v4().to_string();

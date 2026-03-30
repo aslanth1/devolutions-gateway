@@ -914,6 +914,8 @@ struct DashboardPageTemplate<'a> {
     boot_session_id_json: &'a str,
     operator_token_json: &'a str,
     has_live_sessions: bool,
+    has_initial_focus: bool,
+    initial_focus_html: &'a str,
     can_trigger_system_kill: bool,
     system_kill_auth_query: &'a str,
     tiles: &'a [SessionTileView],
@@ -1051,6 +1053,18 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         .iter()
         .filter(|session| session_is_live_for_dashboard(session.state))
         .count();
+    let initial_focus_html = live_sessions
+        .first()
+        .map(|session| {
+            render_focus_panel(
+                session,
+                session.stream_preview.as_ref(),
+                session.stream_preview.as_ref().map(|_| "bootstrap-focus-frame"),
+                access,
+                false,
+            )
+        })
+        .unwrap_or_default();
     let boot_session_id_json =
         serde_json::to_string(&live_sessions.first().map(|session| session.session_id.as_str()))
             .unwrap_or_else(|_| "null".to_owned());
@@ -1065,6 +1079,8 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         boot_session_id_json: &boot_session_id_json,
         operator_token_json: &operator_token_json,
         has_live_sessions: !live_sessions.is_empty(),
+        has_initial_focus: !initial_focus_html.is_empty(),
+        initial_focus_html: &initial_focus_html,
         can_trigger_system_kill: access.can_trigger_system_kill(),
         system_kill_auth_query: &system_kill_auth_query,
         tiles: &tiles,
@@ -1620,6 +1636,8 @@ mod tests {
         assert!(html.contains("const bootSessionId = \"session-1\";"), "{html}");
         assert!(html.contains("refreshFocus(bootSessionId)"), "{html}");
         assert!(html.contains("function scheduleFocusRetry(sessionId)"), "{html}");
+        assert!(html.contains("data-focused-session-id=\"session-1\""), "{html}");
+        assert!(html.contains("/session/session-1/frame?token=operator-token"), "{html}");
         assert!(html.contains("id=\"session-tile-session-1\""), "{html}");
         assert!(html.contains("hx-get=\"/session/session-1?token=operator-token\""), "{html}");
         assert!(html.contains("hx-post=\"/session/session-1/kill?token=operator-token\""), "{html}");

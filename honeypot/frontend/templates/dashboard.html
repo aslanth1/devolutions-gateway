@@ -251,7 +251,11 @@
         {% endif %}
       </section>
       <aside id="focus-panel" class="focus-panel">
+        {% if has_initial_focus %}
+        {{ initial_focus_html|safe }}
+        {% else %}
         <div class="focus-empty">Choose a live tile to inspect stream metadata and session state.</div>
+        {% endif %}
       </aside>
     </main>
   </div>
