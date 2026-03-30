@@ -5750,6 +5750,9 @@ const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
   const samples = [];
   let firstVisibleAt = null;
   let firstSparseAt = null;
+  let peakR = 0;
+  let peakG = 0;
+  let peakB = 0;
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -5771,7 +5774,15 @@ const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
     const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
     let nonBlack = 0;
     for (let i = 0; i < data.length; i += 4) {
-      if (data[i] > 8 || data[i + 1] > 8 || data[i + 2] > 8) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      if (r > peakR) peakR = r;
+      if (g > peakG) peakG = g;
+      if (b > peakB) peakB = b;
+
+      if (r > 8 || g > 8 || b > 8) {
         nonBlack++;
       }
     }
@@ -5810,6 +5821,9 @@ const MANUAL_LAB_RECORDING_VISIBILITY_PROBE_TEMPLATE: &str = r#"<!doctype html>
       maxRatio,
       firstVisibleAt,
       firstSparseAt,
+      peakR,
+      peakG,
+      peakB,
       verdict: firstVisibleAt !== null ? "visible" : (firstSparseAt !== null ? "sparse" : "black")
     });
   }, maxMs);
@@ -5960,6 +5974,12 @@ struct ManualLabRecordingVisibilityProbePayload {
     #[serde(default)]
     first_sparse_at: Option<f64>,
     #[serde(default)]
+    peak_r: Option<u8>,
+    #[serde(default)]
+    peak_g: Option<u8>,
+    #[serde(default)]
+    peak_b: Option<u8>,
+    #[serde(default)]
     verdict: Option<String>,
     #[serde(default)]
     timeout: bool,
@@ -6052,6 +6072,22 @@ fn manual_lab_recording_visibility_seconds_to_ms(seconds: Option<f64>) -> Option
     }
 
     Some((seconds * 1000.0).round() as u64)
+}
+
+fn manual_lab_recording_visibility_peak_rgb_detail(
+    payload: &ManualLabRecordingVisibilityProbePayload,
+) -> Option<String> {
+    Some(format!(
+        "peak_rgb={}/{}/{}",
+        payload.peak_r?, payload.peak_g?, payload.peak_b?
+    ))
+}
+
+fn manual_lab_append_optional_detail_suffix(detail: String, suffix: Option<&str>) -> String {
+    match suffix {
+        Some(suffix) => format!("{detail} ({suffix})"),
+        None => detail,
+    }
 }
 
 fn write_manual_lab_recording_visibility_summary_artifact(
@@ -6194,11 +6230,15 @@ fn build_manual_lab_recording_visibility_summary(
             summary.first_sparse_offset_ms = manual_lab_recording_visibility_seconds_to_ms(payload.first_sparse_at);
             summary.max_non_black_ratio_per_mille =
                 manual_lab_recording_visibility_ratio_to_per_mille(payload.max_ratio);
+            let peak_rgb_detail = manual_lab_recording_visibility_peak_rgb_detail(&payload);
 
             if let Some(error) = payload.error {
                 summary.verdict = ManualLabRecordingVisibilityVerdict::AnalysisFailed;
                 summary.confidence = ManualLabEvidenceConfidence::Low;
-                summary.detail = Some(format!("recording visibility probe reported error: {error}"));
+                summary.detail = Some(manual_lab_append_optional_detail_suffix(
+                    format!("recording visibility probe reported error: {error}"),
+                    peak_rgb_detail.as_deref(),
+                ));
             } else {
                 summary.verdict = match payload.verdict.as_deref() {
                     Some("visible") => ManualLabRecordingVisibilityVerdict::VisibleFrame,
@@ -6212,22 +6252,32 @@ fn build_manual_lab_recording_visibility_summary(
                     ManualLabEvidenceConfidence::Low
                 };
                 summary.detail = Some(match summary.verdict {
-                    ManualLabRecordingVisibilityVerdict::VisibleFrame => format!(
-                        "headless chrome found a visible non-black frame within {}ms",
-                        summary.first_visible_offset_ms.unwrap_or_default()
+                    ManualLabRecordingVisibilityVerdict::VisibleFrame => manual_lab_append_optional_detail_suffix(
+                        format!(
+                            "headless chrome found a visible non-black frame within {}ms",
+                            summary.first_visible_offset_ms.unwrap_or_default()
+                        ),
+                        peak_rgb_detail.as_deref(),
                     ),
-                    ManualLabRecordingVisibilityVerdict::SparsePixels => format!(
-                        "headless chrome only found sparse non-black pixels within {}ms (max={} per-mille)",
-                        summary.first_sparse_offset_ms.unwrap_or_default(),
-                        summary.max_non_black_ratio_per_mille.unwrap_or_default()
+                    ManualLabRecordingVisibilityVerdict::SparsePixels => manual_lab_append_optional_detail_suffix(
+                        format!(
+                            "headless chrome only found sparse non-black pixels within {}ms (max={} per-mille)",
+                            summary.first_sparse_offset_ms.unwrap_or_default(),
+                            summary.max_non_black_ratio_per_mille.unwrap_or_default()
+                        ),
+                        peak_rgb_detail.as_deref(),
                     ),
-                    ManualLabRecordingVisibilityVerdict::AllBlack => format!(
-                        "headless chrome kept recording-0.webm below the sparse threshold for {} sampled frames",
-                        summary.sampled_frame_count
+                    ManualLabRecordingVisibilityVerdict::AllBlack => manual_lab_append_optional_detail_suffix(
+                        format!(
+                            "headless chrome kept recording-0.webm below the sparse threshold for {} sampled frames",
+                            summary.sampled_frame_count
+                        ),
+                        peak_rgb_detail.as_deref(),
                     ),
-                    ManualLabRecordingVisibilityVerdict::Inconclusive => {
-                        "recording visibility probe completed without a stable verdict".to_owned()
-                    }
+                    ManualLabRecordingVisibilityVerdict::Inconclusive => manual_lab_append_optional_detail_suffix(
+                        "recording visibility probe completed without a stable verdict".to_owned(),
+                        peak_rgb_detail.as_deref(),
+                    ),
                     ManualLabRecordingVisibilityVerdict::MissingArtifact
                     | ManualLabRecordingVisibilityVerdict::AnalysisUnavailable
                     | ManualLabRecordingVisibilityVerdict::AnalysisFailed => {
