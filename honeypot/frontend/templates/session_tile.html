@@ -1,38 +1,38 @@
-<article class="session-tile state-{{ state_class }}" id="session-tile-{{ session_id }}">
-  <a class="tile-hit" href="/session/{{ session_id }}?{{ auth_query }}" hx-get="/session/{{ session_id }}?{{ auth_query }}" hx-target="#focus-panel" hx-swap="innerHTML">
+<article class="session-tile state-{{ tile.state_class }}" id="session-tile-{{ tile.session_id }}">
+  <a class="tile-hit" href="/session/{{ tile.session_id }}?{{ tile.auth_query }}" hx-get="/session/{{ tile.session_id }}?{{ tile.auth_query }}" hx-target="#focus-panel" hx-swap="innerHTML">
     <div class="tile-head">
       <div>
-        <div class="badge">{{ state_label }}</div>
+        <div class="badge">{{ tile.state_label }}</div>
       </div>
-      <div class="tile-meta"><strong>Stream</strong><span>{{ stream_label }}</span></div>
+      <div class="tile-meta"><strong>Stream</strong><span>{{ tile.stream_label }}</span></div>
     </div>
-    <div class="tile-meta"><strong>Session</strong><code>{{ session_id }}</code></div>
-    <div class="tile-meta"><strong>Lease</strong><code>{{ vm_lease_id }}</code></div>
-    <div class="tile-meta"><strong>Last event</strong><code>{{ last_event_id }}</code></div>
-    {% if has_preview %}
-    <div class="tile-meta"><strong>Stream</strong><code>{{ preview_stream_id }}</code><span>{{ preview_transport_label }}</span></div>
+    <div class="tile-meta"><strong>Session</strong><code>{{ tile.session_id }}</code></div>
+    <div class="tile-meta"><strong>Lease</strong><code>{{ tile.vm_lease_id }}</code></div>
+    <div class="tile-meta"><strong>Last event</strong><code>{{ tile.last_event_id }}</code></div>
+    {% if tile.has_preview %}
+    <div class="tile-meta"><strong>Stream</strong><code>{{ tile.preview_stream_id }}</code><span>{{ tile.preview_transport_label }}</span></div>
     {% else %}
-    <div class="tile-meta"><strong>Stream</strong><span>{{ preview_message }}</span></div>
+    <div class="tile-meta"><strong>Stream</strong><span>{{ tile.preview_message }}</span></div>
     {% endif %}
   </a>
-  {% if can_kill_session %}
+  {% if tile.can_kill_session %}
   <div class="tile-actions">
     <button
       class="quarantine-button"
       type="button"
-      hx-post="/session/{{ session_id }}/quarantine?{{ auth_query }}"
+      hx-post="/session/{{ tile.session_id }}/quarantine?{{ tile.auth_query }}"
       hx-target="#focus-panel"
       hx-swap="innerHTML"
-      hx-confirm="Quarantine guest for session {{ session_id }}?">
+      hx-confirm="Quarantine guest for session {{ tile.session_id }}?">
       Quarantine guest
     </button>
     <button
       class="kill-button"
       type="button"
-      hx-post="/session/{{ session_id }}/kill?{{ auth_query }}"
+      hx-post="/session/{{ tile.session_id }}/kill?{{ tile.auth_query }}"
       hx-target="#focus-panel"
       hx-swap="innerHTML"
-      hx-confirm="Kill session {{ session_id }}?">
+      hx-confirm="Kill session {{ tile.session_id }}?">
       Kill session
     </button>
   </div>

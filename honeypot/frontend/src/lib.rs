@@ -878,24 +878,29 @@ struct DashboardPageTemplate<'a> {
     has_live_sessions: bool,
     can_trigger_system_kill: bool,
     system_kill_auth_query: &'a str,
-    tiles_html: &'a str,
+    tiles: &'a [SessionTileView],
+}
+
+#[derive(Clone)]
+struct SessionTileView {
+    session_id: String,
+    state_class: String,
+    state_label: String,
+    stream_label: String,
+    vm_lease_id: String,
+    last_event_id: String,
+    auth_query: String,
+    has_preview: bool,
+    preview_stream_id: String,
+    preview_transport_label: String,
+    preview_message: String,
+    can_kill_session: bool,
 }
 
 #[derive(Template)]
 #[template(path = "session_tile.html")]
-struct SessionTileTemplate<'a> {
-    session_id: &'a str,
-    state_class: &'a str,
-    state_label: &'a str,
-    stream_label: &'a str,
-    vm_lease_id: &'a str,
-    last_event_id: &'a str,
-    auth_query: &'a str,
-    has_preview: bool,
-    preview_stream_id: &'a str,
-    preview_transport_label: &'a str,
-    preview_message: &'a str,
-    can_kill_session: bool,
+struct SessionTileTemplate {
+    tile: SessionTileView,
 }
 
 #[derive(Template)]
@@ -925,15 +930,10 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         .iter()
         .filter(|session| session_is_live_for_dashboard(session.state))
         .collect::<Vec<_>>();
-    let tiles = if live_sessions.is_empty() {
-        "<div class=\"empty-state\">No live sessions are visible yet.</div>".to_owned()
-    } else {
-        live_sessions
-            .iter()
-            .map(|session| render_session_tile(session, access))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let tiles = live_sessions
+        .iter()
+        .map(|session| build_session_tile_view(session, access))
+        .collect::<Vec<_>>();
     let session_count = bootstrap
         .sessions
         .iter()
@@ -959,13 +959,13 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         has_live_sessions: !live_sessions.is_empty(),
         can_trigger_system_kill: access.can_trigger_system_kill(),
         system_kill_auth_query: &system_kill_auth_query,
-        tiles_html: &tiles,
+        tiles: &tiles,
     }
     .render()
     .unwrap_or_else(|error| format!("dashboard template render failed: {error}"))
 }
 
-fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> String {
+fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess) -> SessionTileView {
     let operator_token = access.raw_token();
     let vm_lease_id = session.vm_lease_id.as_deref().unwrap_or("pending-lease");
     let state_label = session_state_label(session.state);
@@ -992,19 +992,25 @@ fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> S
             },
         );
 
-    SessionTileTemplate {
-        session_id: &session.session_id,
-        state_class: &state_class,
-        state_label,
-        stream_label,
-        vm_lease_id,
-        last_event_id: &session.last_event_id,
-        auth_query: &auth_query,
+    SessionTileView {
+        session_id: session.session_id.clone(),
+        state_class,
+        state_label: state_label.to_owned(),
+        stream_label: stream_label.to_owned(),
+        vm_lease_id: vm_lease_id.to_owned(),
+        last_event_id: session.last_event_id.clone(),
+        auth_query,
         has_preview,
-        preview_stream_id,
-        preview_transport_label,
-        preview_message,
+        preview_stream_id: preview_stream_id.to_owned(),
+        preview_transport_label: preview_transport_label.to_owned(),
+        preview_message: preview_message.to_owned(),
         can_kill_session: access.can_kill_sessions() && session_can_be_killed(session.state),
+    }
+}
+
+fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> String {
+    SessionTileTemplate {
+        tile: build_session_tile_view(session, access),
     }
     .render()
     .unwrap_or_else(|error| format!("session tile template render failed: {error}"))
@@ -1500,6 +1506,9 @@ mod tests {
         assert!(html.contains("const bootSessionId = \"session-1\";"), "{html}");
         assert!(html.contains("refreshFocus(bootSessionId)"), "{html}");
         assert!(html.contains("function scheduleFocusRetry(sessionId)"), "{html}");
+        assert!(html.contains("id=\"session-tile-session-1\""), "{html}");
+        assert!(html.contains("hx-get=\"/session/session-1?token=operator-token\""), "{html}");
+        assert!(html.contains("hx-post=\"/session/session-1/kill?token=operator-token\""), "{html}");
         assert!(html.contains("Global kill"), "{html}");
         assert!(html.contains("hx-post=\"/system/kill?token=operator-token\""), "{html}");
         assert!(

@@ -243,7 +243,9 @@
     <main class="layout">
       <section id="tile-grid" class="tile-grid">
         {% if has_live_sessions %}
-        {{ tiles_html|safe }}
+        {% for tile in tiles %}
+        {% include "session_tile.html" %}
+        {% endfor %}
         {% else %}
         <div class="empty-state">No live sessions are visible yet.</div>
         {% endif %}
