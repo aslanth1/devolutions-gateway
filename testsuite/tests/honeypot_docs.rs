@@ -1204,6 +1204,16 @@ fn honeypot_docs_keep_black_screen_runbook_contract_canonical() {
         &runbook,
         "Treat `GET /session/{id}/frame` as the canonical dashboard-root playback seam because it preserves the operator-facing contract while booting the same player-owned startup path as the direct player page.",
     );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "When multiple live sessions exist, the dashboard intentionally keeps the focused pane and at most one non-focused live tile preview active at a time.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
+        "Additional live tiles remain visible, but their preview iframe stays paused until focus changes or preview budget is available again.",
+    );
 
     let testing_path = "docs/honeypot/testing.md";
     let testing = read_repo_text(testing_path);
