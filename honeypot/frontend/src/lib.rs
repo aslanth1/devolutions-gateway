@@ -922,6 +922,28 @@ struct FocusPanelTemplate<'a> {
     standalone_retry: bool,
 }
 
+#[derive(Template)]
+#[template(path = "focus_notice.html")]
+struct FocusNoticeTemplate<'a> {
+    title: &'a str,
+    lead_before_session: &'a str,
+    has_session_id: bool,
+    session_id: &'a str,
+    lead_after_session_before_code: &'a str,
+    has_event_code: bool,
+    event_code: &'a str,
+    lead_after_code: &'a str,
+    has_secondary_message: bool,
+    secondary_message: &'a str,
+    return_auth_query: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "error_fragment.html")]
+struct ErrorFragmentTemplate<'a> {
+    message: &'a str,
+}
+
 fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse, access: &OperatorAccess) -> String {
     let operator_token = access.raw_token();
     let system_kill_auth_query = operator_token_query(operator_token);
@@ -1082,36 +1104,42 @@ fn render_focus_panel(
 
 fn render_kill_notice(session_id: &str, operator_token: &str) -> String {
     let auth_query = operator_token_query(operator_token);
-    let session_id = escape_html(session_id);
 
-    format!(
-        r#"<div class="focus-shell">
-  <div class="focus-empty">
-    <div>
-      <strong>Kill requested</strong>
-      <p>Session <code>{session_id}</code> is waiting for the proxy to emit <code>session.killed</code>.</p>
-      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
-    </div>
-  </div>
-</div>"#
-    )
+    FocusNoticeTemplate {
+        title: "Kill requested",
+        lead_before_session: "Session",
+        has_session_id: true,
+        session_id,
+        lead_after_session_before_code: " is waiting for the proxy to emit ",
+        has_event_code: true,
+        event_code: "session.killed",
+        lead_after_code: ".",
+        has_secondary_message: false,
+        secondary_message: "",
+        return_auth_query: &auth_query,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("kill notice template render failed: {error}"))
 }
 
 fn render_quarantine_notice(session_id: &str, operator_token: &str) -> String {
     let auth_query = operator_token_query(operator_token);
-    let session_id = escape_html(session_id);
 
-    format!(
-        r#"<div class="focus-shell">
-  <div class="focus-empty">
-    <div>
-      <strong>Quarantine requested</strong>
-      <p>Session <code>{session_id}</code> is waiting for the proxy to emit <code>session.killed</code> and then request a quarantined recycle.</p>
-      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
-    </div>
-  </div>
-</div>"#
-    )
+    FocusNoticeTemplate {
+        title: "Quarantine requested",
+        lead_before_session: "Session",
+        has_session_id: true,
+        session_id,
+        lead_after_session_before_code: " is waiting for the proxy to emit ",
+        has_event_code: true,
+        event_code: "session.killed",
+        lead_after_code: " and then request a quarantined recycle.",
+        has_secondary_message: false,
+        secondary_message: "",
+        return_auth_query: &auth_query,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("quarantine notice template render failed: {error}"))
 }
 
 fn render_command_proposal_notice(
@@ -1301,18 +1329,21 @@ fn render_clipboard_capture_notice(response: &ClipboardCaptureResponse, operator
 fn render_system_kill_notice(operator_token: &str) -> String {
     let auth_query = operator_token_query(operator_token);
 
-    format!(
-        r#"<div class="focus-shell">
-  <div class="focus-empty">
-    <div>
-      <strong>Global kill requested</strong>
-      <p>The proxy is terminating all active honeypot sessions and waiting to emit <code>session.killed</code> for each one.</p>
-      <p>New honeypot intake will stay halted when the proxy kill-switch policy requires it.</p>
-      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
-    </div>
-  </div>
-</div>"#
-    )
+    FocusNoticeTemplate {
+        title: "Global kill requested",
+        lead_before_session: "The proxy is terminating all active honeypot sessions and waiting to emit ",
+        has_session_id: false,
+        session_id: "",
+        lead_after_session_before_code: "",
+        has_event_code: true,
+        event_code: "session.killed",
+        lead_after_code: " for each one.",
+        has_secondary_message: true,
+        secondary_message: "New honeypot intake will stay halted when the proxy kill-switch policy requires it.",
+        return_auth_query: &auth_query,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("system kill notice template render failed: {error}"))
 }
 
 fn proposal_nonce() -> u128 {
@@ -1336,15 +1367,9 @@ fn session_is_live_for_dashboard(state: SessionState) -> bool {
 }
 
 fn render_error_fragment(message: &str) -> String {
-    format!(
-        r#"<div class="focus-empty">
-  <div>
-    <strong>Frontend request failed</strong>
-    <p>{}</p>
-  </div>
-</div>"#,
-        escape_html(message)
-    )
+    ErrorFragmentTemplate { message }
+        .render()
+        .unwrap_or_else(|error| format!("error fragment template render failed: {error}"))
 }
 
 fn session_state_label(state: SessionState) -> &'static str {
@@ -1515,5 +1540,23 @@ mod tests {
             html.contains("document.body.addEventListener(\"htmx:afterSwap\""),
             "{html}"
         );
+    }
+
+    #[test]
+    fn kill_notice_escapes_session_id_and_keeps_return_link() {
+        let html = render_kill_notice("<session>", "operator-token");
+
+        assert!(html.contains("Kill requested"), "{html}");
+        assert!(html.contains("&lt;session&gt;"), "{html}");
+        assert!(html.contains("<code>session.killed</code>"), "{html}");
+        assert!(html.contains("href=\"/?token=operator-token\""), "{html}");
+    }
+
+    #[test]
+    fn error_fragment_escapes_message() {
+        let html = render_error_fragment("bad <message>");
+
+        assert!(html.contains("Frontend request failed"), "{html}");
+        assert!(html.contains("bad &lt;message&gt;"), "{html}");
     }
 }

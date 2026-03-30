@@ -1,0 +1,14 @@
+<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>{{ title }}</strong>
+      <p>
+        {{ lead_before_session }}{% if has_session_id %} <code>{{ session_id }}</code>{% endif %}{{ lead_after_session_before_code }}{% if has_event_code %}<code>{{ event_code }}</code>{% endif %}{{ lead_after_code }}
+      </p>
+      {% if has_secondary_message %}
+      <p>{{ secondary_message }}</p>
+      {% endif %}
+      <p><a class="badge" href="/?{{ return_auth_query }}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>
