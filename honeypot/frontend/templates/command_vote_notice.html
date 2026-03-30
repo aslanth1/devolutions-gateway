@@ -1,0 +1,12 @@
+<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>{{ state_label }}</strong>
+      <p>Session <code>{{ session_id }}</code> recorded vote <code>{{ vote_id }}</code> for proposal <code>{{ proposal_id }}</code> at <code>{{ recorded_at }}</code>.</p>
+      <p><strong>Vote</strong><br><code>{{ vote_label }}</code></p>
+      <p><strong>Reason</strong><br><code>{{ decision_reason }}</code></p>
+      <p>{{ guidance }}</p>
+      <p><a class="badge" href="/?{{ return_auth_query }}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>

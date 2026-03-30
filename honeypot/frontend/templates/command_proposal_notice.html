@@ -1,0 +1,22 @@
+<div class="focus-shell">
+  <div class="focus-empty">
+    <div>
+      <strong>{{ state_label }}</strong>
+      <p>Session <code>{{ session_id }}</code> recorded command proposal <code>{{ proposal_id }}</code> at <code>{{ recorded_at }}</code>.</p>
+      <p><strong>Command</strong><br><code>{{ command_text }}</code></p>
+      <p><strong>Reason</strong><br><code>{{ decision_reason }}</code></p>
+      <p>{{ guidance }}</p>
+      {% if show_vote_scope_message %}
+      <p><strong>Voting</strong><br><span>Approve scope is required to record the placeholder vote.</span></p>
+      {% endif %}
+      {% if show_vote_form %}
+      <form class="focus-actions" hx-post="/session/{{ session_id }}/vote?{{ return_auth_query }}" hx-target="#focus-panel" hx-swap="innerHTML">
+        <input type="hidden" name="proposal_id" value="{{ proposal_id }}">
+        <button class="quarantine-button" type="submit" name="vote" value="approve">Record approval placeholder</button>
+        <button class="kill-button" type="submit" name="vote" value="reject">Record rejection placeholder</button>
+      </form>
+      {% endif %}
+      <p><a class="badge" href="/?{{ return_auth_query }}">Return to dashboard</a></p>
+    </div>
+  </div>
+</div>

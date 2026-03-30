@@ -939,6 +939,50 @@ struct FocusNoticeTemplate<'a> {
 }
 
 #[derive(Template)]
+#[template(path = "command_proposal_notice.html")]
+struct CommandProposalNoticeTemplate<'a> {
+    state_label: &'a str,
+    session_id: &'a str,
+    proposal_id: &'a str,
+    recorded_at: &'a str,
+    command_text: &'a str,
+    decision_reason: &'a str,
+    guidance: &'a str,
+    return_auth_query: &'a str,
+    show_vote_scope_message: bool,
+    show_vote_form: bool,
+}
+
+#[derive(Template)]
+#[template(path = "command_vote_notice.html")]
+struct CommandVoteNoticeTemplate<'a> {
+    state_label: &'a str,
+    session_id: &'a str,
+    vote_id: &'a str,
+    proposal_id: &'a str,
+    recorded_at: &'a str,
+    vote_label: &'a str,
+    decision_reason: &'a str,
+    guidance: &'a str,
+    return_auth_query: &'a str,
+}
+
+#[derive(Template)]
+#[template(path = "capture_notice.html")]
+struct CaptureNoticeTemplate<'a> {
+    state_label: &'a str,
+    session_id: &'a str,
+    capture_id: &'a str,
+    recorded_at: &'a str,
+    request_subject: &'a str,
+    requested_count_label: &'a str,
+    requested_count: u32,
+    decision_reason: &'a str,
+    guidance: &'a str,
+    return_auth_query: &'a str,
+}
+
+#[derive(Template)]
 #[template(path = "error_fragment.html")]
 struct ErrorFragmentTemplate<'a> {
     message: &'a str,
@@ -1160,60 +1204,22 @@ fn render_command_proposal_notice(
             "The placeholder recorded the request and rejected it without executing anything."
         }
     };
-    let vote_controls =
-        render_command_vote_controls(response, operator_token, can_approve_commands && !response.executed);
+    let can_render_vote_form = can_approve_commands && !response.executed;
 
-    format!(
-        r#"<div class="focus-shell">
-  <div class="focus-empty">
-    <div>
-      <strong>{state_label}</strong>
-      <p>Session <code>{session_id}</code> recorded command proposal <code>{proposal_id}</code> at <code>{recorded_at}</code>.</p>
-      <p><strong>Command</strong><br><code>{command_text}</code></p>
-      <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
-      <p>{guidance}</p>
-      {vote_controls}
-      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
-    </div>
-  </div>
-</div>"#,
-        state_label = escape_html(state_label),
-        session_id = escape_html(&response.session_id),
-        proposal_id = escape_html(&response.proposal_id),
-        recorded_at = escape_html(&response.recorded_at),
-        command_text = escape_html(&response.command_text),
-        decision_reason = escape_html(&response.decision_reason),
-        guidance = escape_html(guidance),
-        vote_controls = vote_controls,
-        auth_query = auth_query,
-    )
-}
-
-fn render_command_vote_controls(
-    response: &CommandProposalResponse,
-    operator_token: &str,
-    can_approve_commands: bool,
-) -> String {
-    if response.proposal_state != CommandProposalState::Deferred {
-        return String::new();
+    CommandProposalNoticeTemplate {
+        state_label,
+        session_id: &response.session_id,
+        proposal_id: &response.proposal_id,
+        recorded_at: &response.recorded_at,
+        command_text: &response.command_text,
+        decision_reason: &response.decision_reason,
+        guidance,
+        return_auth_query: &auth_query,
+        show_vote_scope_message: response.proposal_state == CommandProposalState::Deferred && !can_render_vote_form,
+        show_vote_form: response.proposal_state == CommandProposalState::Deferred && can_render_vote_form,
     }
-
-    if !can_approve_commands {
-        return "<p><strong>Voting</strong><br><span>Approve scope is required to record the placeholder vote.</span></p>"
-            .to_owned();
-    }
-
-    let auth_query = operator_token_query(operator_token);
-    let session_id = escape_html(&response.session_id);
-    let proposal_id = escape_html(&response.proposal_id);
-
-    format!(
-        r##"<form class="focus-actions" hx-post="/session/{session_id}/vote?{auth_query}" hx-target="#focus-panel" hx-swap="innerHTML">
-  <input type="hidden" name="proposal_id" value="{proposal_id}">
-  <button class="quarantine-button" type="submit" name="vote" value="approve">Record approval placeholder</button>
-  <button class="kill-button" type="submit" name="vote" value="reject">Record rejection placeholder</button>
-</form>"##
-    )
+    .render()
+    .unwrap_or_else(|error| format!("command proposal notice template render failed: {error}"))
 }
 
 fn render_command_vote_notice(response: &CommandVoteResponse, operator_token: &str) -> String {
@@ -1231,29 +1237,19 @@ fn render_command_vote_notice(response: &CommandVoteResponse, operator_token: &s
         CommandVoteState::Rejected => "The placeholder recorded the rejection and kept execution disabled.",
     };
 
-    format!(
-        r#"<div class="focus-shell">
-  <div class="focus-empty">
-    <div>
-      <strong>{state_label}</strong>
-      <p>Session <code>{session_id}</code> recorded vote <code>{vote_id}</code> for proposal <code>{proposal_id}</code> at <code>{recorded_at}</code>.</p>
-      <p><strong>Vote</strong><br><code>{vote_label}</code></p>
-      <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
-      <p>{guidance}</p>
-      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
-    </div>
-  </div>
-</div>"#,
-        state_label = escape_html(state_label),
-        session_id = escape_html(&response.session_id),
-        vote_id = escape_html(&response.vote_id),
-        proposal_id = escape_html(&response.proposal_id),
-        recorded_at = escape_html(&response.recorded_at),
-        vote_label = escape_html(vote_label),
-        decision_reason = escape_html(&response.decision_reason),
-        guidance = escape_html(guidance),
-        auth_query = auth_query,
-    )
+    CommandVoteNoticeTemplate {
+        state_label,
+        session_id: &response.session_id,
+        vote_id: &response.vote_id,
+        proposal_id: &response.proposal_id,
+        recorded_at: &response.recorded_at,
+        vote_label,
+        decision_reason: &response.decision_reason,
+        guidance,
+        return_auth_query: &auth_query,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("command vote notice template render failed: {error}"))
 }
 
 fn render_keyboard_capture_notice(response: &KeyboardCaptureResponse, operator_token: &str) -> String {
@@ -1267,28 +1263,20 @@ fn render_keyboard_capture_notice(response: &KeyboardCaptureResponse, operator_t
         }
     };
 
-    format!(
-        r#"<div class="focus-shell">
-  <div class="focus-empty">
-    <div>
-      <strong>{state_label}</strong>
-      <p>Session <code>{session_id}</code> recorded keyboard placeholder <code>{capture_id}</code> at <code>{recorded_at}</code>.</p>
-      <p><strong>Requested key count</strong><br><code>{requested_key_count}</code></p>
-      <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
-      <p>{guidance}</p>
-      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
-    </div>
-  </div>
-</div>"#,
-        state_label = escape_html(state_label),
-        session_id = escape_html(&response.session_id),
-        capture_id = escape_html(&response.capture_id),
-        recorded_at = escape_html(&response.recorded_at),
-        requested_key_count = response.requested_key_count,
-        decision_reason = escape_html(&response.decision_reason),
-        guidance = escape_html(guidance),
-        auth_query = auth_query,
-    )
+    CaptureNoticeTemplate {
+        state_label,
+        session_id: &response.session_id,
+        capture_id: &response.capture_id,
+        recorded_at: &response.recorded_at,
+        request_subject: "keyboard",
+        requested_count_label: "Requested key count",
+        requested_count: response.requested_key_count,
+        decision_reason: &response.decision_reason,
+        guidance,
+        return_auth_query: &auth_query,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("keyboard capture notice template render failed: {error}"))
 }
 
 fn render_clipboard_capture_notice(response: &ClipboardCaptureResponse, operator_token: &str) -> String {
@@ -1302,28 +1290,20 @@ fn render_clipboard_capture_notice(response: &ClipboardCaptureResponse, operator
         }
     };
 
-    format!(
-        r#"<div class="focus-shell">
-  <div class="focus-empty">
-    <div>
-      <strong>{state_label}</strong>
-      <p>Session <code>{session_id}</code> recorded clipboard placeholder <code>{capture_id}</code> at <code>{recorded_at}</code>.</p>
-      <p><strong>Requested byte count</strong><br><code>{requested_byte_count}</code></p>
-      <p><strong>Reason</strong><br><code>{decision_reason}</code></p>
-      <p>{guidance}</p>
-      <p><a class="badge" href="/?{auth_query}">Return to dashboard</a></p>
-    </div>
-  </div>
-</div>"#,
-        state_label = escape_html(state_label),
-        session_id = escape_html(&response.session_id),
-        capture_id = escape_html(&response.capture_id),
-        recorded_at = escape_html(&response.recorded_at),
-        requested_byte_count = response.requested_byte_count,
-        decision_reason = escape_html(&response.decision_reason),
-        guidance = escape_html(guidance),
-        auth_query = auth_query,
-    )
+    CaptureNoticeTemplate {
+        state_label,
+        session_id: &response.session_id,
+        capture_id: &response.capture_id,
+        recorded_at: &response.recorded_at,
+        request_subject: "clipboard",
+        requested_count_label: "Requested byte count",
+        requested_count: response.requested_byte_count,
+        decision_reason: &response.decision_reason,
+        guidance,
+        return_auth_query: &auth_query,
+    }
+    .render()
+    .unwrap_or_else(|error| format!("clipboard capture notice template render failed: {error}"))
 }
 
 fn render_system_kill_notice(operator_token: &str) -> String {
@@ -1550,6 +1530,112 @@ mod tests {
         assert!(html.contains("&lt;session&gt;"), "{html}");
         assert!(html.contains("<code>session.killed</code>"), "{html}");
         assert!(html.contains("href=\"/?token=operator-token\""), "{html}");
+    }
+
+    #[test]
+    fn command_proposal_notice_escapes_fields_and_renders_vote_form() {
+        let response = CommandProposalResponse {
+            schema_version: SCHEMA_VERSION,
+            correlation_id: "corr-1".to_owned(),
+            proposal_id: "proposal-<1>".to_owned(),
+            recorded_at: "2026-03-29T00:00:00Z".to_owned(),
+            session_id: "session-<1>".to_owned(),
+            command_text: "dir <windows>".to_owned(),
+            proposal_state: CommandProposalState::Deferred,
+            decision_reason: "disabled_<policy>".to_owned(),
+            executed: false,
+        };
+
+        let html = render_command_proposal_notice(&response, "operator-token", true);
+
+        assert!(html.contains("Proposal deferred"), "{html}");
+        assert!(html.contains("&lt;1&gt;"), "{html}");
+        assert!(html.contains("dir &lt;windows&gt;"), "{html}");
+        assert!(html.contains("hx-post=\"/session/session-&lt;1&gt;/vote?token=operator-token\""), "{html}");
+        assert!(html.contains("name=\"proposal_id\" value=\"proposal-&lt;1&gt;\""), "{html}");
+    }
+
+    #[test]
+    fn command_proposal_notice_shows_scope_message_without_vote_scope() {
+        let response = CommandProposalResponse {
+            schema_version: SCHEMA_VERSION,
+            correlation_id: "corr-2".to_owned(),
+            proposal_id: "proposal-2".to_owned(),
+            recorded_at: "2026-03-29T00:00:00Z".to_owned(),
+            session_id: "session-2".to_owned(),
+            command_text: "whoami".to_owned(),
+            proposal_state: CommandProposalState::Deferred,
+            decision_reason: "disabled_by_policy".to_owned(),
+            executed: false,
+        };
+
+        let html = render_command_proposal_notice(&response, "operator-token", false);
+
+        assert!(html.contains("Approve scope is required to record the placeholder vote."), "{html}");
+        assert!(!html.contains("<form class=\"focus-actions\""), "{html}");
+    }
+
+    #[test]
+    fn command_vote_notice_escapes_fields() {
+        let response = CommandVoteResponse {
+            schema_version: SCHEMA_VERSION,
+            correlation_id: "corr-3".to_owned(),
+            vote_id: "vote-<1>".to_owned(),
+            recorded_at: "2026-03-29T00:00:00Z".to_owned(),
+            session_id: "session-<1>".to_owned(),
+            proposal_id: "proposal-<1>".to_owned(),
+            vote: CommandVoteChoice::Approve,
+            vote_state: CommandVoteState::Deferred,
+            decision_reason: "disabled_<policy>".to_owned(),
+            executed: false,
+        };
+
+        let html = render_command_vote_notice(&response, "operator-token");
+
+        assert!(html.contains("Vote deferred"), "{html}");
+        assert!(html.contains("vote-&lt;1&gt;"), "{html}");
+        assert!(html.contains("proposal-&lt;1&gt;"), "{html}");
+        assert!(html.contains("disabled_&lt;policy&gt;"), "{html}");
+    }
+
+    #[test]
+    fn capture_notice_escapes_metadata() {
+        let keyboard_html = render_keyboard_capture_notice(
+            &KeyboardCaptureResponse {
+                schema_version: SCHEMA_VERSION,
+                correlation_id: "corr-4".to_owned(),
+                capture_id: "capture-<1>".to_owned(),
+                recorded_at: "2026-03-29T00:00:00Z".to_owned(),
+                session_id: "session-<1>".to_owned(),
+                requested_key_count: 7,
+                capture_state: KeyboardCaptureState::DisabledByPolicy,
+                decision_reason: "disabled_<policy>".to_owned(),
+                executed: false,
+            },
+            "operator-token",
+        );
+        let clipboard_html = render_clipboard_capture_notice(
+            &ClipboardCaptureResponse {
+                schema_version: SCHEMA_VERSION,
+                correlation_id: "corr-5".to_owned(),
+                capture_id: "capture-<2>".to_owned(),
+                recorded_at: "2026-03-29T00:00:00Z".to_owned(),
+                session_id: "session-<2>".to_owned(),
+                requested_byte_count: 11,
+                capture_state: ClipboardCaptureState::DisabledByPolicy,
+                decision_reason: "disabled_<policy>".to_owned(),
+                executed: false,
+            },
+            "operator-token",
+        );
+
+        assert!(keyboard_html.contains("Keyboard capture disabled"), "{keyboard_html}");
+        assert!(keyboard_html.contains("capture-&lt;1&gt;"), "{keyboard_html}");
+        assert!(keyboard_html.contains("disabled_&lt;policy&gt;"), "{keyboard_html}");
+        assert!(keyboard_html.contains("Requested key count"), "{keyboard_html}");
+        assert!(clipboard_html.contains("Clipboard capture disabled"), "{clipboard_html}");
+        assert!(clipboard_html.contains("capture-&lt;2&gt;"), "{clipboard_html}");
+        assert!(clipboard_html.contains("Requested byte count"), "{clipboard_html}");
     }
 
     #[test]
