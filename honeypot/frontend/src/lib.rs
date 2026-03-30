@@ -30,18 +30,31 @@ pub struct FrontendRuntime {
     config: FrontendConfig,
     auth: FrontendAuth,
     client: reqwest::Client,
+    no_redirect_client: reqwest::Client,
 }
 
 impl FrontendRuntime {
     pub fn new(config: FrontendConfig) -> anyhow::Result<Self> {
-        let client = reqwest::Client::builder()
+        let client_builder = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(config.proxy.connect_timeout_secs))
-            .timeout(std::time::Duration::from_secs(config.proxy.request_timeout_secs))
+            .timeout(std::time::Duration::from_secs(config.proxy.request_timeout_secs));
+        let client = client_builder
             .build()
             .context("build frontend proxy client")?;
+        let no_redirect_client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(config.proxy.connect_timeout_secs))
+            .timeout(std::time::Duration::from_secs(config.proxy.request_timeout_secs))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .context("build frontend proxy no-redirect client")?;
         let auth = FrontendAuth::from_config(&config.auth).context("build frontend auth gate")?;
 
-        Ok(Self { config, auth, client })
+        Ok(Self {
+            config,
+            auth,
+            client,
+            no_redirect_client,
+        })
     }
 
     pub fn bind_addr(&self) -> std::net::SocketAddr {
@@ -94,11 +107,38 @@ impl FrontendRuntime {
             .with_context(|| format!("decode proxy stream-token response for session {session_id}"))
     }
 
-    fn stream_player_url(&self, preview: &StreamPreview, operator_token: &str) -> anyhow::Result<String> {
-        let mut url = self.config.proxy.resolve_stream_url(&preview.stream_endpoint)?;
-        url.query_pairs_mut().append_pair("token", operator_token);
+    async fn stream_player_url(&self, preview: &StreamPreview, operator_token: &str) -> anyhow::Result<String> {
+        let stream_url = self.config.proxy.resolve_stream_url(&preview.stream_endpoint)?;
+        let response = self
+            .authorized(
+                self.no_redirect_client
+                    .get(stream_url.clone())
+                    .query(&[("token", operator_token)]),
+            )
+            .send()
+            .await
+            .with_context(|| format!("request honeypot stream redirect for {}", preview.stream_id))?;
+        let status = response.status();
+        anyhow::ensure!(
+            status.is_redirection(),
+            "honeypot stream redirect request for {} returned {status}",
+            preview.stream_id
+        );
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .context("extract Location header from honeypot stream redirect")?
+            .to_str()
+            .context("decode honeypot stream redirect Location header")?;
+        let player_url = stream_url
+            .join(location)
+            .with_context(|| format!("resolve honeypot stream redirect location {location}"))?;
+        anyhow::ensure!(
+            player_url.path().contains("/jet/jrec/play"),
+            "honeypot stream redirect did not target /jet/jrec/play: {player_url}"
+        );
 
-        Ok(url.to_string())
+        Ok(player_url.to_string())
     }
 
     async fn open_events(&self, cursor: &str) -> anyhow::Result<reqwest::Response> {
@@ -592,16 +632,16 @@ async fn session_handler(
     } else {
         None
     };
-    let player_url =
-        stream_preview.as_ref().and_then(|preview| {
-            state.runtime.stream_player_url(preview, access.raw_token()).map_or_else(
-            |error| {
+    let player_url = match stream_preview.as_ref() {
+        Some(preview) => match state.runtime.stream_player_url(preview, access.raw_token()).await {
+            Ok(player_url) => Some(player_url),
+            Err(error) => {
                 tracing::warn!(session_id = %session.session_id, error = %error, "stream player url build failed");
                 None
-            },
-            Some,
-        )
-        });
+            }
+        },
+        None => None,
+    };
 
     Html(render_focus_panel(
         &session,
