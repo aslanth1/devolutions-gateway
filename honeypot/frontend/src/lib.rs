@@ -931,6 +931,7 @@ struct SessionTileView {
     last_event_id: String,
     auth_query: String,
     has_preview: bool,
+    preview_suppressed: bool,
     preview_frame_url: String,
     preview_stream_id: String,
     preview_transport_label: String,
@@ -1045,9 +1046,16 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
         .iter()
         .filter(|session| session_is_live_for_dashboard(session.state))
         .collect::<Vec<_>>();
+    let initial_focus_session_id = live_sessions.first().map(|session| session.session_id.as_str());
     let tiles = live_sessions
         .iter()
-        .map(|session| build_session_tile_view(session, access))
+        .map(|session| {
+            build_session_tile_view(
+                session,
+                access,
+                initial_focus_session_id == Some(session.session_id.as_str()),
+            )
+        })
         .collect::<Vec<_>>();
     let session_count = bootstrap
         .sessions
@@ -1090,7 +1098,7 @@ fn render_dashboard_page(config: &FrontendConfig, bootstrap: &BootstrapResponse,
     .unwrap_or_else(|error| format!("dashboard template render failed: {error}"))
 }
 
-fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess) -> SessionTileView {
+fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess, preview_suppressed: bool) -> SessionTileView {
     let operator_token = access.raw_token();
     let vm_lease_id = session.vm_lease_id.as_deref().unwrap_or("pending-lease");
     let state_label = session_state_label(session.state);
@@ -1113,7 +1121,11 @@ fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess) 
                     true,
                     preview.stream_id.as_str(),
                     stream_transport_label(preview.transport),
-                    "",
+                    if preview_suppressed {
+                        "Focused live in operator pane."
+                    } else {
+                        ""
+                    },
                 )
             },
         );
@@ -1127,6 +1139,7 @@ fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess) 
         last_event_id: session.last_event_id.clone(),
         auth_query,
         has_preview,
+        preview_suppressed,
         preview_frame_url,
         preview_stream_id: preview_stream_id.to_owned(),
         preview_transport_label: preview_transport_label.to_owned(),
@@ -1137,7 +1150,7 @@ fn build_session_tile_view(session: &BootstrapSession, access: &OperatorAccess) 
 
 fn render_session_tile(session: &BootstrapSession, access: &OperatorAccess) -> String {
     SessionTileTemplate {
-        tile: build_session_tile_view(session, access),
+        tile: build_session_tile_view(session, access, false),
     }
     .render()
     .unwrap_or_else(|error| format!("session tile template render failed: {error}"))

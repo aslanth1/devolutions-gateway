@@ -1,9 +1,17 @@
 <article class="session-tile state-{{ tile.state_class }}" id="session-tile-{{ tile.session_id }}">
   <a class="tile-hit" href="/session/{{ tile.session_id }}?{{ tile.auth_query }}" hx-get="/session/{{ tile.session_id }}?{{ tile.auth_query }}" hx-target="#focus-panel" hx-swap="innerHTML">
     {% if tile.has_preview %}
-    <div class="tile-preview-stage">
-      <iframe class="tile-preview-frame" src="{{ tile.preview_frame_url }}" loading="lazy" tabindex="-1"></iframe>
+    {% if tile.preview_suppressed %}
+    <div class="tile-preview-stage is-suppressed">
+      <iframe class="tile-preview-frame" data-preview-src="{{ tile.preview_frame_url }}" tabindex="-1"></iframe>
+      <div class="tile-preview-overlay">{{ tile.preview_message }}</div>
     </div>
+    {% else %}
+    <div class="tile-preview-stage">
+      <iframe class="tile-preview-frame" src="{{ tile.preview_frame_url }}" data-preview-src="{{ tile.preview_frame_url }}" loading="lazy" tabindex="-1"></iframe>
+      <div class="tile-preview-overlay is-hidden">{{ tile.preview_message }}</div>
+    </div>
+    {% endif %}
     {% else %}
     <div class="tile-preview-note">{{ tile.preview_message }}</div>
     {% endif %}

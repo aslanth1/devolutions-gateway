@@ -113,6 +113,7 @@
       align-items: start;
     }
     .tile-preview-stage {
+      position: relative;
       overflow: hidden;
       border-radius: 1rem;
       border: 1px solid rgba(13, 106, 115, 0.24);
@@ -127,6 +128,24 @@
       border: 0;
       background: #17130f;
       pointer-events: none;
+    }
+    .tile-preview-stage.is-suppressed .tile-preview-frame {
+      display: none;
+    }
+    .tile-preview-overlay {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 1rem;
+      background: linear-gradient(135deg, rgba(13, 106, 115, 0.18), rgba(197, 77, 32, 0.22));
+      color: rgba(255, 251, 243, 0.9);
+      text-align: center;
+      font-size: 0.92rem;
+      letter-spacing: 0.02em;
+    }
+    .tile-preview-overlay.is-hidden {
+      display: none;
     }
     .tile-preview-note {
       display: grid;
@@ -334,10 +353,34 @@
         } else {
           tileGrid.prepend(incoming);
         }
+        syncFocusedTilePreviews();
       }
 
       function currentFocusedSessionId() {
         return focusPanel.querySelector("[data-focused-session-id]")?.getAttribute("data-focused-session-id") || null;
+      }
+
+      function syncFocusedTilePreviews() {
+        const focusedSessionId = currentFocusedSessionId();
+        tileGrid.querySelectorAll(".session-tile").forEach((tile) => {
+          const sessionId = tile.id.replace("session-tile-", "");
+          const stage = tile.querySelector(".tile-preview-stage");
+          const frame = tile.querySelector(".tile-preview-frame");
+          const overlay = tile.querySelector(".tile-preview-overlay");
+          const previewSrc = frame?.dataset.previewSrc;
+          if (!stage || !frame || !overlay || !previewSrc) {
+            return;
+          }
+
+          const shouldSuppress = focusedSessionId !== null && sessionId === focusedSessionId;
+          stage.classList.toggle("is-suppressed", shouldSuppress);
+          overlay.classList.toggle("is-hidden", !shouldSuppress);
+          if (shouldSuppress) {
+            frame.removeAttribute("src");
+          } else if (!frame.getAttribute("src")) {
+            frame.setAttribute("src", previewSrc);
+          }
+        });
       }
 
       function clearFocusRetry() {
@@ -380,10 +423,12 @@
         if (html === null) {
           clearFocusRetry();
           focusPanel.innerHTML = `<div class="focus-empty">Session ${sessionId} is no longer available.</div>`;
+          syncFocusedTilePreviews();
           return;
         }
         focusPanel.innerHTML = html;
         syncFocusRetry(sessionId);
+        syncFocusedTilePreviews();
       }
 
       function dropTile(sessionId, message) {
@@ -458,15 +503,18 @@
       if (bootSessionId) {
         refreshFocus(bootSessionId).catch(() => {
           focusPanel.innerHTML = `<div class="focus-empty">The initial session focus could not be loaded yet.</div>`;
+          syncFocusedTilePreviews();
           scheduleFocusRetry(bootSessionId);
         });
       }
+      syncFocusedTilePreviews();
 
       document.body.addEventListener("htmx:afterSwap", (event) => {
         if (event.detail?.target !== focusPanel) {
           return;
         }
         syncFocusRetry(currentFocusedSessionId());
+        syncFocusedTilePreviews();
       });
 
       connectEvents();
