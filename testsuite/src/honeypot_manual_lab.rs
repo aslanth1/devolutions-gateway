@@ -3970,6 +3970,17 @@ fn evaluate_manual_lab_preflight(options: ManualLabUpOptions) -> anyhow::Result<
         }
     };
 
+    if let Some(detail) = manual_lab_webplayer_bundle_staleness_detail(&paths)? {
+        return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
+            &paths,
+            Tiny11LabGateBlocker::MissingRuntimeInputs,
+            detail,
+            Some(format!(
+                "run `{MANUAL_LAB_ENSURE_WEBPLAYER_HINT}` to build the recording-player bundle in the containerized webplayer builder, or set {GATEWAY_WEBPLAYER_PATH_ENV}=<recording-player-dir>, then rerun `make manual-lab-preflight`"
+            )),
+        )));
+    }
+
     if options.open_browser && !interactive_browser_display_is_available() {
         return Ok(ManualLabPreflightOutcome::Blocked(ManualLabPreflightReport::blocked(
             &paths,
@@ -4077,7 +4088,7 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
     let manifest_dir =
         optional_env_path(HONEYPOT_INTEROP_MANIFEST_DIR_ENV).unwrap_or_else(|| image_store.join("manifests"));
     let web_player_root = optional_env_path(GATEWAY_WEBPLAYER_PATH_ENV)
-        .unwrap_or_else(|| repo_relative_path("honeypot/frontend/webplayer-workspace/dist/recording-player"));
+        .unwrap_or_else(default_manual_lab_webplayer_root);
     let qemu_binary_path = optional_env_path(HONEYPOT_INTEROP_QEMU_BINARY_ENV)
         .unwrap_or_else(|| PathBuf::from("/usr/bin/qemu-system-x86_64"));
     let kvm_path = optional_env_path(HONEYPOT_INTEROP_KVM_PATH_ENV).unwrap_or_else(|| PathBuf::from("/dev/kvm"));
@@ -4096,6 +4107,78 @@ fn resolve_manual_lab_interop_paths() -> ManualLabInteropPaths {
         ironrdp_driver_path,
         xfreerdp_path,
     }
+}
+
+fn default_manual_lab_webplayer_root() -> PathBuf {
+    repo_relative_path("honeypot/frontend/webplayer-workspace/dist/recording-player")
+}
+
+fn manual_lab_webplayer_source_roots() -> [PathBuf; 2] {
+    [
+        repo_relative_path("honeypot/frontend/webplayer-workspace/apps/recording-player"),
+        repo_relative_path("honeypot/frontend/webplayer-workspace/packages"),
+    ]
+}
+
+fn manual_lab_webplayer_bundle_staleness_detail(paths: &ManualLabInteropPaths) -> anyhow::Result<Option<String>> {
+    if optional_env_path(GATEWAY_WEBPLAYER_PATH_ENV).is_some() {
+        return Ok(None);
+    }
+
+    if paths.web_player_root != default_manual_lab_webplayer_root() {
+        return Ok(None);
+    }
+
+    let index_path = paths.web_player_root.join("index.html");
+    if !index_path.is_file() {
+        return Ok(None);
+    }
+
+    let bundle_modified_at = fs::metadata(&index_path)
+        .with_context(|| format!("stat {}", index_path.display()))?
+        .modified()
+        .with_context(|| format!("read modified time for {}", index_path.display()))?;
+
+    for search_root in manual_lab_webplayer_source_roots() {
+        if let Some(newer_source) = manual_lab_find_first_newer_path(&search_root, bundle_modified_at)? {
+            return Ok(Some(format!(
+                "{GATEWAY_WEBPLAYER_PATH_ENV} ({}) is stale because bundle index {} is older than recording-player sources such as {}",
+                paths.web_player_root.display(),
+                index_path.display(),
+                newer_source.display()
+            )));
+        }
+    }
+
+    Ok(None)
+}
+
+fn manual_lab_find_first_newer_path(search_root: &Path, bundle_modified_at: SystemTime) -> anyhow::Result<Option<PathBuf>> {
+    for entry in fs::read_dir(search_root).with_context(|| format!("read {}", search_root.display()))? {
+        let entry = entry.with_context(|| format!("read entry under {}", search_root.display()))?;
+        let path = entry.path();
+        let metadata = entry
+            .metadata()
+            .with_context(|| format!("stat {}", path.display()))?;
+
+        if metadata.is_dir() {
+            if let Some(newer_path) = manual_lab_find_first_newer_path(&path, bundle_modified_at)? {
+                return Ok(Some(newer_path));
+            }
+            continue;
+        }
+
+        if metadata.is_file() {
+            let modified_at = metadata
+                .modified()
+                .with_context(|| format!("read modified time for {}", path.display()))?;
+            if modified_at > bundle_modified_at {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn manual_lab_store_root_permission_remediation() -> String {
