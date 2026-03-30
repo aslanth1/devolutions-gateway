@@ -58,6 +58,11 @@ const mediaEventStates = new WeakMap<HTMLVideoElement, {
   counts: Partial<Record<TrackedMediaEvent, number>>;
 }>();
 
+type WebkitVideoFrameCounts = HTMLVideoElement & {
+  webkitDecodedFrameCount?: number;
+  webkitDroppedFrameCount?: number;
+};
+
 function sleep(durationMs: number) {
   return new Promise((resolve) => {
     window.setTimeout(resolve, durationMs);
@@ -190,6 +195,51 @@ function formatPlaybackStateDetail(
   return `${pausedDetail} ${endedDetail} ${seekingDetail} ${networkStateDetail} ${bufferedDetail} ${mediaEventDetail} readyState=${readyState} ${currentTimeDetail} ${videoWidthDetail} ${videoHeightDetail}`;
 }
 
+function formatFrameQualityDetail(video: HTMLVideoElement) {
+  const details: string[] = [];
+
+  if (typeof video.getVideoPlaybackQuality === 'function') {
+    const quality = video.getVideoPlaybackQuality();
+    details.push(`totalVideoFrames=${quality.totalVideoFrames}`);
+    details.push(`droppedVideoFrames=${quality.droppedVideoFrames}`);
+
+    if ('corruptedVideoFrames' in quality && typeof quality.corruptedVideoFrames === 'number') {
+      details.push(`corruptedVideoFrames=${quality.corruptedVideoFrames}`);
+    }
+  } else {
+    details.push('totalVideoFrames=unavailable');
+    details.push('droppedVideoFrames=unavailable');
+  }
+
+  const webkitCounts = video as WebkitVideoFrameCounts;
+  if (typeof webkitCounts.webkitDecodedFrameCount === 'number') {
+    details.push(`webkitDecodedFrameCount=${webkitCounts.webkitDecodedFrameCount}`);
+  } else {
+    details.push('webkitDecodedFrameCount=unavailable');
+  }
+
+  if (typeof webkitCounts.webkitDroppedFrameCount === 'number') {
+    details.push(`webkitDroppedFrameCount=${webkitCounts.webkitDroppedFrameCount}`);
+  } else {
+    details.push('webkitDroppedFrameCount=unavailable');
+  }
+
+  return details.join(' ');
+}
+
+function formatReadyFrameDetail(
+  video: HTMLVideoElement,
+  readyState: number,
+  currentTimeMs: number | undefined,
+  videoWidth: number | undefined,
+  videoHeight: number | undefined,
+) {
+  const playbackStateDetail = formatPlaybackStateDetail(video, readyState, currentTimeMs, videoWidth, videoHeight);
+  const frameQualityDetail = formatFrameQualityDetail(video);
+
+  return `${playbackStateDetail} ${frameQualityDetail}`;
+}
+
 function resolvePlayerVideo() {
   const activePlayer = document.querySelector('shadow-player') as HTMLElement & {
     shadowRoot?: ShadowRoot | null;
@@ -305,6 +355,7 @@ function samplePlayerVideo(): BrowserVisibilitySample {
       nonBlackRatioPerMille,
       meanNonBlackRatioPerMille: meanLumaPerMille,
       transitionObserved,
+      detail: formatReadyFrameDetail(video, readyState, currentTimeMs, videoWidth, videoHeight),
     };
   } catch (error) {
     return {
@@ -377,7 +428,10 @@ async function collectBrowserVisibilityWindow(windowIndex: number, phase: Browse
   } else if (maxNonBlackRatioPerMille !== undefined) {
     sampleStatus = 'ready';
     visibilityVerdict = classifyNonBlackRatioPerMille(maxNonBlackRatioPerMille);
-    detail = `window captured ${validSamples.length} valid browser samples`;
+    detail =
+      representativeVideo?.detail === undefined
+        ? `window captured ${validSamples.length} valid browser samples`
+        : `window captured ${validSamples.length} valid browser samples (${representativeVideo.detail})`;
   }
 
   emitPlayerTelemetry({
