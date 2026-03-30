@@ -1187,6 +1187,11 @@ fn honeypot_docs_keep_black_screen_runbook_contract_canonical() {
     assert_contains(
         runbook_path,
         &runbook,
+        "The frontend standalone session route is `GET /session/{id}`.",
+    );
+    assert_contains(
+        runbook_path,
+        &runbook,
         "The frontend focus-player wrapper route is `GET /session/{id}/frame`.",
     );
     assert_contains(
