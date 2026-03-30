@@ -503,11 +503,18 @@
       }
 
       if (bootSessionId) {
-        refreshFocus(bootSessionId).catch(() => {
-          focusPanel.innerHTML = `<div class="focus-empty">The initial session focus could not be loaded yet.</div>`;
-          syncFocusedTilePreviews();
-          scheduleFocusRetry(bootSessionId);
-        });
+        const hasBootFocus =
+          currentFocusedSessionId() === bootSessionId &&
+          focusPanel.querySelector(".stream-frame");
+        if (hasBootFocus) {
+          syncFocusRetry(bootSessionId);
+        } else {
+          refreshFocus(bootSessionId).catch(() => {
+            focusPanel.innerHTML = `<div class="focus-empty">The initial session focus could not be loaded yet.</div>`;
+            syncFocusedTilePreviews();
+            scheduleFocusRetry(bootSessionId);
+          });
+        }
       }
       syncFocusedTilePreviews();
 
